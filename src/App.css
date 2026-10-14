@@ -1,0 +1,357 @@
+:root {
+  font-family: system-ui, "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-size: 14px;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+}
+
+.zap-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: rgba(24, 26, 31, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.zap-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.zap-logo {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.zap-input-row input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e8eaed;
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.zap-input-row input::placeholder {
+  color: #5f6368;
+}
+
+.zap-results {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.zap-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.zap-item.active {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.zap-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  line-height: 1.4;
+}
+
+.zap-ico {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.badge-app {
+  background: rgba(82, 196, 26, 0.16);
+  color: #7ed957;
+}
+
+.badge-clip {
+  background: rgba(168, 85, 247, 0.18);
+  color: #c084fc;
+}
+
+.badge-win {
+  background: rgba(34, 211, 238, 0.16);
+  color: #67e8f9;
+}
+
+.badge-recent {
+  background: rgba(251, 146, 60, 0.16);
+  color: #fdba74;
+}
+
+.badge-file {
+  background: rgba(20, 184, 166, 0.16);
+  color: #2dd4bf;
+}
+
+.badge-cmd {
+  background: rgba(99, 102, 241, 0.18);
+  color: #a5b4fc;
+}
+
+.badge-settings {
+  background: rgba(244, 114, 182, 0.16);
+  color: #f9a8d4;
+}
+
+.badge-vault {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fbbf24;
+}
+
+/* 保护域：警示色边框 + 标签 */
+.zap-panel.vault {
+  border-color: rgba(245, 158, 11, 0.55);
+}
+
+.zap-panel.vault .zap-input-row {
+  border-bottom-color: rgba(245, 158, 11, 0.35);
+}
+
+.zap-vault-tag {
+  color: #fbbf24;
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 新增账号表单 */
+.zap-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px 16px;
+  overflow-y: auto;
+}
+
+.zap-form label {
+  color: #8a8f98;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.zap-form input,
+.zap-form textarea {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #e8eaed;
+  padding: 7px 9px;
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+  resize: none;
+}
+
+.zap-form input:focus,
+.zap-form textarea:focus {
+  border-color: rgba(245, 158, 11, 0.5);
+}
+
+.zap-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.zap-form-actions button {
+  flex: 1;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8eaed;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.zap-form-actions button.primary {
+  background: rgba(245, 158, 11, 0.25);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.zap-link-btn {
+  background: none;
+  border: none;
+  color: #8a8f98;
+  cursor: pointer;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.zap-link-btn:hover {
+  color: #e8eaed;
+}
+
+.zap-import-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.zap-import-grid {
+  display: flex;
+  gap: 6px;
+}
+
+.zap-import-grid input {
+  flex: 1;
+  min-width: 0;
+}
+
+.badge-info {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+.badge-web {
+  background: rgba(59, 130, 246, 0.16);
+  color: #7ab3ff;
+}
+
+.badge-url {
+  background: rgba(250, 204, 21, 0.16);
+  color: #ffd84d;
+}
+
+.zap-texts {
+  min-width: 0;
+}
+
+.zap-title {
+  color: #e8eaed;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zap-sub {
+  color: #8a8f98;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
+.zap-results::-webkit-scrollbar {
+  width: 8px;
+}
+
+.zap-results::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+/* ---------- 设置 ---------- */
+
+.zap-gear {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.zap-gear:hover {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.zap-gear svg {
+  width: 15px;
+  height: 15px;
+}
+
+.zap-form select {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #e8eaed;
+  padding: 7px 9px;
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+}
+
+.zap-form select:focus {
+  border-color: rgba(245, 158, 11, 0.5);
+}
+
+.zap-form select:disabled {
+  opacity: 0.4;
+}
+
+.zap-set-check {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  font-size: 13px !important;
+  color: #e8eaed !important;
+}
+
+.zap-set-check input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: #f59e0b;
+}
+
+.zap-hk {
+  cursor: pointer;
+  user-select: none;
+}
+
+.zap-hk-rec {
+  border-color: rgba(245, 158, 11, 0.8) !important;
+  color: #fbbf24;
+}
+
+.zap-hk-err {
+  color: #f87171;
+  font-size: 12px;
+  margin-top: -4px;
+}
+
+.zap-set-saved {
+  color: #7ed957;
+  font-size: 12px;
+  text-align: right;
+}
