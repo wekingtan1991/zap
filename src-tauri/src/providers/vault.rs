@@ -34,8 +34,13 @@ pub fn init_table(conn: &Connection) {
              url TEXT NOT NULL DEFAULT '',
              notes TEXT NOT NULL DEFAULT '',
              created_at INTEGER NOT NULL,
-             updated_at INTEGER NOT NULL
+             updated_at INTEGER NOT NULL,
+             pinned INTEGER NOT NULL DEFAULT 0
          );",
+    );
+    // 旧库迁移：补 pinned 列（已存在时报错可忽略）
+    let _ = conn.execute_batch(
+        "ALTER TABLE accounts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
     );
 }
 
@@ -197,7 +202,8 @@ pub fn add(
 
 pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT id, title, username, url FROM accounts ORDER BY updated_at DESC LIMIT 200",
+        "SELECT id, title, username, url, notes, pinned FROM accounts
+         ORDER BY pinned DESC, updated_at DESC LIMIT 200",
     ) else {
         return Vec::new();
     };
@@ -207,25 +213,34 @@ pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, i64>(5)?,
         ))
     }) else {
         return Vec::new();
     };
-    let rows: Vec<(i64, String, String, String)> = rows.flatten().collect();
-    let mut scored: Vec<(f32, i64)> = rows
+    let rows: Vec<(i64, String, String, String, String, i64)> = rows.flatten().collect();
+    let mut scored: Vec<(f32, i64, i64)> = rows
         .iter()
         .filter_map(|row| {
-            let hay = format!("{} {} {}", row.1, row.2, row.3);
-            super::score_match(&hay, query).map(|s| (s, row.0))
+            // 备注也参与匹配（标题/用户名/网址/备注）
+            let hay = format!("{} {} {} {}", row.1, row.2, row.3, row.4);
+            super::score_match(&hay, query).map(|s| (s, row.0, row.5))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(b.1.cmp(&a.1)));
+    // 同分档内置顶优先，其次新在前
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap()
+            .then(b.2.cmp(&a.2))
+            .then(b.1.cmp(&a.1))
+    });
     scored.truncate(8);
     scored
         .into_iter()
         .enumerate()
-        .filter_map(|(i, (_, id))| {
-            let (_, title, username, url) = rows.iter().find(|r| r.0 == id)?;
+        .filter_map(|(i, (_, id, _))| {
+            let (_, title, username, url, _, pinned) = rows.iter().find(|r| r.0 == id)?;
             let subtitle = if url.is_empty() {
                 username.clone()
             } else {
@@ -233,7 +248,11 @@ pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
             };
             Some(SearchItem {
                 id: format!("vault:{id}"),
-                title: title.clone(),
+                title: if *pinned == 1 {
+                    format!("📌 {title}")
+                } else {
+                    title.clone()
+                },
                 subtitle,
                 kind: "vault".into(),
                 target: id.to_string(),
@@ -244,8 +263,15 @@ pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
         .collect()
 }
 
-/// 动作分发。密码只复制、永不返回明文。
+/// 动作分发。复制动作统一抑制剪贴板历史；密码只在显式查看时返回明文。
 pub fn action(conn: &Connection, id: i64, action: &str, pwd_clear_secs: i64) -> Result<String, String> {
+    // 复制类操作同时刷新「最近使用」排序（未置顶条目自然前移）
+    let bump = |conn: &Connection| {
+        let _ = conn.execute(
+            "UPDATE accounts SET updated_at=?1 WHERE id=?2",
+            params![now_ms(), id],
+        );
+    };
     match action {
         "username" => {
             let username: String = conn
@@ -255,7 +281,9 @@ pub fn action(conn: &Connection, id: i64, action: &str, pwd_clear_secs: i64) -> 
                     |r| r.get(0),
                 )
                 .map_err(|e| e.to_string())?;
+            SUPPRESS_NEXT_CLIP.store(true, Ordering::Relaxed);
             copy_text(&username)?;
+            bump(conn);
             Ok("用户名已复制".into())
         }
         "password" => {
@@ -269,6 +297,7 @@ pub fn action(conn: &Connection, id: i64, action: &str, pwd_clear_secs: i64) -> 
             let plain = dpapi_decrypt(&enc)?;
             SUPPRESS_NEXT_CLIP.store(true, Ordering::Relaxed);
             copy_text(&plain)?;
+            bump(conn);
             schedule_clear(plain, pwd_clear_secs);
             Ok(if pwd_clear_secs > 0 {
                 format!("密码已复制，{pwd_clear_secs} 秒后自动清除")
@@ -282,7 +311,36 @@ pub fn action(conn: &Connection, id: i64, action: &str, pwd_clear_secs: i64) -> 
                     r.get(0)
                 })
                 .map_err(|e| e.to_string())?;
+            bump(conn);
             Ok(url)
+        }
+        "reveal" => {
+            // 显式查看：返回解密后的密码明文（前端只做一次性展示）
+            let enc: String = conn
+                .query_row(
+                    "SELECT password_enc FROM accounts WHERE id=?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let plain = dpapi_decrypt(&enc)?;
+            Ok(plain)
+        }
+        "pin" => {
+            let pinned: i64 = conn
+                .query_row(
+                    "SELECT pinned FROM accounts WHERE id=?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let next = if pinned == 1 { 0 } else { 1 };
+            conn.execute(
+                "UPDATE accounts SET pinned=?1 WHERE id=?2",
+                params![next, id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(if next == 1 { "已置顶".into() } else { "已取消置顶".into() })
         }
         "delete" => {
             conn.execute("DELETE FROM accounts WHERE id=?1", params![id])
@@ -291,6 +349,64 @@ pub fn action(conn: &Connection, id: i64, action: &str, pwd_clear_secs: i64) -> 
         }
         _ => Err("未知操作".into()),
     }
+}
+
+/// 取单条完整记录（编辑预填用，含解密后的密码明文）
+pub fn get(conn: &Connection, id: i64) -> Result<(String, String, String, String, String, i64), String> {
+    let row = conn
+        .query_row(
+            "SELECT title, username, password_enc, url, notes, pinned FROM accounts WHERE id=?1",
+            params![id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    let plain = dpapi_decrypt(&row.2)?;
+    Ok((row.0, row.1, plain, row.3, row.4, row.5))
+}
+
+/// 更新条目：密码字段留空 = 保持不变（其余字段照常覆盖）
+pub fn update(
+    conn: &Connection,
+    id: i64,
+    title: &str,
+    username: &str,
+    password: &str,
+    url: &str,
+    notes: &str,
+    pinned: i64,
+) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("标题不能为空".into());
+    }
+    let new_enc = if password.trim().is_empty() {
+        None
+    } else {
+        Some(dpapi_encrypt(password)?)
+    };
+    match new_enc {
+        Some(enc) => conn
+            .execute(
+                "UPDATE accounts SET title=?1, username=?2, password_enc=?3, url=?4, notes=?5, pinned=?6, updated_at=?7 WHERE id=?8",
+                params![title, username.trim(), enc, url.trim(), notes, pinned, now_ms(), id],
+            ),
+        None => conn
+            .execute(
+                "UPDATE accounts SET title=?1, username=?2, url=?3, notes=?4, pinned=?5, updated_at=?6 WHERE id=?7",
+                params![title, username.trim(), url.trim(), notes, pinned, now_ms(), id],
+            ),
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---------- 智能导入：文本解析 ----------
@@ -565,5 +681,78 @@ mod tests {
         assert_eq!(r[2].url, "http://172.20.74.14:6060/xxl-job-admin");
         assert_eq!(r[2].username, "xxljob");
         assert_eq!(r[2].password, "08uD!3Das1$o");
+    }
+}
+
+#[cfg(test)]
+mod crud_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn mem_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        init_table(&conn);
+        conn
+    }
+
+    #[test]
+    fn 更新留空密码保持原值() {
+        let conn = mem_db();
+        add(&conn, "站点", "user", "old-pass", "https://a.com", "").unwrap();
+        let (_, _, plain, _, _, _) = get(&conn, 1).unwrap();
+        assert_eq!(plain, "old-pass");
+
+        update(&conn, 1, "站点2", "user2", "", "https://b.com", "备注", 0).unwrap();
+        let (t, u, p, url, notes, _) = get(&conn, 1).unwrap();
+        assert_eq!(t, "站点2");
+        assert_eq!(u, "user2");
+        assert_eq!(p, "old-pass", "留空密码应保持原值");
+        assert_eq!(url, "https://b.com");
+        assert_eq!(notes, "备注");
+
+        // 传入新密码则覆盖
+        update(&conn, 1, "站点2", "user2", "new-pass", "", "", 0).unwrap();
+        let (_, _, p, _, _, _) = get(&conn, 1).unwrap();
+        assert_eq!(p, "new-pass");
+    }
+
+    #[test]
+    fn 置顶条目排最前且带标记() {
+        let conn = mem_db();
+        add(&conn, "甲账号", "", "", "", "").unwrap();
+        add(&conn, "乙账号", "", "", "", "").unwrap();
+        action(&conn, 1, "pin", 0).unwrap();
+
+        let items = search(&conn, "账号");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].title, "📌 甲账号", "置顶条目应带标记且排在最前");
+        assert_eq!(items[1].title, "乙账号");
+
+        // 再 pin 一次 = 取消置顶
+        action(&conn, 1, "pin", 0).unwrap();
+        let items = search(&conn, "账号");
+        assert!(!items[0].title.starts_with("📌"));
+    }
+
+    #[test]
+    fn 备注参与搜索匹配() {
+        let conn = mem_db();
+        add(&conn, "公司邮箱", "me", "pw", "", "公司内部 systems").unwrap();
+        assert_eq!(search(&conn, "systems").len(), 1);
+        assert_eq!(search(&conn, "notes不存在词").len(), 0);
+    }
+
+    #[test]
+    fn 复制操作更新最近使用() {
+        let conn = mem_db();
+        add(&conn, "A", "u1", "p1", "", "").unwrap();
+        let before: i64 = conn
+            .query_row("SELECT updated_at FROM accounts WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        action(&conn, 1, "username", 0).unwrap();
+        let after: i64 = conn
+            .query_row("SELECT updated_at FROM accounts WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        assert!(after >= before, "复制后应刷新 updated_at");
     }
 }
