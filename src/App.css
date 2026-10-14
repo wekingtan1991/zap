@@ -355,3 +355,22 @@ body,
   font-size: 12px;
   text-align: right;
 }
+
+/* 账号库：密码行（输入 + 生成按钮）与明文查看 */
+.zap-pass-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.zap-pass-row input {
+  flex: 1;
+}
+
+.zap-pw-reveal {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 15px;
+  letter-spacing: 1px;
+  color: #fbbf24;
+  user-select: text;
+}

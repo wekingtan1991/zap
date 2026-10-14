@@ -28,11 +28,13 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 interface AccountForm {
+  id?: number;
   title: string;
   username: string;
   password: string;
   url: string;
   notes: string;
+  pinned: boolean;
 }
 
 const EMPTY_FORM: AccountForm = {
@@ -41,6 +43,7 @@ const EMPTY_FORM: AccountForm = {
   password: "",
   url: "",
   notes: "",
+  pinned: false,
 };
 
 const VAULT_ADD_ENTRY: SearchItem = {
@@ -90,6 +93,7 @@ function App() {
   const [hkRecording, setHkRecording] = useState(false);
   const [hkError, setHkError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
+  const [revealPw, setRevealPw] = useState<{ title: string; password: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const queryRef = useRef("");
   const busyRef = useRef(false);
@@ -187,6 +191,7 @@ function App() {
     const unlisten = listen("zap://shown", () => {
       setQuery(""); // 顺带退出保护域
       setForm(null);
+      setRevealPw(null);
       setSettingsOpen(false);
       setSt(null);
       setHkRecording(false);
@@ -316,7 +321,10 @@ function App() {
   }, []);
 
   const vaultAction = useCallback(
-    async (item: SearchItem, action: "username" | "password" | "url" | "delete") => {
+    async (
+      item: SearchItem,
+      action: "username" | "password" | "url" | "delete" | "reveal" | "pin"
+    ) => {
       const id = Number(item.target);
       if (Number.isNaN(id)) return;
       try {
@@ -336,13 +344,28 @@ function App() {
           }
           return;
         }
-        await invoke<string>("vault_action", { id, action });
-        if (action === "delete") {
-          await refreshVault(vaultTermRef.current);
-        } else {
-          invoke("hide_panel");
-          setQuery("");
+        if (action === "reveal") {
+          const pw = await invoke<string>("vault_action", { id, action });
+          setRevealPw({ title: item.title.replace(/^📌 /, ""), password: pw });
+          return;
         }
+        const msg = await invoke<string>("vault_action", { id, action });
+        if (action === "pin" || action === "delete") {
+          await refreshVault(vaultTermRef.current);
+          return;
+        }
+        // 复制类：短暂显示成功反馈后自动关闭（密码/用户名均不入剪贴板历史）
+        setItems([
+          {
+            id: "vault-done",
+            title: "✓ " + msg,
+            subtitle: "稍后自动关闭",
+            kind: "info",
+            target: "",
+            score: 0,
+          },
+        ]);
+        setTimeout(() => invoke("hide_panel"), 900);
       } catch (e) {
         setItems([
           {
@@ -358,6 +381,41 @@ function App() {
     },
     [refreshVault]
   );
+
+  // Alt+6：取完整记录并打开编辑表单（密码明文预填，留空保存 = 保持不变）
+  const startEdit = useCallback(
+    async (item: SearchItem) => {
+      const id = Number(item.target);
+      if (Number.isNaN(id)) return;
+      try {
+        const [title, username, password, url, notes, pinned] = await invoke<
+          [string, string, string, string, string, number]
+        >("vault_get", { id });
+        setForm({
+          id,
+          title,
+          username,
+          password,
+          url,
+          notes,
+          pinned: pinned === 1,
+        });
+      } catch {
+        // 忽略
+      }
+    },
+    []
+  );
+
+  // 表单密码生成：crypto 随机 16 位（去掉易混淆字符）
+  const genPassword = () => {
+    const chars =
+      "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*";
+    const arr = new Uint32Array(16);
+    crypto.getRandomValues(arr);
+    const pw = Array.from(arr, (n) => chars[n % chars.length]).join("");
+    if (form) setForm({ ...form, password: pw });
+  };
 
   const runEverythingSetup = useCallback(async () => {
     if (busyRef.current) return;
@@ -407,13 +465,25 @@ function App() {
     if (!form) return;
     if (!form.title.trim()) return;
     try {
-      await invoke("vault_add", {
-        title: form.title,
-        username: form.username,
-        password: form.password,
-        url: form.url,
-        notes: form.notes,
-      });
+      if (form.id != null) {
+        await invoke("vault_update", {
+          id: form.id,
+          title: form.title,
+          username: form.username,
+          password: form.password, // 留空 = 保持原密码
+          url: form.url,
+          notes: form.notes,
+          pinned: form.pinned ? 1 : 0,
+        });
+      } else {
+        await invoke("vault_add", {
+          title: form.title,
+          username: form.username,
+          password: form.password,
+          url: form.url,
+          notes: form.notes,
+        });
+      }
       setForm(null);
       setQuery("pw");
       await refreshVault("");
@@ -461,6 +531,15 @@ function App() {
       return;
     }
 
+    // 查看密码浮层：Esc 返回
+    if (revealPw) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setRevealPw(null);
+      }
+      return;
+    }
+
     // 导入模式：Esc 返回
     if (importing) {
       if (e.key === "Escape") {
@@ -487,14 +566,17 @@ function App() {
     }
 
     if (isVault) {
-      // 保护域动作组：Alt+1 网址 / Alt+2 密码（阅后即焚）/ Alt+3 删除
-      if (e.altKey && (e.key === "1" || e.key === "2" || e.key === "3")) {
+      // 保护域动作组：Alt+1 网址 / Alt+2 密码 / Alt+3 删除 / Alt+4 查看 / Alt+5 置顶 / Alt+6 编辑
+      if (e.altKey && ["1", "2", "3", "4", "5", "6"].includes(e.key)) {
         e.preventDefault();
         const it = items[active];
         if (!it || it.kind !== "vault") return;
         if (e.key === "1") vaultAction(it, "url");
         if (e.key === "2") vaultAction(it, "password");
         if (e.key === "3") vaultAction(it, "delete");
+        if (e.key === "4") vaultAction(it, "reveal");
+        if (e.key === "5") vaultAction(it, "pin");
+        if (e.key === "6") void startEdit(it);
         return;
       }
       if (e.key === "Enter") {
@@ -544,13 +626,15 @@ function App() {
     if (form) setForm({ ...form, [key]: value });
   };
 
-  // ---------- 新增账号表单 ----------
+  // ---------- 表单模式 ----------
   if (form) {
     return (
-      <div className="zap-panel vault">
+      <div className="zap-panel vault" onKeyDown={onKeyDown}>
         <div className="zap-input-row">
           <span className="zap-logo">🔒</span>
-          <span className="zap-vault-tag">新增账号</span>
+          <span className="zap-vault-tag">
+            {form.id != null ? "编辑账号" : "新增账号"}
+          </span>
         </div>
         <div className="zap-form">
           <label>
@@ -570,12 +654,23 @@ function App() {
             />
           </label>
           <label>
-            密码（DPAPI 加密存储，不入剪贴板历史）
-            <input
-              type="password"
-              value={form.password}
-              onChange={(e) => setFormField("password", e.target.value)}
-            />
+            密码（DPAPI 加密存储，不入剪贴板历史
+            {form.id != null ? "；留空 = 保持原密码" : ""}）
+            <div className="zap-pass-row">
+              <input
+                type="password"
+                value={form.password}
+                onChange={(e) => setFormField("password", e.target.value)}
+              />
+              <button
+                type="button"
+                className="zap-link-btn"
+                onClick={genPassword}
+                title="生成 16 位强密码"
+              >
+                生成
+              </button>
+            </div>
           </label>
           <label>
             网址
@@ -593,6 +688,16 @@ function App() {
               onChange={(e) => setFormField("notes", e.target.value)}
             />
           </label>
+          <label className="zap-set-check">
+            <input
+              type="checkbox"
+              checked={form.pinned}
+              onChange={(e) =>
+                setForm((f) => (f ? { ...f, pinned: e.target.checked } : f))
+              }
+            />
+            固定置顶（常用账号排在最前）
+          </label>
           <div className="zap-form-actions">
             <button onClick={() => setForm(null)}>取消（Esc）</button>
             <button className="primary" onClick={() => saveForm()}>
@@ -604,10 +709,40 @@ function App() {
     );
   }
 
+  // ---------- 查看密码 ----------
+  if (revealPw) {
+    return (
+      <div className="zap-panel vault" onKeyDown={onKeyDown}>
+        <div className="zap-input-row">
+          <span className="zap-logo">🔒</span>
+          <span className="zap-vault-tag">查看密码</span>
+          <button className="zap-link-btn" onClick={() => setRevealPw(null)}>
+            返回（Esc）
+          </button>
+        </div>
+        <div className="zap-form">
+          <label>
+            {revealPw.title}
+            <input
+              autoFocus
+              readOnly
+              className="zap-pw-reveal"
+              value={revealPw.password}
+              onFocus={(e) => e.currentTarget.select()}
+            />
+          </label>
+          <div className="zap-vault-tag">
+            可框选复制 · 关闭密码请用 Alt+2（阅后即焚，不入剪贴板历史）
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ---------- 智能导入 ----------
   if (importing) {
     return (
-      <div className="zap-panel vault">
+      <div className="zap-panel vault" onKeyDown={onKeyDown}>
         <div className="zap-input-row">
           <span className="zap-logo">🔒</span>
           <span className="zap-vault-tag">智能导入</span>
@@ -698,7 +833,7 @@ function App() {
   // ---------- 设置页 ----------
   if (settingsOpen && st) {
     return (
-      <div className="zap-panel vault">
+      <div className="zap-panel vault" onKeyDown={onKeyDown}>
         <div className="zap-input-row">
           <span className="zap-logo">⚙</span>
           <span className="zap-vault-tag">设置</span>
@@ -806,7 +941,7 @@ function App() {
           onKeyDown={onKeyDown}
           placeholder={
             isVault
-              ? "搜索账号…（Enter 复制用户名 · Alt+2 密码 · Alt+1 网址 · Alt+3 删除）"
+              ? "搜索账号…（Enter 用户名 · Alt+1 网址 · Alt+2 密码 · Alt+3 删除 · Alt+4 查看 · Alt+5 置顶 · Alt+6 编辑）"
               : "搜索应用、文件、剪贴板…（pw 进账号库 · Esc 关闭）"
           }
           spellCheck={false}

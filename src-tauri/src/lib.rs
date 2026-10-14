@@ -90,6 +90,31 @@ fn vault_action(state: tauri::State<AppState>, id: i64, action: String) -> Resul
     state.engine.vault_action(id, &action, secs)
 }
 
+/// 取单条账号完整记录（编辑预填；含解密后的密码明文）
+#[tauri::command]
+fn vault_get(
+    state: tauri::State<AppState>,
+    id: i64,
+) -> Result<(String, String, String, String, String, i64), String> {
+    state.engine.vault_get(id)
+}
+
+#[tauri::command]
+fn vault_update(
+    state: tauri::State<AppState>,
+    id: i64,
+    title: String,
+    username: String,
+    password: String,
+    url: String,
+    notes: String,
+    pinned: i64,
+) -> Result<(), String> {
+    state
+        .engine
+        .vault_update(id, &title, &username, &password, &url, &notes, pinned)
+}
+
 // ---------- 应用设置 ----------
 
 #[derive(serde::Serialize)]
@@ -390,6 +415,8 @@ pub fn run() {
             vault_search,
             vault_add,
             vault_action,
+            vault_get,
+            vault_update,
             vault_parse,
             vault_import,
             get_app_settings,

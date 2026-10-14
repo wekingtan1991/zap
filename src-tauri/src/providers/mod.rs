@@ -189,6 +189,28 @@ impl SearchEngine {
         vault::action(&conn, id, action, pwd_clear_secs)
     }
 
+    pub fn vault_get(
+        &self,
+        id: i64,
+    ) -> Result<(String, String, String, String, String, i64), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        vault::get(&conn, id)
+    }
+
+    pub fn vault_update(
+        &self,
+        id: i64,
+        title: &str,
+        username: &str,
+        password: &str,
+        url: &str,
+        notes: &str,
+        pinned: i64,
+    ) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        vault::update(&conn, id, title, username, password, url, notes, pinned)
+    }
+
     pub fn vault_import(
         &self,
         entries: Vec<vault::ParsedAccount>,
