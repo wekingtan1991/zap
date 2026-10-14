@@ -1,0 +1,57 @@
+[package]
+name = "zap"
+version = "0.1.0"
+description = "Zap - 闪电般的个人效率统一入口：启动器 / 剪贴板历史 / 账号库"
+authors = ["you"]
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "zap_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+urlencoding = "2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+clipboard-master = "4.0.0"
+arboard = "3.6.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "default-tls"] }
+base64 = "0.23.1"
+pinyin = "0.11.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Com", "Win32_System_DataExchange", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }
+png = "0.17"
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+# 磁盘瘦身：行号级调试信息足够日常排错；依赖不生成调试信息（MSVC 下 PDB 是体积大头）
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = false
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+

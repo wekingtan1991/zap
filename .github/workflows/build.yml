@@ -1,0 +1,47 @@
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Build (tauri-action)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "zap v__VERSION__"
+          releaseBody: |
+            自动构建的 Windows 安装包（NSIS）。
+
+            > ⚠️ 安装包未签名：首次运行时 SmartScreen 可能提示「Windows 已保护你的电脑」，
+            > 点「更多信息 → 仍要运行」即可。介意者可自行核对源码构建后安装。
+          releaseDraft: true
+          prerelease: false
