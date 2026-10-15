@@ -40,3 +40,8 @@ src-tauri/target/
 
 # 诊断日志（保险）
 capture.log
+
+# IDE / 工具本地数据
+.codebuddy/
+.claude/
+*.tsbuildinfo

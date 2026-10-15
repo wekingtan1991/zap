@@ -2,8 +2,12 @@
 name = "zap"
 version = "0.1.0"
 description = "Zap - 闪电般的个人效率统一入口：启动器 / 剪贴板历史 / 账号库"
-authors = ["you"]
+authors = ["wekingtan <21351378+wekingtan1991@users.noreply.github.com>"]
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/wekingtan1991/zap"
+homepage = "https://github.com/wekingtan1991/zap"
+readme = "../README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
