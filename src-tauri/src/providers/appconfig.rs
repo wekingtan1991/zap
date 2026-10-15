@@ -6,11 +6,14 @@ pub const DEFAULT_HOTKEY: &str = "ctrl+alt+space";
 pub const DEFAULT_CLIP_MAX: i64 = 500;
 /// 密码复制后自动清空剪贴板的秒数，0 = 不清空
 pub const DEFAULT_PWD_CLEAR_SECS: i64 = 45;
+/// Everything 未运行时是否自动拉起（不自动下载安装）
+pub const DEFAULT_EVERYTHING_AUTOSTART: bool = true;
 
 pub const KEY_HOTKEY: &str = "hotkey";
 pub const KEY_CLIP_ENABLED: &str = "clip_enabled";
 pub const KEY_CLIP_MAX: &str = "clip_max";
 pub const KEY_PWD_CLEAR_SECS: &str = "pwd_clear_secs";
+pub const KEY_EVERYTHING_AUTOSTART: &str = "everything_autostart";
 
 pub fn init_table(conn: &Connection) {
     let _ = conn.execute_batch(
