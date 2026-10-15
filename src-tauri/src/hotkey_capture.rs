@@ -2,13 +2,13 @@
 //! 本进程钩子不投递的问题）。轮询粒度 15ms，对热键录制足够。前台不在面板时丢弃采集。
 //! 诊断日志：%APPDATA%\com.ais.zap\capture.log
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tauri::{Emitter, Manager};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, GetForegroundWindow};
 
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 static PENDING: Mutex<Option<String>> = Mutex::new(None);
@@ -21,7 +21,11 @@ fn log(msg: &str) {
         let path = std::path::Path::new(&base)
             .join("com.ais.zap")
             .join("capture.log");
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default();

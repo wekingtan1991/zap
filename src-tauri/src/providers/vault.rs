@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use super::SearchItem;
 
@@ -39,9 +39,7 @@ pub fn init_table(conn: &Connection) {
          );",
     );
     // 旧库迁移：补 pinned 列（已存在时报错可忽略）
-    let _ = conn.execute_batch(
-        "ALTER TABLE accounts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
-    );
+    let _ = conn.execute_batch("ALTER TABLE accounts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
 }
 
 fn now_ms() -> i64 {
@@ -55,9 +53,9 @@ fn now_ms() -> i64 {
 
 #[cfg(windows)]
 fn dpapi_encrypt(plain: &str) -> Result<String, String> {
-    use windows::core::PCWSTR;
     use windows::Win32::Foundation::{HLOCAL, LocalFree};
-    use windows::Win32::Security::Cryptography::{CryptProtectData, CRYPT_INTEGER_BLOB};
+    use windows::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CryptProtectData};
+    use windows::core::PCWSTR;
 
     let plain_bytes = plain.as_bytes();
     let blob_in = CRYPT_INTEGER_BLOB {
@@ -87,9 +85,8 @@ fn dpapi_encrypt(plain: &str) -> Result<String, String> {
         .map_err(|e| format!("DPAPI 加密失败: {e}"))?;
         blob_out
     };
-    let encoded = base64::engine::general_purpose::STANDARD.encode(unsafe {
-        std::slice::from_raw_parts(out.pbData, out.cbData as usize)
-    });
+    let encoded = base64::engine::general_purpose::STANDARD
+        .encode(unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize) });
     unsafe {
         let _ = LocalFree(Some(HLOCAL(out.pbData as *mut _)));
     }
@@ -99,7 +96,7 @@ fn dpapi_encrypt(plain: &str) -> Result<String, String> {
 #[cfg(windows)]
 fn dpapi_decrypt(encoded: &str) -> Result<String, String> {
     use windows::Win32::Foundation::{HLOCAL, LocalFree};
-    use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
+    use windows::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CryptUnprotectData};
 
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
@@ -117,18 +114,8 @@ fn dpapi_decrypt(encoded: &str) -> Result<String, String> {
             cbData: 0,
             pbData: std::ptr::null_mut(),
         };
-        unsafe {
-            CryptUnprotectData(
-                &blob_in,
-                None,
-                Some(&entropy),
-                None,
-                None,
-                0,
-                &mut blob_out,
-            )
-        }
-        .map_err(|e| format!("DPAPI 解密失败: {e}"))?;
+        unsafe { CryptUnprotectData(&blob_in, None, Some(&entropy), None, None, 0, &mut blob_out) }
+            .map_err(|e| format!("DPAPI 解密失败: {e}"))?;
         blob_out
     };
     let plain = String::from_utf8_lossy(unsafe {
@@ -167,10 +154,10 @@ fn schedule_clear(password: String, secs: i64) {
     }
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(secs as u64));
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            if cb.get_text().map(|t| t == password).unwrap_or(false) {
-                let _ = cb.clear();
-            }
+        if let Ok(mut cb) = arboard::Clipboard::new()
+            && cb.get_text().map(|t| t == password).unwrap_or(false)
+        {
+            let _ = cb.clear();
         }
     });
 }
@@ -264,7 +251,12 @@ pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
 }
 
 /// 动作分发。复制动作统一抑制剪贴板历史；密码只在显式查看时返回明文。
-pub fn action(conn: &Connection, id: i64, action: &str, pwd_clear_secs: i64) -> Result<String, String> {
+pub fn action(
+    conn: &Connection,
+    id: i64,
+    action: &str,
+    pwd_clear_secs: i64,
+) -> Result<String, String> {
     // 复制类操作同时刷新「最近使用」排序（未置顶条目自然前移）
     let bump = |conn: &Connection| {
         let _ = conn.execute(
@@ -340,7 +332,11 @@ pub fn action(conn: &Connection, id: i64, action: &str, pwd_clear_secs: i64) -> 
                 params![next, id],
             )
             .map_err(|e| e.to_string())?;
-            Ok(if next == 1 { "已置顶".into() } else { "已取消置顶".into() })
+            Ok(if next == 1 {
+                "已置顶".into()
+            } else {
+                "已取消置顶".into()
+            })
         }
         "delete" => {
             conn.execute("DELETE FROM accounts WHERE id=?1", params![id])
@@ -352,7 +348,10 @@ pub fn action(conn: &Connection, id: i64, action: &str, pwd_clear_secs: i64) -> 
 }
 
 /// 取单条完整记录（编辑预填用，含解密后的密码明文）
-pub fn get(conn: &Connection, id: i64) -> Result<(String, String, String, String, String, i64), String> {
+pub fn get(
+    conn: &Connection,
+    id: i64,
+) -> Result<(String, String, String, String, String, i64), String> {
     let row = conn
         .query_row(
             "SELECT title, username, password_enc, url, notes, pinned FROM accounts WHERE id=?1",
@@ -374,6 +373,8 @@ pub fn get(conn: &Connection, id: i64) -> Result<(String, String, String, String
 }
 
 /// 更新条目：密码字段留空 = 保持不变（其余字段照常覆盖）
+// 账号字段一字排开：调用处按名传参比塞结构体更直观，故显式放行参数个数提示
+#[allow(clippy::too_many_arguments)]
 pub fn update(
     conn: &Connection,
     id: i64,
@@ -412,19 +413,27 @@ pub fn update(
 // ---------- 智能导入：文本解析 ----------
 
 const LABEL_USER: &[&str] = &[
-    "账号", "用户名", "用户", "登录名", "账号名", "user", "username", "account", "login",
+    "账号",
+    "用户名",
+    "用户",
+    "登录名",
+    "账号名",
+    "user",
+    "username",
+    "account",
+    "login",
 ];
 const LABEL_PASS: &[&str] = &["密码", "口令", "password", "pwd", "pass"];
 const LABEL_URL: &[&str] = &["接入地址", "地址", "链接", "网址", "url", "site", "link"];
 
 fn label_field(line_lower: &str) -> Option<&'static str> {
-    if LABEL_URL.iter().any(|k| line_lower == *k) {
+    if LABEL_URL.contains(&line_lower) {
         return Some("url");
     }
-    if LABEL_USER.iter().any(|k| line_lower == *k) {
+    if LABEL_USER.contains(&line_lower) {
         return Some("user");
     }
-    if LABEL_PASS.iter().any(|k| line_lower == *k) {
+    if LABEL_PASS.contains(&line_lower) {
         return Some("pass");
     }
     None
@@ -468,7 +477,9 @@ fn as_url(line: &str) -> Option<String> {
     let host = line.split(['/', ':']).next().unwrap_or("");
     let looks_domain = host.contains('.') && host.chars().any(|c| c.is_ascii_alphabetic());
     let looks_ip = host.split('.').count() == 4
-        && host.split('.').all(|p| !p.is_empty() && p.parse::<u8>().is_ok());
+        && host
+            .split('.')
+            .all(|p| !p.is_empty() && p.parse::<u8>().is_ok());
     if has_scheme {
         Some(line.to_string())
     } else if looks_domain || (looks_ip && line.contains(':')) {
@@ -489,9 +500,7 @@ fn as_slash_pair(line: &str) -> Option<(String, String)> {
 }
 
 fn is_phone(line: &str) -> bool {
-    line.len() == 11
-        && line.starts_with('1')
-        && line.chars().all(|c| c.is_ascii_digit())
+    line.len() == 11 && line.starts_with('1') && line.chars().all(|c| c.is_ascii_digit())
 }
 
 fn apply_field(e: &mut ParsedAccount, field: &str, val: &str) {
@@ -508,10 +517,8 @@ fn apply_field(e: &mut ParsedAccount, field: &str, val: &str) {
                 e.password = val.to_string();
             }
         }
-        "url" => {
-            if e.url.is_empty() {
-                e.url = ensure_scheme(val);
-            }
+        "url" if e.url.is_empty() => {
+            e.url = ensure_scheme(val);
         }
         _ => {}
     }
@@ -523,7 +530,11 @@ fn has_any_cred(e: &ParsedAccount) -> bool {
 
 /// 多格式启发式解析。识别不了的细节交给可编辑预览修正。
 pub fn parse_blob(text: &str) -> Vec<ParsedAccount> {
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     let mut out: Vec<ParsedAccount> = Vec::new();
     let mut cur = ParsedAccount::default();
 
@@ -550,7 +561,9 @@ pub fn parse_blob(text: &str) -> Vec<ParsedAccount> {
         // 2. 独立标签行（值在下一行），如"接入地址\nhttps://…"
         if let Some(field) = label_field(&line.to_lowercase()) {
             match lines.get(i + 1) {
-                Some(next) if split_kv(next).is_none() && label_field(&next.to_lowercase()).is_none() => {
+                Some(next)
+                    if split_kv(next).is_none() && label_field(&next.to_lowercase()).is_none() =>
+                {
                     apply_field(&mut cur, field, next);
                     i += 2;
                 }
@@ -592,7 +605,7 @@ pub fn parse_blob(text: &str) -> Vec<ParsedAccount> {
             i += 1;
             continue;
         }
-        let has_cjk = line.chars().any(|c| !c.is_ascii());
+        let has_cjk = !line.is_ascii();
         if has_cjk {
             push_cur(&mut cur, &mut out);
             cur.title = line.trim_end_matches(['：', ':']).to_string();
@@ -625,7 +638,11 @@ pub fn import(conn: &Connection, entries: Vec<ParsedAccount>) -> Result<usize, S
         if title.is_empty() && e.username.is_empty() && e.password.is_empty() {
             continue;
         }
-        let title = if title.is_empty() { e.username.clone() } else { e.title.trim().to_string() };
+        let title = if title.is_empty() {
+            e.username.clone()
+        } else {
+            e.title.trim().to_string()
+        };
         add(conn, &title, &e.username, &e.password, &e.url, "")?;
         n += 1;
     }
@@ -747,11 +764,15 @@ mod crud_tests {
         let conn = mem_db();
         add(&conn, "A", "u1", "p1", "", "").unwrap();
         let before: i64 = conn
-            .query_row("SELECT updated_at FROM accounts WHERE id=1", [], |r| r.get(0))
+            .query_row("SELECT updated_at FROM accounts WHERE id=1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         action(&conn, 1, "username", 0).unwrap();
         let after: i64 = conn
-            .query_row("SELECT updated_at FROM accounts WHERE id=1", [], |r| r.get(0))
+            .query_row("SELECT updated_at FROM accounts WHERE id=1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert!(after >= before, "复制后应刷新 updated_at");
     }

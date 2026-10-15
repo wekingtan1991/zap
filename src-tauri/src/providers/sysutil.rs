@@ -4,8 +4,7 @@ use std::path::Path;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 

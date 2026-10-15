@@ -1,6 +1,6 @@
 //! 应用自身设置：zap.db 里的键值表。启动时读默认值，保存后即时生效。
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 pub const DEFAULT_HOTKEY: &str = "ctrl+alt+space";
 pub const DEFAULT_CLIP_MAX: i64 = 500;

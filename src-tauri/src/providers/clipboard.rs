@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clipboard_master::{CallbackResult, ClipboardHandler, Master};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use windows::Win32::System::DataExchange::GetClipboardOwner;
 
 use super::SearchItem;
@@ -122,8 +122,8 @@ fn is_from_password_manager() -> bool {
         if owner.is_invalid() {
             return false;
         }
-        let Some(path) = super::sysutil::hwnd_pid(owner)
-            .and_then(super::sysutil::process_path_of_pid)
+        let Some(path) =
+            super::sysutil::hwnd_pid(owner).and_then(super::sysutil::process_path_of_pid)
         else {
             return false;
         };
@@ -141,9 +141,7 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
     ) else {
         return Vec::new();
     };
-    let Ok(rows) = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-    }) else {
+    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) else {
         return Vec::new();
     };
     let rows: Vec<(String, i64)> = rows.flatten().collect();
@@ -185,7 +183,11 @@ fn build_item(content: String, created_at: i64, now: i64, index: usize) -> Searc
     };
     let extra_lines = content.lines().count().saturating_sub(1);
     let subtitle = if extra_lines > 0 {
-        format!("剪贴板 · {} · 还有 {} 行", ago(created_at, now), extra_lines)
+        format!(
+            "剪贴板 · {} · 还有 {} 行",
+            ago(created_at, now),
+            extra_lines
+        )
     } else {
         format!("剪贴板 · {}", ago(created_at, now))
     };

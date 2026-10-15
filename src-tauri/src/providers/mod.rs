@@ -44,17 +44,17 @@ pub(crate) fn score_match(haystack: &str, query: &str) -> Option<f32> {
         return Some(s);
     }
     // 纯 ASCII 文本没有拼音形态
-    if hay.chars().all(|c| c.is_ascii()) {
+    if hay.is_ascii() {
         return None;
     }
     let (full, initials) = pinyin_forms(haystack);
     if let Some(s) = score_plain(&full, &q) {
         return Some(s * 0.85);
     }
-    if !initials.is_empty() {
-        if let Some(s) = score_plain(&initials, &q) {
-            return Some(s * 0.7);
-        }
+    if !initials.is_empty()
+        && let Some(s) = score_plain(&initials, &q)
+    {
+        return Some(s * 0.7);
     }
     None
 }
@@ -79,7 +79,7 @@ fn score_plain(hay_lower: &str, q_lower: &str) -> Option<f32> {
             qi += 1;
         }
     }
-    (qi == qchars.len()).then(|| 50.0 - gaps as f32)
+    (qi == qchars.len()).then_some(50.0 - gaps as f32)
 }
 
 /// 生成拼音形态：全拼（非中文字符保留小写原样，跳过空白）+ 首字母串
@@ -103,28 +103,6 @@ fn pinyin_forms(s: &str) -> (String, String) {
         }
     }
     (full, initials)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::score_match;
-
-    #[test]
-    fn 拼音全拼与首字母() {
-        assert!(score_match("设置 settings", "shezhi").is_some());
-        assert!(score_match("设置 settings", "sz").is_some());
-        assert!(score_match("代理 proxy", "daili").is_some());
-        assert!(score_match("代理 proxy", "dl").is_some());
-        assert!(score_match("微信", "weixin").is_some());
-        assert!(score_match("微信", "wx").is_some());
-    }
-
-    #[test]
-    fn 英文与中文直连不受影响() {
-        assert_eq!(score_match("Display", "display"), Some(100.0));
-        assert!(score_match("显示", "显示").unwrap() >= 100.0);
-        assert_eq!(score_match("显示", "不匹配"), None);
-    }
 }
 
 pub struct SearchEngine {
@@ -197,6 +175,8 @@ impl SearchEngine {
         vault::get(&conn, id)
     }
 
+    // 账号字段一字排开（同 vault::update 的理由），显式放行参数个数提示
+    #[allow(clippy::too_many_arguments)]
     pub fn vault_update(
         &self,
         id: i64,
@@ -211,10 +191,7 @@ impl SearchEngine {
         vault::update(&conn, id, title, username, password, url, notes, pinned)
     }
 
-    pub fn vault_import(
-        &self,
-        entries: Vec<vault::ParsedAccount>,
-    ) -> Result<usize, String> {
+    pub fn vault_import(&self, entries: Vec<vault::ParsedAccount>) -> Result<usize, String> {
         let conn = self.clip.lock().expect("clip db poisoned");
         vault::import(&conn, entries)
     }
@@ -234,5 +211,27 @@ impl SearchEngine {
         items.extend(settings::search(q, 8));
         items.extend(web::fallback(q));
         items
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::score_match;
+
+    #[test]
+    fn 拼音全拼与首字母() {
+        assert!(score_match("设置 settings", "shezhi").is_some());
+        assert!(score_match("设置 settings", "sz").is_some());
+        assert!(score_match("代理 proxy", "daili").is_some());
+        assert!(score_match("代理 proxy", "dl").is_some());
+        assert!(score_match("微信", "weixin").is_some());
+        assert!(score_match("微信", "wx").is_some());
+    }
+
+    #[test]
+    fn 英文与中文直连不受影响() {
+        assert_eq!(score_match("Display", "display"), Some(100.0));
+        assert!(score_match("显示", "显示").unwrap() >= 100.0);
+        assert_eq!(score_match("显示", "不匹配"), None);
     }
 }

@@ -40,7 +40,7 @@ pub fn scan() -> Vec<RecentEntry> {
             }
         })
         .collect();
-    entries.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.mtime));
     entries
 }
 
