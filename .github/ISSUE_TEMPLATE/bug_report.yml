@@ -1,0 +1,50 @@
+name: 缺陷报告
+description: 报告一个可复现的问题
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请确认已用最新版本复现。涉及安全问题请勿走此模板，参见 [SECURITY.md](../SECURITY.md)。
+  - type: input
+    id: version
+    attributes:
+      label: zap 版本
+      description: 设置页或 src-tauri/tauri.conf.json 中的 version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本
+      placeholder: "Windows 11 23H2"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 呼出面板（Ctrl+Alt+Space）
+        2. 输入 …
+        3. 点击 …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图、终端日志（注意抹掉个人路径与账号信息）
