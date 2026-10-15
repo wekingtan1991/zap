@@ -1,28 +1,22 @@
-:root {
-  font-family: system-ui, "Microsoft YaHei", "PingFang SC", sans-serif;
-  font-size: 14px;
-  color-scheme: dark;
-}
-
-html,
-body,
-#root {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  background: transparent;
-  overflow: hidden;
-  user-select: none;
-}
+/* ============================================================
+   布局与主题类（组件级样式交给 shadcn/ui + Tailwind 工具类）
+   注意：未包层的规则优先级高于 Tailwind 的 utilities，
+   因此这里只写"布局/结构"属性，不再写会被组件样式冲突的外观属性。
+   ============================================================ */
 
 .zap-panel {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: rgba(24, 26, 31, 0.97);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
+  background: #181a1f;
+  /* 直角 + 不透明：四个角不再透出桌面背景 */
+  border: none;
+  border-radius: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
   overflow: hidden;
+  transition:
+    border-color 0.28s ease,
+    box-shadow 0.28s ease;
 }
 
 .zap-input-row {
@@ -32,21 +26,26 @@ body,
   padding: 14px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
+  transition: border-color 0.28s ease;
 }
 
 .zap-logo {
   font-size: 18px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
 }
 
 .zap-input-row input {
   flex: 1;
+  min-width: 0;
   background: transparent;
   border: none;
   outline: none;
   color: #e8eaed;
   font-size: 15px;
   font-family: inherit;
+  caret-color: #f59e0b;
 }
 
 .zap-input-row input::placeholder {
@@ -59,25 +58,62 @@ body,
   padding: 6px;
 }
 
+/* ---------- 结果行：高亮过渡 + 左侧指示条 + 按压反馈 ---------- */
 .zap-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 9px 10px;
   border-radius: 8px;
   cursor: pointer;
+  transition:
+    background-color 0.14s ease,
+    transform 0.14s ease;
+}
+
+.zap-item::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  border-radius: 2px;
+  background: #f59e0b;
+  transform: translateY(-50%);
+  transition: height 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .zap-item.active {
   background: rgba(255, 255, 255, 0.09);
 }
 
-.zap-badge {
+.zap-item.active::before {
+  height: 58%;
+}
+
+.zap-item.active .zap-title {
+  color: #ffffff;
+}
+
+.zap-item:active {
+  transform: scale(0.985);
+}
+
+/* 行尾置顶按钮：常态低调，悬停整行时点亮 */
+.zap-row-pin {
+  opacity: 0.5;
   flex-shrink: 0;
-  font-size: 11px;
-  padding: 2px 7px;
-  border-radius: 5px;
-  line-height: 1.4;
+  transition:
+    opacity 0.15s ease,
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.zap-item:hover .zap-row-pin,
+.zap-item.active .zap-row-pin {
+  opacity: 1;
 }
 
 .zap-ico {
@@ -88,49 +124,11 @@ body,
   object-fit: contain;
 }
 
-.badge-app {
-  background: rgba(82, 196, 26, 0.16);
-  color: #7ed957;
-}
-
-.badge-clip {
-  background: rgba(168, 85, 247, 0.18);
-  color: #c084fc;
-}
-
-.badge-win {
-  background: rgba(34, 211, 238, 0.16);
-  color: #67e8f9;
-}
-
-.badge-recent {
-  background: rgba(251, 146, 60, 0.16);
-  color: #fdba74;
-}
-
-.badge-file {
-  background: rgba(20, 184, 166, 0.16);
-  color: #2dd4bf;
-}
-
-.badge-cmd {
-  background: rgba(99, 102, 241, 0.18);
-  color: #a5b4fc;
-}
-
-.badge-settings {
-  background: rgba(244, 114, 182, 0.16);
-  color: #f9a8d4;
-}
-
-.badge-vault {
-  background: rgba(245, 158, 11, 0.16);
-  color: #fbbf24;
-}
-
-/* 保护域：警示色边框 + 标签 */
+/* 保护域：警示色描边 */
 .zap-panel.vault {
-  border-color: rgba(245, 158, 11, 0.55);
+  box-shadow:
+    inset 0 0 0 1px rgba(245, 158, 11, 0.5),
+    inset 0 0 22px rgba(245, 158, 11, 0.05);
 }
 
 .zap-panel.vault .zap-input-row {
@@ -142,41 +140,24 @@ body,
   font-size: 12px;
   white-space: nowrap;
   flex-shrink: 0;
+  animation: fade-in 0.18s ease-out both;
 }
 
-/* 新增账号表单 */
+/* ---------- 表单 / 导入 / 详情 通用骨架 ---------- */
 .zap-form {
   display: flex;
   flex-direction: column;
   gap: 9px;
   padding: 14px 16px;
   overflow-y: auto;
+  animation: slide-up 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.zap-form label {
-  color: #8a8f98;
-  font-size: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.zap-form input,
-.zap-form textarea {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  color: #e8eaed;
-  padding: 7px 9px;
-  font-size: 13px;
-  outline: none;
-  font-family: inherit;
-  resize: none;
-}
-
-.zap-form input:focus,
-.zap-form textarea:focus {
-  border-color: rgba(245, 158, 11, 0.5);
+/* 表单字段说明（如标题用途提示） */
+.zap-form-hint {
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .zap-form-actions {
@@ -185,35 +166,22 @@ body,
   margin-top: 4px;
 }
 
-.zap-form-actions button {
+.zap-form-actions > * {
   flex: 1;
-  padding: 8px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.08);
-  color: #e8eaed;
-  cursor: pointer;
-  font-size: 13px;
 }
 
-.zap-form-actions button.primary {
-  background: rgba(245, 158, 11, 0.25);
-  border-color: rgba(245, 158, 11, 0.4);
+.zap-pass-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
 }
 
-.zap-link-btn {
-  background: none;
-  border: none;
-  color: #8a8f98;
-  cursor: pointer;
-  font-size: 12px;
-  margin-left: auto;
+.zap-pass-row > *:first-child {
+  flex: 1;
+  min-width: 0;
 }
 
-.zap-link-btn:hover {
-  color: #e8eaed;
-}
-
+/* 智能导入预览行 */
 .zap-import-row {
   display: flex;
   flex-direction: column;
@@ -227,28 +195,60 @@ body,
   gap: 6px;
 }
 
-.zap-import-grid input {
+.zap-import-grid > * {
   flex: 1;
   min-width: 0;
 }
 
-.badge-info {
-  background: rgba(148, 163, 184, 0.16);
-  color: #cbd5e1;
+/* ---------- 账号详情：标题 + 逐行字段 + 行尾一键复制 ---------- */
+.zap-detail-title {
+  color: #fbbf24;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 2px 0 4px;
+  word-break: break-all;
 }
 
-.badge-web {
-  background: rgba(59, 130, 246, 0.16);
-  color: #7ab3ff;
+.zap-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.badge-url {
-  background: rgba(250, 204, 21, 0.16);
-  color: #ffd84d;
+.zap-detail-label {
+  width: 48px;
+  flex-shrink: 0;
+  color: #8a8f98;
+  font-size: 12px;
 }
 
+.zap-detail-value {
+  flex: 1;
+  min-width: 0;
+  color: #e8eaed;
+  font-size: 13px;
+  word-break: break-all;
+  user-select: text;
+}
+
+.zap-detail-mask {
+  color: #fbbf24;
+  letter-spacing: 2px;
+}
+
+.zap-detail-ops {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* ---------- 列表文本 ---------- */
 .zap-texts {
   min-width: 0;
+  flex: 1;
 }
 
 .zap-title {
@@ -257,6 +257,7 @@ body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: color 0.14s ease;
 }
 
 .zap-sub {
@@ -268,72 +269,7 @@ body,
   margin-top: 1px;
 }
 
-.zap-results::-webkit-scrollbar {
-  width: 8px;
-}
-
-.zap-results::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 4px;
-}
-
-/* ---------- 设置 ---------- */
-
-.zap-gear {
-  background: none;
-  border: none;
-  color: rgba(255, 255, 255, 0.4);
-  cursor: pointer;
-  padding: 5px;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.zap-gear:hover {
-  color: rgba(255, 255, 255, 0.9);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.zap-gear svg {
-  width: 15px;
-  height: 15px;
-}
-
-.zap-form select {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  color: #e8eaed;
-  padding: 7px 9px;
-  font-size: 13px;
-  outline: none;
-  font-family: inherit;
-}
-
-.zap-form select:focus {
-  border-color: rgba(245, 158, 11, 0.5);
-}
-
-.zap-form select:disabled {
-  opacity: 0.4;
-}
-
-.zap-set-check {
-  flex-direction: row !important;
-  align-items: center;
-  gap: 8px !important;
-  font-size: 13px !important;
-  color: #e8eaed !important;
-}
-
-.zap-set-check input[type="checkbox"] {
-  width: 15px;
-  height: 15px;
-  accent-color: #f59e0b;
-}
-
+/* ---------- 设置 / 反馈 ---------- */
 .zap-hk {
   cursor: pointer;
   user-select: none;
@@ -341,7 +277,7 @@ body,
 
 .zap-hk-rec {
   border-color: rgba(245, 158, 11, 0.8) !important;
-  color: #fbbf24;
+  color: #fbbf24 !important;
 }
 
 .zap-hk-err {
@@ -356,17 +292,7 @@ body,
   text-align: right;
 }
 
-/* 账号库：密码行（输入 + 生成按钮）与明文查看 */
-.zap-pass-row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.zap-pass-row input {
-  flex: 1;
-}
-
+/* 查看密码浮层 */
 .zap-pw-reveal {
   font-family: Consolas, "Courier New", monospace;
   font-size: 15px;
