@@ -1,12 +1,12 @@
 //! 窗口切换器：枚举可见顶级窗口，搜索后置前
 
-use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM};
-use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
-    GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+    EnumWindows, GWL_EXSTYLE, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
+    IsWindowVisible, WS_EX_TOOLWINDOW,
 };
+use windows::core::BOOL;
 
 use super::SearchItem;
 
@@ -55,9 +55,9 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         if pid == Some(std::process::id()) {
             return true.into();
         }
-        let process =
-            pid.and_then(super::sysutil::process_stem_of_pid)
-                .unwrap_or_default();
+        let process = pid
+            .and_then(super::sysutil::process_stem_of_pid)
+            .unwrap_or_default();
         out.push(WinEntry {
             hwnd: hwnd.0 as isize,
             title,
@@ -105,7 +105,7 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
 /// 把窗口拉到前台（最小化则先还原）。热键触发时系统会授予前台切换权限。
 pub fn activate(hwnd_val: isize) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{
-        IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
     };
     let hwnd = HWND(hwnd_val as *mut core::ffi::c_void);
     unsafe {

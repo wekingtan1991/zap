@@ -68,9 +68,7 @@ fn port_candidates() -> Vec<u16> {
 
 fn managed_ini_path() -> std::path::PathBuf {
     std::env::var("LOCALAPPDATA")
-        .map(|base| {
-            std::path::PathBuf::from(base).join(r"zap\everything\Everything.ini")
-        })
+        .map(|base| std::path::PathBuf::from(base).join(r"zap\everything\Everything.ini"))
         .unwrap_or_else(|_| std::path::PathBuf::from(r"zap\everything\Everything.ini"))
 }
 

@@ -210,15 +210,17 @@ fn wide(s: &str) -> Vec<u16> {
 /// （如 Windows 计算器）。target 存 `shell:AppsFolder\<AUMID>`，打开时经 explorer。
 fn scan_uwp(cache: Option<&Path>, out: &mut Vec<AppEntry>) {
     use std::iter::once;
-    use windows::core::PCWSTR;
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::DeleteObject;
-    use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_APARTMENTTHREADED, IBindCtx};
+    use windows::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, IBindCtx,
+    };
     use windows::Win32::UI::Shell::{
         BHID_EnumItems, IEnumShellItems, IShellItem, IShellItemImageFactory,
-        SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIGDN_DESKTOPABSOLUTEPARSING,
-        SIGDN_NORMALDISPLAY,
+        SHCreateItemFromParsingName, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY,
+        SIIGBF_BIGGERSIZEOK,
     };
+    use windows::core::PCWSTR;
 
     /// GetDisplayName 返回的 PWSTR → String 并释放 COM 内存
     fn pw_take(pw: windows::core::PWSTR) -> String {
@@ -246,11 +248,10 @@ fn scan_uwp(cache: Option<&Path>, out: &mut Vec<AppEntry>) {
             eprintln!("zap: shell:AppsFolder 打开失败，UWP 应用未收录");
             return;
         };
-        let Some(items) = folder.BindToHandler::<Option<&IBindCtx>, IEnumShellItems>(
-            None,
-            &BHID_EnumItems,
-        )
-        .ok() else {
+        let Some(items) = folder
+            .BindToHandler::<Option<&IBindCtx>, IEnumShellItems>(None, &BHID_EnumItems)
+            .ok()
+        else {
             eprintln!("zap: shell:AppsFolder 枚举失败");
             return;
         };
@@ -292,14 +293,16 @@ fn scan_uwp(cache: Option<&Path>, out: &mut Vec<AppEntry>) {
                         let app_path: Vec<u16> =
                             target.encode_utf16().chain(std::iter::once(0)).collect();
                         // 直接向条目请求图像工厂接口
-                        let factory: IShellItemImageFactory =
-                            SHCreateItemFromParsingName(PCWSTR(app_path.as_ptr()), None::<&IBindCtx>)
-                                .ok()?;
+                        let factory: IShellItemImageFactory = SHCreateItemFromParsingName(
+                            PCWSTR(app_path.as_ptr()),
+                            None::<&IBindCtx>,
+                        )
+                        .ok()?;
                         let hbm = factory
                             .GetImage(SIZE { cx: 64, cy: 64 }, SIIGBF_BIGGERSIZEOK)
                             .ok()?;
-                        let png = bitmap_to_rgba(hbm)
-                            .and_then(|(w, h, buf)| bitmap_to_png(w, h, buf));
+                        let png =
+                            bitmap_to_rgba(hbm).and_then(|(w, h, buf)| bitmap_to_png(w, h, buf));
                         let _ = DeleteObject(hbm.into());
                         png
                     })()?;
@@ -321,10 +324,10 @@ fn scan_uwp(cache: Option<&Path>, out: &mut Vec<AppEntry>) {
 
 /// 从 .lnk 提取目标图标为 PNG（系统 32x32 大图标）；失败返回 None，前端退回角标
 fn extract_icon_png(lnk: &str) -> Option<Vec<u8>> {
-    use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
-    use windows::Win32::UI::Shell::{SHGFI_ICON, SHGFI_LARGEICON, SHFILEINFOW, SHGetFileInfoW};
+    use windows::Win32::UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGetFileInfoW};
     use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+    use windows::core::PCWSTR;
 
     let wide: Vec<u16> = wide(lnk);
     unsafe {
@@ -348,8 +351,8 @@ fn extract_icon_png(lnk: &str) -> Option<Vec<u8>> {
 /// HBITMAP → 32 位 RGBA 像素（自上而下）
 fn bitmap_to_rgba(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(u32, u32, Vec<u8>)> {
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, DeleteDC, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
+        GetDC, GetDIBits, GetObjectW, ReleaseDC,
     };
 
     unsafe {
@@ -382,12 +385,12 @@ fn bitmap_to_rgba(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(u32, u
                 DIB_RGB_COLORS,
             );
             if lines == h {
-                for px in buf.chunks_exact_mut(4) {
+                for px in buf.as_chunks_mut::<4>().0 {
                     px.swap(0, 2); // BGRA → RGBA
                 }
-                if buf.chunks_exact(4).all(|p| p[3] == 0) {
+                if buf.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
                     // 无 alpha 通道的旧式图标按不透明处理
-                    for px in buf.chunks_exact_mut(4) {
+                    for px in buf.as_chunks_mut::<4>().0 {
                         px[3] = 255;
                     }
                 }
@@ -414,7 +417,9 @@ fn bitmap_to_png(w: u32, h: u32, buf: Vec<u8>) -> Option<Vec<u8>> {
 }
 
 /// HICON → RGBA
-fn hicon_to_rgba(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) -> Option<(u32, u32, Vec<u8>)> {
+fn hicon_to_rgba(
+    hicon: windows::Win32::UI::WindowsAndMessaging::HICON,
+) -> Option<(u32, u32, Vec<u8>)> {
     use windows::Win32::Graphics::Gdi::DeleteObject;
     use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
 
@@ -497,7 +502,9 @@ mod tests {
         let idx2 = AppIndex::scan(Some(&cache));
         let warm = t1.elapsed();
         let cached = fs::read_dir(&cache).map(|rd| rd.count()).unwrap_or(0);
-        println!("图标提取 {with_icon}/{total} 条 · 冷提取 {cold:?} · 缓存重扫 {warm:?} · 缓存文件 {cached} 个");
+        println!(
+            "图标提取 {with_icon}/{total} 条 · 冷提取 {cold:?} · 缓存重扫 {warm:?} · 缓存文件 {cached} 个"
+        );
         assert!(total > 0, "开始菜单为空？");
         assert_eq!(total, idx2.stats().0);
         let _ = fs::remove_dir_all(&cache);

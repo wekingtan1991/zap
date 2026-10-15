@@ -14,7 +14,11 @@ use super::files;
 
 /// 依次尝试的官方版本地址（新版本发布后旧地址会 404，按新到旧探测）
 const VERSIONS: [&str; 5] = [
-    "1.4.1.1028", "1.4.1.1027", "1.4.1.1026", "1.4.1.1025", "1.4.1.1024",
+    "1.4.1.1028",
+    "1.4.1.1027",
+    "1.4.1.1026",
+    "1.4.1.1025",
+    "1.4.1.1024",
 ];
 
 fn install_dir() -> PathBuf {
@@ -79,7 +83,10 @@ fn extract(dest_dir: &Path) -> Result<(), String> {
         .output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
-        return Err(format!("解压失败: {}", String::from_utf8_lossy(&out.stderr)));
+        return Err(format!(
+            "解压失败: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
     }
     let _ = std::fs::remove_file(&zip);
     Ok(())

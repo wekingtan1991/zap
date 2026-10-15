@@ -1,8 +1,8 @@
 mod hotkey_capture;
 mod providers;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use providers::{SearchEngine, SearchItem};
@@ -99,6 +99,8 @@ fn vault_get(
     state.engine.vault_get(id)
 }
 
+// Tauri 命令按字段平铺（前端 invoke 传同名参数），显式放行参数个数提示
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn vault_update(
     state: tauri::State<AppState>,
@@ -196,15 +198,17 @@ fn save_settings(
 
     providers::clipboard::CLIP_ENABLED.store(clip_enabled, Ordering::Relaxed);
     providers::clipboard::RETENTION_LIMIT.store(clip_max, Ordering::Relaxed);
-    state
-        .engine
-        .set_setting(providers::appconfig::KEY_CLIP_ENABLED, if clip_enabled { "1" } else { "0" })?;
+    state.engine.set_setting(
+        providers::appconfig::KEY_CLIP_ENABLED,
+        if clip_enabled { "1" } else { "0" },
+    )?;
     state
         .engine
         .set_setting(providers::appconfig::KEY_CLIP_MAX, &clip_max.to_string())?;
-    state
-        .engine
-        .set_setting(providers::appconfig::KEY_PWD_CLEAR_SECS, &pwd_clear_secs.to_string())?;
+    state.engine.set_setting(
+        providers::appconfig::KEY_PWD_CLEAR_SECS,
+        &pwd_clear_secs.to_string(),
+    )?;
     if let Some(item) = state.clip_item.lock().expect("clip_item poisoned").as_ref() {
         let _ = item.set_checked(clip_enabled);
     }
@@ -249,10 +253,10 @@ fn vault_import(
 #[tauri::command]
 async fn everything_setup() -> Result<String, String> {
     // 整个流程（下载/解压/提权启动/等待）都在阻塞线程池
-    let r = tauri::async_runtime::spawn_blocking(providers::everything::setup)
+
+    tauri::async_runtime::spawn_blocking(providers::everything::setup)
         .await
-        .map_err(|e| e.to_string())?;
-    r
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -308,7 +312,7 @@ fn open_item(app: AppHandle, item: SearchItem) {
 /// 前台窗口的根窗口是否是本面板（WebView2 子窗口夺焦时 tao 会误报 Focused(false)）
 #[cfg(windows)]
 fn foreground_belongs_to_panel(window: &tauri::Window) -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, GetForegroundWindow};
     let Ok(ours) = window.hwnd() else {
         return false;
     };
@@ -331,18 +335,18 @@ fn toggle_panel(app: &AppHandle) {
         return;
     }
     // 显示时定位到光标所在显示器的正中央（窗口隐藏状态下移动不触发焦点事件）
-    if let Ok(pos) = app.cursor_position() {
-        if let Ok(Some(monitor)) = app.monitor_from_point(pos.x, pos.y) {
-            let mp = monitor.position();
-            let ms = monitor.size();
-            // 面板逻辑尺寸 × 该显示器缩放比 = 物理尺寸（否则高 DPI 下会偏右下）
-            let scale = monitor.scale_factor();
-            let pw = PANEL_WIDTH * scale;
-            let ph = PANEL_HEIGHT * scale;
-            let x = mp.x as f64 + (ms.width as f64 - pw) / 2.0;
-            let y = mp.y as f64 + (ms.height as f64 - ph) / 2.0;
-            let _ = win.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
-        }
+    if let Ok(pos) = app.cursor_position()
+        && let Ok(Some(monitor)) = app.monitor_from_point(pos.x, pos.y)
+    {
+        let mp = monitor.position();
+        let ms = monitor.size();
+        // 面板逻辑尺寸 × 该显示器缩放比 = 物理尺寸（否则高 DPI 下会偏右下）
+        let scale = monitor.scale_factor();
+        let pw = PANEL_WIDTH * scale;
+        let ph = PANEL_HEIGHT * scale;
+        let x = mp.x as f64 + (ms.width as f64 - pw) / 2.0;
+        let y = mp.y as f64 + (ms.height as f64 - ph) / 2.0;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
     }
     let _ = win.show();
     let _ = win.set_focus();
@@ -351,7 +355,9 @@ fn toggle_panel(app: &AppHandle) {
     let _ = win.emit("zap://shown", ());
     // 面板呼出即后台重建应用索引：新装/卸载的软件无需重启即可搜到（防并发叠加）
     let engine = state.engine.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || engine.refresh_apps());
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        engine.refresh_apps()
+    }));
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -369,12 +375,8 @@ pub fn run() {
                     // 热键可被用户改，按当前生效值匹配
                     if event.state() == ShortcutState::Pressed {
                         let state = app.state::<AppState>();
-                        let current: Option<Shortcut> = state
-                            .hotkey
-                            .lock()
-                            .expect("hotkey poisoned")
-                            .parse()
-                            .ok();
+                        let current: Option<Shortcut> =
+                            state.hotkey.lock().expect("hotkey poisoned").parse().ok();
                         if current.as_ref() == Some(shortcut) {
                             toggle_panel(app);
                         } else {
@@ -387,21 +389,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
             // 失焦即隐："毫无存在感"的核心；显示后 300ms 内的焦点抖动忽略
-            if let WindowEvent::Focused(false) = event {
-                if window.label() == WINDOW_LABEL {
-                    let state = window.app_handle().state::<AppState>();
-                    if state.hold_panel.load(std::sync::atomic::Ordering::Relaxed) {
-                        return; // 安装流程期间保持面板可见（UAC 会抢焦点）
-                    }
-                    let within_grace = state
-                        .shown_at
-                        .lock()
-                        .expect("shown_at poisoned")
-                        .is_some_and(|t| t.elapsed() < Duration::from_millis(300));
-                    let fg_in_panel = foreground_belongs_to_panel(window);
-                    if !within_grace && !fg_in_panel {
-                        let _ = window.hide();
-                    }
+            if let WindowEvent::Focused(false) = event
+                && window.label() == WINDOW_LABEL
+            {
+                let state = window.app_handle().state::<AppState>();
+                if state.hold_panel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return; // 安装流程期间保持面板可见（UAC 会抢焦点）
+                }
+                let within_grace = state
+                    .shown_at
+                    .lock()
+                    .expect("shown_at poisoned")
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(300));
+                let fg_in_panel = foreground_belongs_to_panel(window);
+                if !within_grace && !fg_in_panel {
+                    let _ = window.hide();
                 }
             }
         })
@@ -455,11 +457,11 @@ pub fn run() {
                 saved_hotkey.clone(),
                 providers::appconfig::DEFAULT_HOTKEY.to_string(),
             ] {
-                if let Ok(sc) = cand.parse::<Shortcut>() {
-                    if gs.register(sc).is_ok() {
-                        active_hotkey = Some(cand);
-                        break;
-                    }
+                if let Ok(sc) = cand.parse::<Shortcut>()
+                    && gs.register(sc).is_ok()
+                {
+                    active_hotkey = Some(cand);
+                    break;
                 }
             }
             let registered_ok = active_hotkey.is_some();
@@ -478,8 +480,7 @@ pub fn run() {
             });
 
             // 托盘：左键单击 = 呼出面板（满足"桌面点击一下"）
-            let show =
-                MenuItem::with_id(app, "show", "显示面板", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "显示面板", true, None::<&str>)?;
             let open_settings =
                 MenuItem::with_id(app, "open-settings", "设置…", true, None::<&str>)?;
             let clip_toggle = CheckMenuItem::with_id(
@@ -502,7 +503,15 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "退出 zap", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&show, &open_settings, &sep, &clip_toggle, &autostart_item, &sep, &quit],
+                &[
+                    &show,
+                    &open_settings,
+                    &sep,
+                    &clip_toggle,
+                    &autostart_item,
+                    &sep,
+                    &quit,
+                ],
             )?;
             *app.state::<AppState>()
                 .clip_item
