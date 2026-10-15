@@ -8,6 +8,7 @@
 //! - 提权批处理一次完成"杀旧 + 启新"，单次 UAC
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::files;
@@ -236,5 +237,47 @@ pub fn setup() -> Result<String, String> {
         Ok("running".into())
     } else {
         Ok("running_no_http".into())
+    }
+}
+
+// ---------- 自动检测 / 自动启动 ----------
+
+/// 自动启动尝试的节流：失败（含用户取消 UAC）后 5 分钟内不再弹窗骚扰
+static LAST_ATTEMPT: Mutex<Option<Instant>> = Mutex::new(None);
+const ENSURE_BACKOFF: Duration = Duration::from_secs(300);
+
+/// 自动检测并启动 Everything。返回状态串：
+/// - `running`：已在运行或本次启动成功
+/// - `not_installed`：未安装（不自动下载，保留面板里的手动入口让用户知情）
+/// - `backoff`：距上次失败不足 5 分钟，本轮跳过
+/// - `error`：本次启动失败
+pub fn ensure() -> String {
+    if files::probe() {
+        return "running".into();
+    }
+    if !exe_path().exists() {
+        return "not_installed".into();
+    }
+    let mut last = LAST_ATTEMPT.lock().expect("last_attempt poisoned");
+    if last.is_some_and(|t| t.elapsed() < ENSURE_BACKOFF) {
+        return "backoff".into();
+    }
+    *last = Some(Instant::now());
+    drop(last);
+
+    eprintln!("zap: everything 未运行，自动启动中…（UAC 请点“是”）");
+    match setup() {
+        Ok(s) if s == "running" => {
+            eprintln!("zap: everything 自动启动成功 ✓ 全盘文件搜索已就绪");
+            s
+        }
+        Ok(s) => {
+            eprintln!("zap: everything 已启动但 HTTP 服务未就绪（{s}）");
+            s
+        }
+        Err(e) => {
+            eprintln!("zap: everything 自动启动失败: {e}");
+            "error".into()
+        }
     }
 }

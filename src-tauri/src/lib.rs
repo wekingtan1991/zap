@@ -45,9 +45,19 @@ async fn search(
         .map_err(|e| e.to_string())
 }
 
+/// 隐藏面板并通知前端（zap://hidden）。
+/// 前端在**收起时**就清空搜索词，这样下次呼出天然是空状态——
+/// 若等到 show 之后才清，用户会先看到一帧旧内容再被擦掉（表现为"闪一下"）。
+fn hide_panel_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = win.hide();
+    }
+    let _ = app.emit("zap://hidden", ());
+}
+
 #[tauri::command]
-fn hide_panel(window: tauri::WebviewWindow) {
-    let _ = window.hide();
+fn hide_panel(app: AppHandle) {
+    hide_panel_window(&app);
 }
 
 #[tauri::command]
@@ -59,6 +69,23 @@ fn set_hold_panel(state: tauri::State<AppState>, hold: bool) {
 #[tauri::command]
 fn everything_status() -> String {
     providers::everything::status()
+}
+
+/// 自动检测并在需要时启动 Everything。按设置开关放行；已安装才启动，
+/// 未安装不自动下载（留给面板里的手动入口）；失败 5 分钟内不重复尝试。
+#[tauri::command]
+async fn everything_ensure(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let auto = state
+        .engine
+        .get_setting(providers::appconfig::KEY_EVERYTHING_AUTOSTART)
+        .map(|v| v != "0")
+        .unwrap_or(providers::appconfig::DEFAULT_EVERYTHING_AUTOSTART);
+    if !auto {
+        return Ok("disabled".into());
+    }
+    tauri::async_runtime::spawn_blocking(providers::everything::ensure)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -127,6 +154,7 @@ struct AppSettingsDto {
     clip_max: i64,
     pwd_clear_secs: i64,
     autostart: bool,
+    everything_autostart: bool,
 }
 
 #[tauri::command]
@@ -141,6 +169,11 @@ fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSetting
             .and_then(|v| v.parse().ok())
             .unwrap_or(providers::appconfig::DEFAULT_PWD_CLEAR_SECS),
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
+        everything_autostart: state
+            .engine
+            .get_setting(providers::appconfig::KEY_EVERYTHING_AUTOSTART)
+            .map(|v| v != "0")
+            .unwrap_or(providers::appconfig::DEFAULT_EVERYTHING_AUTOSTART),
     }
 }
 
@@ -159,6 +192,7 @@ fn save_settings(
     clip_enabled: bool,
     clip_max: i64,
     pwd_clear_secs: i64,
+    everything_autostart: bool,
 ) -> Result<SaveOutcome, String> {
     let hotkey = hotkey.trim().to_lowercase();
     let mut hotkey_error = None;
@@ -208,6 +242,10 @@ fn save_settings(
     state.engine.set_setting(
         providers::appconfig::KEY_PWD_CLEAR_SECS,
         &pwd_clear_secs.to_string(),
+    )?;
+    state.engine.set_setting(
+        providers::appconfig::KEY_EVERYTHING_AUTOSTART,
+        if everything_autostart { "1" } else { "0" },
     )?;
     if let Some(item) = state.clip_item.lock().expect("clip_item poisoned").as_ref() {
         let _ = item.set_checked(clip_enabled);
@@ -304,9 +342,7 @@ fn open_item(app: AppHandle, item: SearchItem) {
     if let Err(e) = result {
         eprintln!("zap: 打开失败: {e}");
     }
-    if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = win.hide();
-    }
+    hide_panel_window(&app);
 }
 
 /// 前台窗口的根窗口是否是本面板（WebView2 子窗口夺焦时 tao 会误报 Focused(false)）
@@ -331,7 +367,7 @@ fn toggle_panel(app: &AppHandle) {
         return;
     };
     if win.is_visible().unwrap_or(false) {
-        let _ = win.hide();
+        hide_panel_window(app);
         return;
     }
     // 显示时定位到光标所在显示器的正中央（窗口隐藏状态下移动不触发焦点事件）
@@ -403,7 +439,7 @@ pub fn run() {
                     .is_some_and(|t| t.elapsed() < Duration::from_millis(300));
                 let fg_in_panel = foreground_belongs_to_panel(window);
                 if !within_grace && !fg_in_panel {
-                    let _ = window.hide();
+                    hide_panel_window(window.app_handle());
                 }
             }
         })
@@ -412,6 +448,7 @@ pub fn run() {
             hide_panel,
             open_item,
             everything_status,
+            everything_ensure,
             everything_setup,
             set_hold_panel,
             vault_search,
@@ -469,6 +506,20 @@ pub fn run() {
                 active_hotkey.unwrap_or_else(|| providers::appconfig::DEFAULT_HOTKEY.into());
             if !registered_ok {
                 eprintln!("zap: 呼出热键注册失败，仅可通过托盘呼出面板");
+            }
+
+            // Everything 自动检测：未运行且已安装则自动拉起（UAC 会弹一次）。
+            // 未安装不自动下载——面板里仍保留手动入口。设置里可关掉。
+            let ev_auto = engine
+                .get_setting(providers::appconfig::KEY_EVERYTHING_AUTOSTART)
+                .map(|v| v != "0")
+                .unwrap_or(providers::appconfig::DEFAULT_EVERYTHING_AUTOSTART);
+            if ev_auto {
+                // 稍等桌面就绪再探测启动，避免开机自启时与登录过程抢占
+                drop(tauri::async_runtime::spawn_blocking(|| {
+                    std::thread::sleep(Duration::from_secs(3));
+                    providers::everything::ensure()
+                }));
             }
 
             app.manage(AppState {

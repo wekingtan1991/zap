@@ -187,6 +187,24 @@ pub fn add(
     Ok(())
 }
 
+/// 行 → 展示条目（置顶带 📌 标记）。列表只呈现标题，详情页才展开各行内容
+fn row_to_item(row: &(i64, String, String, String, String, i64)) -> SearchItem {
+    let (id, title, _, _, _, pinned) = row; // 用户名/网址在详情页逐行呈现，不进列表
+    SearchItem {
+        id: format!("vault:{id}"),
+        title: if *pinned == 1 {
+            format!("📌 {title}")
+        } else {
+            title.clone()
+        },
+        subtitle: String::new(),
+        kind: "vault".into(),
+        target: id.to_string(),
+        icon: None,
+        score: 70.0,
+    }
+}
+
 pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
     let Ok(mut stmt) = conn.prepare(
         "SELECT id, title, username, url, notes, pinned FROM accounts
@@ -207,6 +225,12 @@ pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
         return Vec::new();
     };
     let rows: Vec<(i64, String, String, String, String, i64)> = rows.flatten().collect();
+
+    // 空查询 = 浏览全部账号（置顶优先、新在前），与剪贴板空查询显示最近的口径一致
+    if query.trim().is_empty() {
+        return rows.iter().take(8).map(row_to_item).collect();
+    }
+
     let mut scored: Vec<(f32, i64, i64)> = rows
         .iter()
         .filter_map(|row| {
@@ -227,25 +251,10 @@ pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
         .into_iter()
         .enumerate()
         .filter_map(|(i, (_, id, _))| {
-            let (_, title, username, url, _, pinned) = rows.iter().find(|r| r.0 == id)?;
-            let subtitle = if url.is_empty() {
-                username.clone()
-            } else {
-                format!("{username} · {url}")
-            };
-            Some(SearchItem {
-                id: format!("vault:{id}"),
-                title: if *pinned == 1 {
-                    format!("📌 {title}")
-                } else {
-                    title.clone()
-                },
-                subtitle,
-                kind: "vault".into(),
-                target: id.to_string(),
-                icon: None,
-                score: 70.0 - i as f32,
-            })
+            let row = rows.iter().find(|r| r.0 == id)?;
+            let mut item = row_to_item(row);
+            item.score = 70.0 - i as f32;
+            Some(item)
         })
         .collect()
 }
@@ -305,6 +314,18 @@ pub fn action(
                 .map_err(|e| e.to_string())?;
             bump(conn);
             Ok(url)
+        }
+        "notes" => {
+            // 详情页备注行的一键复制：同样抑制剪贴板历史（备注可能含敏感信息）
+            let notes: String = conn
+                .query_row("SELECT notes FROM accounts WHERE id=?1", params![id], |r| {
+                    r.get(0)
+                })
+                .map_err(|e| e.to_string())?;
+            SUPPRESS_NEXT_CLIP.store(true, Ordering::Relaxed);
+            copy_text(&notes)?;
+            bump(conn);
+            Ok("备注已复制".into())
         }
         "reveal" => {
             // 显式查看：返回解密后的密码明文（前端只做一次性展示）
@@ -630,22 +651,31 @@ pub fn parse_blob(text: &str) -> Vec<ParsedAccount> {
     out
 }
 
-/// 批量导入，返回成功条数
+/// 批量导入，返回成功条数。标题缺省时按 用户名 → 网址 → 固定名 递补
+/// （`add` 要求标题非空，否则整批会中途失败）；整批一个事务，要么全部入库要么全部回滚。
 pub fn import(conn: &Connection, entries: Vec<ParsedAccount>) -> Result<usize, String> {
     let mut n = 0usize;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     for e in entries {
         let title = e.title.trim();
-        if title.is_empty() && e.username.is_empty() && e.password.is_empty() {
+        let username = e.username.trim();
+        let url = e.url.trim();
+        if title.is_empty() && username.is_empty() && e.password.is_empty() {
             continue;
         }
-        let title = if title.is_empty() {
-            e.username.clone()
+        let title = if !title.is_empty() {
+            title.to_string()
+        } else if !username.is_empty() {
+            username.to_string()
+        } else if !url.is_empty() {
+            url.to_string()
         } else {
-            e.title.trim().to_string()
+            "未命名账号".to_string()
         };
-        add(conn, &title, &e.username, &e.password, &e.url, "")?;
+        add(&tx, &title, username, &e.password, url, "")?;
         n += 1;
     }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(n)
 }
 
@@ -710,6 +740,71 @@ mod crud_tests {
         let conn = Connection::open_in_memory().unwrap();
         init_table(&conn);
         conn
+    }
+
+    #[test]
+    fn 空查询列出全部账号() {
+        let conn = mem_db();
+        add(&conn, "甲账号", "u1", "p", "", "").unwrap();
+        // updated_at 精度为毫秒：错开时间保证"新的在前"可判定
+        std::thread::sleep(Duration::from_millis(3));
+        add(&conn, "乙账号", "u2", "p", "", "").unwrap();
+        let items = search(&conn, "");
+        assert_eq!(items.len(), 2, "空查询应列出全部账号");
+        assert_eq!(items[0].title, "乙账号", "新入库的排在前");
+    }
+
+    #[test]
+    fn 导入标题兜底且整批入库() {
+        let conn = mem_db();
+        let entries = vec![
+            // 无标题无用户名：用网址命名
+            ParsedAccount {
+                url: "https://a.com".into(),
+                password: "p1".into(),
+                ..Default::default()
+            },
+            // 无标题：用用户名命名
+            ParsedAccount {
+                username: "u2".into(),
+                password: "p2".into(),
+                ..Default::default()
+            },
+            ParsedAccount {
+                title: "有标题".into(),
+                username: "u3".into(),
+                password: "p3".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(import(&conn, entries).unwrap(), 3, "缺标题的条目也应导入");
+        assert_eq!(search(&conn, "a.com").len(), 1);
+        assert_eq!(search(&conn, "a.com")[0].title, "https://a.com");
+        assert_eq!(search(&conn, "u2").len(), 1);
+        assert_eq!(search(&conn, "有标题").len(), 1);
+    }
+
+    #[test]
+    fn 备注可复制且列表不带副标题() {
+        let conn = mem_db();
+        add(
+            &conn,
+            "行云账号",
+            "13800138000",
+            "pw",
+            "https://a.com",
+            "内部 systems",
+        )
+        .unwrap();
+        assert_eq!(action(&conn, 1, "notes", 0).unwrap(), "备注已复制");
+        assert!(
+            SUPPRESS_NEXT_CLIP.load(std::sync::atomic::Ordering::Relaxed),
+            "账号库复制应抑制剪贴板历史"
+        );
+        let items = search(&conn, "行云");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "行云账号");
+        assert!(items[0].subtitle.is_empty(), "列表只显示标题，不带副标题");
     }
 
     #[test]
