@@ -179,6 +179,9 @@ fn random_port() -> u16 {
 }
 
 /// 写提权重启批处理：杀旧实例 + 启动新实例（-local 托管配置 + -startup 入托盘）
+/// 安全说明：脚本内容由 zap 固定生成（只有 taskkill 与 start 两条），且紧写紧用；
+/// 它位于用户可写目录，理论上存在本地竞态替换可能——但能达到"本地任意代码执行"
+/// 前提的攻击者本就无需借此提权，故按可接受风险处理，不做额外 ACL 加固。
 fn write_restart_bat() -> PathBuf {
     let bat = install_dir().join("restart-everything.cmd");
     let content = format!(
