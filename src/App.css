@@ -292,6 +292,22 @@
   text-align: right;
 }
 
+/* 设置页底部版本号 */
+.zap-version {
+  color: #9ca3af;
+  font-size: 13px;
+  text-align: center;
+  padding-top: 4px;
+  user-select: none;
+  letter-spacing: 0.3px;
+}
+
+.zap-version .zap-version-num {
+  color: #fbbf24;
+  font-weight: 600;
+  font-family: Consolas, "Courier New", monospace;
+}
+
 /* 查看密码浮层 */
 .zap-pw-reveal {
   font-family: Consolas, "Courier New", monospace;

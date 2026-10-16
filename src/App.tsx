@@ -6,6 +6,7 @@ import React, {
   type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import {
@@ -219,6 +220,7 @@ function AppView() {
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [st, setSt] = useState<AppSettings | null>(null);
+  const [appVersion, setAppVersion] = useState("");
   const [hkRecording, setHkRecording] = useState(false);
   const [hkError, setHkError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
@@ -424,6 +426,10 @@ function AppView() {
       setHkError("");
       setSaveMsg("");
       setSettingsOpen(true);
+      // 版本号异步读取（tauri.conf.json 的 version），失败时留空
+      getVersion()
+        .then((v) => setAppVersion(v))
+        .catch(() => {});
     } catch {
       // 忽略
     }
@@ -1453,6 +1459,9 @@ function AppView() {
           {saveMsg && (
             <div className="zap-set-saved animate-fade-in">{saveMsg}</div>
           )}
+          <div className="zap-version">
+            zap <span className="zap-version-num">v{appVersion || "…"}</span>
+          </div>
         </div>
       </div>
     );
