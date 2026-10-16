@@ -5,6 +5,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# 显式授予 contents:write，否则默认 GITHUB_TOKEN 无法创建 Release
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: windows-latest
