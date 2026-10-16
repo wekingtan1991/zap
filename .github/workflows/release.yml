@@ -45,8 +45,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: "zap v__VERSION__"
+          # 不传 tagName：让 tauri-action 直接使用触发本次构建的 git tag（v*）。
+          # 若显式传 tagName，它会按「tag 名 + commit」建 Release，
+          # 结果 Release 会变成 untagged 而无法正确关联到该 tag。
+          # 手动触发（workflow_dispatch）时，请在下拉框里选择具体的 tag 作为 ref。
+          releaseName: "zap ${{ github.ref_name }}"
           releaseBody: |
             自动构建的 Windows 安装包（NSIS）。
 
