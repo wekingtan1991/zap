@@ -432,6 +432,8 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .on_window_event(|window, event| {
             // 失焦即隐："毫无存在感"的核心；显示后 300ms 内的焦点抖动忽略
             if let WindowEvent::Focused(false) = event

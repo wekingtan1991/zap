@@ -51,7 +51,31 @@ jobs:
         run: cargo test --lib
 
       - name: Build (tauri CLI)
+        env:
+          # 更新包签名密钥（minisign）；缺失时 tauri build 直接失败
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build
+
+      - name: 生成 updater 清单（latest.json）
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          ART="src-tauri/target/release/bundle/nsis/zap_${VERSION}_x64-setup.exe"
+          test -f "$ART" || { echo "::error::未找到安装包 $ART"; exit 1; }
+          test -f "$ART.sig" || { echo "::error::未找到签名文件 $ART.sig，请检查 TAURI_SIGNING_PRIVATE_KEY 是否已配置"; exit 1; }
+          # updater 端点清单：version 必须是不带 v 前缀的 semver，signature 为安装包 minisign 签名。
+          # 签名必须用 $(cat) 而非 --rawfile：bash 会剥掉文件尾部换行，updater 的 base64 解码不容忍换行符
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/zap_${VERSION}_x64-setup.exe" \
+            --arg signature "$(cat "$ART.sig")" \
+            '{version: $version, notes: ("zap " + $version), pub_date: $pub_date, platforms: { "windows-x86_64": { signature: $signature, url: $url } } }' \
+            > latest.json
+          echo "latest.json 已生成："
+          cat latest.json
 
       - name: Create release
         shell: bash
@@ -59,9 +83,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          ART="src-tauri/target/release/bundle/nsis/zap_${VERSION}_x64-setup.exe"
           # 自动发布：tag 推送即公开（主流做法）。
           # 若该 tag 的 Release 已存在（重跑场景），直接失败示警，绝不覆盖已发布的版本。
           gh release create "$TAG" \
             --title "zap $TAG" \
             --notes-file .github/release-notes.md \
-            src-tauri/target/release/bundle/nsis/zap_*_x64-setup.exe
+            "$ART" "$ART.sig" latest.json
