@@ -312,12 +312,21 @@ fn open_item(app: AppHandle, item: SearchItem) {
             }
         }
         "settings" => {
-            // opener 走 ShellExecute，ms-settings: 协议可直接打开；异常时退回 cmd start
-            if app
-                .opener()
-                .open_url(item.target.clone(), None::<&str>)
-                .is_err()
-            {
+            // target 形如 ms-settings:xxx（协议 URI）或 control.exe / *.cpl / *.msc（经典系统工具）。
+            // 带协议的交给 opener（ShellExecute 认 ms-settings:），裸文件名一律走
+            // `cmd /C start "" <target>`：这是资源管理器"运行"同样的解析路径，
+            // 能可靠启动系统可执行名与控制面板项，避免 ShellExecute 对裸名解析失败。
+            if item.target.contains(':') {
+                if app
+                    .opener()
+                    .open_url(item.target.clone(), None::<&str>)
+                    .is_err()
+                {
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/C", "start", "", &item.target])
+                        .spawn();
+                }
+            } else {
                 let _ = std::process::Command::new("cmd")
                     .args(["/C", "start", "", &item.target])
                     .spawn();

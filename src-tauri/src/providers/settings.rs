@@ -108,6 +108,32 @@ const SETTINGS: &[SettingEntry] = &[
     setting!("摄像头隐私", "ms-settings:privacy-webcam", "webcam camera"),
     setting!("位置隐私", "ms-settings:privacy-location", "location 定位"),
     setting!("辅助功能", "ms-settings:easeofaccess", "accessibility"),
+    // ---- 经典系统工具（非 ms-settings: 协议，走 ShellExecute / cmd start 打开）----
+    // 控制面板、设备管理器这类系统入口在 Windows 10/11 已不在开始菜单，
+    // ms-settings: 也没有对应页，因此单独收录，target 用系统自带可执行名/管理单元。
+    setting!("控制面板", "control.exe", "control panel"),
+    setting!("设备管理器", "hdwwiz.cpl", "device manager设备"),
+    setting!("计算机管理", "compmgmt.msc", "computer management计算机"),
+    setting!("服务", "services.msc", "services服务"),
+    setting!("事件查看器", "eventvwr.msc", "event viewer log日志"),
+    setting!("任务计划程序", "taskschd.msc", "task scheduler计划"),
+    setting!("本地用户和组", "lusrmgr.msc", "local users groups用户组"),
+    setting!("磁盘管理", "diskmgmt.msc", "disk management磁盘"),
+    setting!("系统属性", "sysdm.cpl", "system properties属性"),
+    setting!("用户账户", "userpasswords2.cpl", "user account用户"),
+    setting!("程序和功能", "appwiz.cpl", "programs features卸载程序"),
+    setting!("系统还原", "dfrgui.cpl", "system restore还原"),
+    setting!("Internet 选项", "inetcpl.cpl", "internet options"),
+    setting!("电源选项", "powercfg.cpl", "power options电源"),
+    setting!("任务管理器", "taskmgr", "task manager任务"),
+    setting!("注册表编辑器", "regedit", "registry注册表"),
+    setting!("命令提示符", "cmd", "command prompt命令"),
+    setting!("PowerShell", "powershell", "powershell"),
+    setting!("系统信息", "msinfo32", "msinfo32 system info"),
+    setting!("性能监视器", "perfmon", "performance monitor性能"),
+    setting!("资源监视器", "resmon", "resource monitor资源"),
+    setting!("DirectX 诊断", "dxdiag", "directx"),
+    setting!("远程桌面连接", "mstsc", "mstsc remote desktop"),
 ];
 
 pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
@@ -142,4 +168,46 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 控制面板可被搜到() {
+        let res = search("控制面板", 10);
+        assert!(
+            res.iter().any(|i| i.title == "控制面板"),
+            "搜\"控制面板\"应命中：{res:?}"
+        );
+    }
+
+    #[test]
+    fn 经典系统工具支持中英文与拼音() {
+        for q in ["控制面板", "control panel", "kongzhimianban", "kzb"] {
+            assert!(
+                search(q, 30).iter().any(|i| i.title == "控制面板"),
+                "「{q}」应命中控制面板"
+            );
+        }
+        assert!(
+            search("设备管理器", 10)
+                .iter()
+                .any(|i| i.title == "设备管理器")
+        );
+        assert!(
+            search("computer", 20)
+                .iter()
+                .any(|i| i.title == "计算机管理")
+        );
+    }
+
+    #[test]
+    fn ms_设置页仍走协议且分类正确() {
+        let res = search("显示", 10);
+        let item = res.iter().find(|i| i.title == "显示").expect("应命中显示");
+        assert_eq!(item.target, "ms-settings:display");
+        assert_eq!(item.kind, "settings");
+    }
 }
