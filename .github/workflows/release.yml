@@ -15,6 +15,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: 校验 tag 与 tauri.conf.json 版本一致
+        shell: bash
+        run: |
+          VERSION="$(jq -r '.version' src-tauri/tauri.conf.json)"
+          TAG="${GITHUB_REF_NAME}"
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::tag ($TAG) 与 src-tauri/tauri.conf.json 的版本 (v$VERSION) 不一致。请将 version 改为 ${TAG#v}，或改用 v$VERSION 作为 tag。"
+            exit 1
+          fi
+          echo "版本校验通过：$TAG == v$VERSION"
+
       - name: Install pnpm
         uses: pnpm/action-setup@v4
 
