@@ -33,6 +33,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -40,5 +41,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM5NTc4OTdFRDE2NDI3MTUKUldRVkoyVFJmb2xYeWFVRlhocXBmSmg5SHRMdEJ0UEkxWnlyc09pcW8zdHNBT0VpVC9EU09TSkcK",
+      "endpoints": [
+        "https://github.com/wekingtan1991/zap/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

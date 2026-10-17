@@ -8,6 +8,8 @@ import React, {
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -475,8 +477,98 @@ function AppView() {
     }
   };
 
-  const refreshVault = useCallback(async (term: string) => {
+  // ---------- 自动更新 ----------
+  const updateRef = useRef<Update | null>(null);
+  const updateNotifiedRef = useRef(false);
+  const [updateStatus, setUpdateStatus] = useState<
+    "idle" | "checking" | "available" | "downloading" | "ready"
+  >("idle");
+  const [updateVersion, setUpdateVersion] = useState("");
+  const [updateProgress, setUpdateProgress] = useState(0);
+  const [updateMsg, setUpdateMsg] = useState("");
+
+  // 拿到检查结果后的公共收尾：有新版本则记录并置为可下载，否则回到空闲
+  const applyUpdate = useCallback((u: Update | null) => {
+    updateRef.current = u;
+    if (u) {
+      setUpdateVersion(u.version);
+      setUpdateStatus("available");
+    } else {
+      setUpdateStatus("idle");
+    }
+  }, []);
+
+  // 启动静默检查一次：离线/网络失败不打扰；面板隐藏时 toast 不可见，
+  // 命中新版本只记标记，等下次面板呼出再提示
+  useEffect(() => {
+    check()
+      .then((u) => {
+        if (u) {
+          applyUpdate(u);
+          updateNotifiedRef.current = true;
+        }
+      })
+      .catch(() => {});
+  }, [applyUpdate]);
+
+  useEffect(() => {
+    const un = listen("zap://shown", () => {
+      if (updateNotifiedRef.current && updateRef.current) {
+        updateNotifiedRef.current = false;
+        toast.info(`发现新版本 v${updateRef.current.version}，可在设置中更新`);
+      }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  const checkForUpdate = useCallback(async () => {
+    if (updateStatus === "checking" || updateStatus === "downloading") return;
+    setUpdateStatus("checking");
+    setUpdateMsg("");
     try {
+      const u = await check();
+      applyUpdate(u);
+      if (!u) setUpdateMsg("已是最新版本 ✓");
+    } catch (e) {
+      setUpdateStatus("idle");
+      setUpdateMsg("检查失败：" + String(e));
+    }
+  }, [updateStatus, applyUpdate]);
+
+  // 下载并静默安装 NSIS 安装包；期间保持面板可见（UAC/安装器抢焦点不触发失焦即隐）
+  const downloadUpdate = useCallback(async () => {
+    const u = updateRef.current;
+    if (!u || updateStatus === "downloading") return;
+    setUpdateStatus("downloading");
+    setUpdateProgress(0);
+    await invoke("set_hold_panel", { hold: true }).catch(() => {});
+    let received = 0;
+    let total = 0;
+    try {
+      await u.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength ?? 0;
+        } else if (event.event === "Progress") {
+          received += event.data.chunkLength;
+          if (total > 0)
+            setUpdateProgress(
+              Math.min(99, Math.round((received / total) * 100))
+            );
+        }
+      });
+      setUpdateProgress(100);
+      setUpdateStatus("ready");
+    } catch (e) {
+      setUpdateStatus("available");
+      toast.error("下载更新失败：" + String(e));
+    } finally {
+      await invoke("set_hold_panel", { hold: false }).catch(() => {});
+    }
+  }, [updateStatus]);
+
+  const refreshVault = useCallback(async (term: string) => {    try {
       const res = await invoke<SearchItem[]>("vault_search", { query: term });
       const list = [...res];
       if (!term) list.push(VAULT_ADD_ENTRY, VAULT_IMPORT_ENTRY);
@@ -1459,6 +1551,55 @@ function AppView() {
           {saveMsg && (
             <div className="zap-set-saved animate-fade-in">{saveMsg}</div>
           )}
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="min-w-0 flex-1 truncate">
+              {updateStatus === "checking" && "正在检查更新…"}
+              {updateStatus === "downloading" && `正在下载更新 ${updateProgress}%`}
+              {updateStatus === "ready" && "更新已就绪，重启 zap 完成安装"}
+              {updateStatus === "available" && `发现新版本 v${updateVersion}`}
+              {updateStatus === "idle" && updateMsg}
+            </span>
+            {updateStatus === "idle" && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => void checkForUpdate()}
+              >
+                检查更新
+              </Button>
+            )}
+            {updateStatus === "checking" && (
+              <Button variant="outline" size="sm" className="shrink-0" disabled>
+                <Loader2 className="size-3.5 animate-spin" />
+                检查中
+              </Button>
+            )}
+            {updateStatus === "downloading" && (
+              <Button size="sm" className="shrink-0" disabled>
+                <Loader2 className="size-3.5 animate-spin" />
+                {updateProgress}%
+              </Button>
+            )}
+            {updateStatus === "available" && (
+              <Button
+                size="sm"
+                className="shrink-0"
+                onClick={() => void downloadUpdate()}
+              >
+                下载并安装
+              </Button>
+            )}
+            {updateStatus === "ready" && (
+              <Button
+                size="sm"
+                className="shrink-0"
+                onClick={() => void relaunch()}
+              >
+                重启以完成更新
+              </Button>
+            )}
+          </div>
           <div className="zap-version">
             zap <span className="zap-version-num">v{appVersion || "…"}</span>
           </div>
