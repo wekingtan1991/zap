@@ -3,7 +3,6 @@ name: release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 # 显式授予 contents:write，否则默认 GITHUB_TOKEN 无法创建 Release
 permissions:
@@ -40,20 +39,21 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib
 
-      - name: Build (tauri-action)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          # 不传 tagName：让 tauri-action 直接使用触发本次构建的 git tag（v*）。
-          # 若显式传 tagName，它会按「tag 名 + commit」建 Release，
-          # 结果 Release 会变成 untagged 而无法正确关联到该 tag。
-          # 手动触发（workflow_dispatch）时，请在下拉框里选择具体的 tag 作为 ref。
-          releaseName: "zap ${{ github.ref_name }}"
-          releaseBody: |
-            自动构建的 Windows 安装包（NSIS）。
+      - name: Build (tauri CLI)
+        run: pnpm tauri build
 
-            > ⚠️ 安装包未签名：首次运行时 SmartScreen 可能提示「Windows 已保护你的电脑」，
-            > 点「更多信息 → 仍要运行」即可。介意者可自行核对源码构建后安装。
-          releaseDraft: true
-          prerelease: false
+      - name: Create draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # 幂等：若已存在同 tag 的【草稿】Release 先删掉（不删 tag，不动已发布的）
+          if gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null | grep -q true; then
+            gh release delete "$TAG" -y
+          fi
+          gh release create "$TAG" \
+            --draft \
+            --title "zap $TAG" \
+            --notes-file .github/release-notes.md \
+            src-tauri/target/release/bundle/nsis/zap_*_x64-setup.exe
