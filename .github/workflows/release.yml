@@ -42,18 +42,15 @@ jobs:
       - name: Build (tauri CLI)
         run: pnpm tauri build
 
-      - name: Create draft release
+      - name: Create release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          # 幂等：若已存在同 tag 的【草稿】Release 先删掉（不删 tag，不动已发布的）
-          if gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null | grep -q true; then
-            gh release delete "$TAG" -y
-          fi
+          # 自动发布：tag 推送即公开（主流做法）。
+          # 若该 tag 的 Release 已存在（重跑场景），直接失败示警，绝不覆盖已发布的版本。
           gh release create "$TAG" \
-            --draft \
             --title "zap $TAG" \
             --notes-file .github/release-notes.md \
             src-tauri/target/release/bundle/nsis/zap_*_x64-setup.exe
