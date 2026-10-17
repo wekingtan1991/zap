@@ -1,7 +1,7 @@
 {
   "name": "zap",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "zap - Windows 桌面快捷启动器：统一搜索应用/文件/窗口/剪贴板/最近，内置本地账号库",
   "keywords": [
     "launcher",

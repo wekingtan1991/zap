@@ -1,6 +1,6 @@
 [package]
 name = "zap"
-version = "0.1.0"
+version = "0.2.0"
 description = "Zap - 闪电般的个人效率统一入口：启动器 / 剪贴板历史 / 账号库"
 authors = ["wekingtan <21351378+wekingtan1991@users.noreply.github.com>"]
 edition = "2024"
