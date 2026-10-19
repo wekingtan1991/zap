@@ -14,7 +14,9 @@ import { toast } from "sonner";
 import {
   ArrowLeft,
   Check,
+  Clipboard,
   Copy,
+  Download,
   Eye,
   EyeOff,
   KeyRound,
@@ -22,8 +24,12 @@ import {
   Pencil,
   Pin,
   PinOff,
+  RefreshCw,
+  RotateCw,
+  Search,
   Settings as SettingsIcon,
   Trash2,
+  Zap,
 } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
@@ -102,6 +108,13 @@ const BADGE_VARIANT: Record<
 
 /// 是否已置顶：后端给置顶条目的标题加了 📌 前缀
 const pinned = (it: SearchItem) => it.title.startsWith("📌");
+
+/// 热键串展示格式化：ctrl+space → Ctrl + Space（键位首字母大写，+ 两侧留空）
+const formatHotkey = (hk: string) =>
+  hk
+    .split("+")
+    .map((p) => (p ? p.charAt(0).toUpperCase() + p.slice(1) : p))
+    .join(" + ");
 
 interface AccountForm {
   id?: number;
@@ -485,7 +498,9 @@ function AppView() {
   >("idle");
   const [updateVersion, setUpdateVersion] = useState("");
   const [updateProgress, setUpdateProgress] = useState(0);
-  const [updateMsg, setUpdateMsg] = useState("");
+  const [updateMsg, setUpdateMsg] = useState<
+    { kind: "ok" | "err"; text: string } | null
+  >(null);
 
   // 拿到检查结果后的公共收尾：有新版本则记录并置为可下载，否则回到空闲
   const applyUpdate = useCallback((u: Update | null) => {
@@ -526,14 +541,14 @@ function AppView() {
   const checkForUpdate = useCallback(async () => {
     if (updateStatus === "checking" || updateStatus === "downloading") return;
     setUpdateStatus("checking");
-    setUpdateMsg("");
+    setUpdateMsg(null);
     try {
       const u = await check();
       applyUpdate(u);
-      if (!u) setUpdateMsg("已是最新版本 ✓");
+      if (!u) setUpdateMsg({ kind: "ok", text: "已是最新版本 ✓" });
     } catch (e) {
       setUpdateStatus("idle");
-      setUpdateMsg("检查失败：" + String(e));
+      setUpdateMsg({ kind: "err", text: "检查失败：" + String(e) });
     }
   }, [updateStatus, applyUpdate]);
 
@@ -1434,83 +1449,53 @@ function AppView() {
             返回（Esc）
           </Button>
         </div>
-        <div className="zap-form">
-          <div className="flex flex-col gap-1.5">
-            <Label>呼出热键（点击输入框后按下新组合，Esc 取消）</Label>
-            {hkRecording ? (
-              <Input
-                readOnly
-                className="zap-hk-rec animate-pulse-ring"
-                value="按下新组合…（Esc 取消）"
-              />
-            ) : (
-              <Input
-                readOnly
-                className="zap-hk cursor-pointer"
-                value={st.hotkey}
-                onClick={() => {
-                  invoke("start_hotkey_capture")
-                    .then(() => setHkRecording(true))
-                    .catch((e) => setHkError("启动录制失败：" + e));
-                }}
-              />
-            )}
+        <div className="flex-1 overflow-y-auto px-[22px] pb-1.5 pt-2.5">
+          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+            <Zap className="size-3 text-primary/75" />
+            启动
+          </div>
+          <div className="flex min-h-[38px] items-center justify-between gap-3">
+            <span className="text-[13px]">呼出热键</span>
+            <button
+              type="button"
+              className={
+                "flex h-[30px] shrink-0 items-center gap-2 rounded-md border px-2.5 transition-colors " +
+                (hkRecording
+                  ? "animate-pulse-ring border-primary/80 bg-primary/15"
+                  : "cursor-pointer border-primary/45 bg-primary/10 hover:bg-primary/20")
+              }
+              onClick={() => {
+                invoke("start_hotkey_capture")
+                  .then(() => setHkRecording(true))
+                  .catch((e) => setHkError("启动录制失败：" + e));
+              }}
+            >
+              {hkRecording ? (
+                <span className="text-[12.5px]">按下新组合…（Esc 取消）</span>
+              ) : (
+                <>
+                  <b className="font-mono text-[12.5px] font-medium">
+                    {formatHotkey(st.hotkey)}
+                  </b>
+                  <span className="text-[11px] text-muted-foreground">
+                    点击录制
+                  </span>
+                </>
+              )}
+            </button>
           </div>
           {hkError && (
-            <div className="zap-hk-err animate-shake">{hkError}</div>
+            <div className="animate-shake pb-1 text-[11px] text-destructive">
+              {hkError}
+            </div>
           )}
-          <div className="flex items-center gap-2.5">
-            <Checkbox
-              id="set-clip"
-              checked={st.clipEnabled}
-              onCheckedChange={(v) =>
-                setSt((s) => (s ? { ...s, clipEnabled: v === true } : s))
-              }
-            />
-            <Label htmlFor="set-clip" className="text-[13px] text-foreground">
-              记录剪贴板历史
+          <div className="flex min-h-[38px] items-center justify-between gap-3">
+            <Label
+              htmlFor="set-autostart"
+              className="text-[13px] font-normal text-foreground"
+            >
+              开机自启
             </Label>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label>历史保留条数</Label>
-            <Select
-              value={String(st.clipMax)}
-              disabled={!st.clipEnabled}
-              onValueChange={(v) =>
-                setSt((s) => (s ? { ...s, clipMax: Number(v) } : s))
-              }
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="100">100</SelectItem>
-                <SelectItem value="500">500</SelectItem>
-                <SelectItem value="1000">1000</SelectItem>
-                <SelectItem value="5000">5000</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label>密码复制后自动清空剪贴板</Label>
-            <Select
-              value={String(st.pwdClearSecs)}
-              onValueChange={(v) =>
-                setSt((s) => (s ? { ...s, pwdClearSecs: Number(v) } : s))
-              }
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="0">关闭</SelectItem>
-                <SelectItem value="30">30 秒</SelectItem>
-                <SelectItem value="45">45 秒</SelectItem>
-                <SelectItem value="60">60 秒</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex items-center gap-2.5">
             <Checkbox
               id="set-autostart"
               checked={st.autostart}
@@ -1524,85 +1509,229 @@ function AppView() {
                 }
               }}
             />
-            <Label htmlFor="set-autostart" className="text-[13px] text-foreground">
-              开机自启
-            </Label>
           </div>
-          <div className="flex items-center gap-2.5">
-            <Checkbox
-              id="set-ev"
-              checked={st.everythingAutostart}
-              onCheckedChange={(v) =>
-                setSt((s) =>
-                  s ? { ...s, everythingAutostart: v === true } : s
-                )
-              }
-            />
-            <Label htmlFor="set-ev" className="text-[13px] text-foreground">
-              自动启动 Everything（未运行时自动拉起；不会自动下载）
-            </Label>
+          <div className="mt-3 border-t border-white/5 pt-3">
+            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+              <Clipboard className="size-3 text-primary/75" />
+              剪贴板
+            </div>
+            <div className="flex min-h-[38px] items-center justify-between gap-3">
+              <Label
+                htmlFor="set-clip"
+                className="text-[13px] font-normal text-foreground"
+              >
+                记录剪贴板历史
+              </Label>
+              <Checkbox
+                id="set-clip"
+                checked={st.clipEnabled}
+                onCheckedChange={(v) =>
+                  setSt((s) => (s ? { ...s, clipEnabled: v === true } : s))
+                }
+              />
+            </div>
+            <div className="flex min-h-[38px] items-center justify-between gap-3">
+              <Label className="text-[13px] font-normal text-foreground">
+                保留条数
+              </Label>
+              <Select
+                value={String(st.clipMax)}
+                disabled={!st.clipEnabled}
+                onValueChange={(v) =>
+                  setSt((s) => (s ? { ...s, clipMax: Number(v) } : s))
+                }
+              >
+                <SelectTrigger className="h-[30px] w-[126px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="100">100</SelectItem>
+                  <SelectItem value="500">500</SelectItem>
+                  <SelectItem value="1000">1000</SelectItem>
+                  <SelectItem value="5000">5000</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <div className="zap-form-actions">
-            <Button variant="outline" onClick={closeSettings}>
-              取消（Esc）
-            </Button>
-            <Button onClick={saveSettings}>保存</Button>
+          <div className="mt-3 border-t border-white/5 pt-3">
+            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+              <KeyRound className="size-3 text-primary/75" />
+              密码安全
+            </div>
+            <div className="flex min-h-[38px] items-center justify-between gap-3">
+              <Label className="text-[13px] font-normal text-foreground">
+                复制后清空剪贴板
+              </Label>
+              <Select
+                value={String(st.pwdClearSecs)}
+                onValueChange={(v) =>
+                  setSt((s) => (s ? { ...s, pwdClearSecs: Number(v) } : s))
+                }
+              >
+                <SelectTrigger className="h-[30px] w-[126px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">关闭</SelectItem>
+                  <SelectItem value="30">30 秒</SelectItem>
+                  <SelectItem value="45">45 秒</SelectItem>
+                  <SelectItem value="60">60 秒</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
+          <div className="mt-3 border-t border-white/5 pt-3">
+            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+              <Search className="size-3 text-primary/75" />
+              Everything
+            </div>
+            <div className="flex min-h-[38px] items-center justify-between gap-3">
+              <span className="flex min-w-0 flex-col gap-px">
+                <Label
+                  htmlFor="set-ev"
+                  className="text-[13px] font-normal text-foreground"
+                >
+                  自动启动 Everything
+                </Label>
+                <span className="text-[11px] leading-snug text-muted-foreground">
+                  未运行时自动拉起；不会自动下载
+                </span>
+              </span>
+              <Checkbox
+                id="set-ev"
+                checked={st.everythingAutostart}
+                onCheckedChange={(v) =>
+                  setSt((s) =>
+                    s ? { ...s, everythingAutostart: v === true } : s
+                  )
+                }
+              />
+            </div>
+          </div>
+          <div className="mt-3 border-t border-white/5 pt-3">
+            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+              <RefreshCw className="size-3 text-primary/75" />
+              软件更新
+            </div>
+            <div className="flex min-h-[38px] items-center justify-between gap-3">
+              <span className="flex min-w-0 items-center gap-2.5">
+                <span className="shrink-0 text-[13px]">当前版本</span>
+                <b className="shrink-0 text-[13px] font-medium text-primary/90">
+                  v{appVersion || "…"}
+                </b>
+                <span
+                  className="flex min-w-0 items-center gap-2"
+                  aria-live="polite"
+                >
+                  {updateStatus === "idle" && updateMsg && (
+                    <span
+                      className={
+                        "truncate text-xs " +
+                        (updateMsg.kind === "ok"
+                          ? "text-success"
+                          : "text-destructive")
+                      }
+                    >
+                      {updateMsg.text}
+                    </span>
+                  )}
+                  {updateStatus === "checking" && (
+                    <span className="truncate text-xs text-muted-foreground">
+                      正在检查更新…
+                    </span>
+                  )}
+                  {updateStatus === "available" && (
+                    <span className="truncate text-xs text-muted-foreground">
+                      发现新版本{" "}
+                      <b className="font-medium text-primary/90">
+                        v{updateVersion}
+                      </b>
+                    </span>
+                  )}
+                  {updateStatus === "downloading" && (
+                    <>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        正在下载更新
+                      </span>
+                      <span className="h-1 w-[90px] shrink-0 overflow-hidden rounded-full bg-muted">
+                        <span
+                          className="block h-full rounded-full bg-primary transition-[width] duration-150"
+                          style={{ width: `${updateProgress}%` }}
+                        />
+                      </span>
+                    </>
+                  )}
+                  {updateStatus === "ready" && (
+                    <span className="truncate text-xs text-muted-foreground">
+                      更新已就绪，重启 zap 完成安装
+                    </span>
+                  )}
+                </span>
+              </span>
+              {updateStatus === "idle" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => void checkForUpdate()}
+                >
+                  检查更新
+                </Button>
+              )}
+              {updateStatus === "checking" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  disabled
+                >
+                  <Loader2 className="size-3.5 animate-spin" />
+                  检查中
+                </Button>
+              )}
+              {updateStatus === "downloading" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  disabled
+                >
+                  {updateProgress}%
+                </Button>
+              )}
+              {updateStatus === "available" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0 border-primary/50 text-primary hover:text-primary"
+                  onClick={() => void downloadUpdate()}
+                >
+                  <Download className="size-3.5" />
+                  下载并安装
+                </Button>
+              )}
+              {updateStatus === "ready" && (
+                <Button
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => void relaunch()}
+                >
+                  <RotateCw className="size-3.5" />
+                  重启以完成更新
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-[22px] py-1.5">
           {saveMsg && (
-            <div className="zap-set-saved animate-fade-in">{saveMsg}</div>
-          )}
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="min-w-0 flex-1 truncate">
-              {updateStatus === "checking" && "正在检查更新…"}
-              {updateStatus === "downloading" && `正在下载更新 ${updateProgress}%`}
-              {updateStatus === "ready" && "更新已就绪，重启 zap 完成安装"}
-              {updateStatus === "available" && `发现新版本 v${updateVersion}`}
-              {updateStatus === "idle" && updateMsg}
+            <span className="shrink-0 animate-fade-in text-xs text-success">
+              {saveMsg}
             </span>
-            {updateStatus === "idle" && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="shrink-0"
-                onClick={() => void checkForUpdate()}
-              >
-                检查更新
-              </Button>
-            )}
-            {updateStatus === "checking" && (
-              <Button variant="outline" size="sm" className="shrink-0" disabled>
-                <Loader2 className="size-3.5 animate-spin" />
-                检查中
-              </Button>
-            )}
-            {updateStatus === "downloading" && (
-              <Button size="sm" className="shrink-0" disabled>
-                <Loader2 className="size-3.5 animate-spin" />
-                {updateProgress}%
-              </Button>
-            )}
-            {updateStatus === "available" && (
-              <Button
-                size="sm"
-                className="shrink-0"
-                onClick={() => void downloadUpdate()}
-              >
-                下载并安装
-              </Button>
-            )}
-            {updateStatus === "ready" && (
-              <Button
-                size="sm"
-                className="shrink-0"
-                onClick={() => void relaunch()}
-              >
-                重启以完成更新
-              </Button>
-            )}
-          </div>
-          <div className="zap-version">
-            zap <span className="zap-version-num">v{appVersion || "…"}</span>
-          </div>
+          )}
+          <Button size="sm" className="shrink-0" onClick={saveSettings}>
+            保存
+          </Button>
         </div>
       </div>
     );
