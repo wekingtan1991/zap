@@ -19,8 +19,10 @@ import {
   Download,
   Eye,
   EyeOff,
+  Inbox,
   KeyRound,
   Loader2,
+  Lock,
   Pencil,
   Pin,
   PinOff,
@@ -28,7 +30,9 @@ import {
   RotateCw,
   Search,
   Settings as SettingsIcon,
+  ShieldCheck,
   Trash2,
+  TriangleAlert,
   Zap,
 } from "lucide-react";
 import "./App.css";
@@ -146,7 +150,7 @@ const VAULT_ADD_ENTRY: SearchItem = {
 
 const VAULT_IMPORT_ENTRY: SearchItem = {
   id: "vault:import",
-  title: "📥 智能导入（粘贴文本批量识别）",
+  title: "智能导入（粘贴文本批量识别）",
   subtitle: "从记事本 / 聊天记录粘贴账号文本，自动解析字段后校对入库",
   kind: "info",
   target: "",
@@ -196,7 +200,9 @@ class ErrorBoundary extends React.Component<
       return (
         <div className="zap-panel vault">
           <div className="zap-input-row">
-            <span className="zap-logo">⚠</span>
+            <span className="zap-logo">
+              <TriangleAlert className="size-4 text-primary-foreground" />
+            </span>
             <span className="zap-vault-tag">界面出错了</span>
             <button
               className="zap-link-btn"
@@ -243,12 +249,23 @@ function AppView() {
   const [detail, setDetail] = useState<VaultDetail | null>(null);
   const [showPw, setShowPw] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [revealPw, setRevealPw] = useState<{ title: string; password: string } | null>(null);
+  const [revealPw, setRevealPw] = useState<{
+    id: number;
+    title: string;
+    password: string;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const queryRef = useRef("");
   const busyRef = useRef(false);
   const vaultTermRef = useRef("");
   const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  // 子页面（设置/详情/表单/导入/查看密码）挂载时接管焦点：主面板卸载后焦点会掉到
+  // body（React 根节点之外），面板上的 onKeyDown 收不到任何按键，Esc 将失效。
+  // 焦点已在面板内（如浮层输入框的 autoFocus）则不抢。
+  const focusPanelRef = useCallback((el: HTMLDivElement | null) => {
+    if (el && !el.contains(document.activeElement)) el.focus();
+  }, []);
 
   useEffect(() => {
     queryRef.current = query;
@@ -620,7 +637,11 @@ function AppView() {
         }
         if (action === "reveal") {
           const pw = await invoke<string>("vault_action", { id, action });
-          setRevealPw({ title: item.title.replace(/^📌 /, ""), password: pw });
+          setRevealPw({
+            id,
+            title: item.title.replace(/^📌 /, ""),
+            password: pw,
+          });
           return;
         }
         const msg = await invoke<string>("vault_action", { id, action });
@@ -971,11 +992,7 @@ function AppView() {
         if (it.kind === "vault") void openDetail(it);
         return;
       }
-      if (e.key === "Escape") {
-        invoke("hide_panel");
-        return;
-      }
-      // ↑↓ 落到下方通用导航
+      // Esc 落到下方通用导航
     }
 
     if (e.key === "ArrowDown") {
@@ -995,7 +1012,13 @@ function AppView() {
       }
       activate(it);
     } else if (e.key === "Escape") {
-      invoke("hide_panel");
+      // 渐进式退出：有词清词（账号库下即退回主面板），空了才收起面板
+      e.preventDefault();
+      if (query.trim()) {
+        setQuery("");
+      } else {
+        invoke("hide_panel");
+      }
     }
   };
 
@@ -1006,7 +1029,12 @@ function AppView() {
   // ---------- 表单模式 ----------
   if (form) {
     return (
-      <div className="zap-panel vault" onKeyDown={onKeyDown}>
+      <div
+  className="zap-panel vault outline-none"
+  tabIndex={-1}
+  ref={focusPanelRef}
+  onKeyDown={onKeyDown}
+>
         <div className="zap-input-row">
           <span className="zap-logo">
             <KeyRound className="size-4 text-primary" />
@@ -1116,7 +1144,12 @@ function AppView() {
   // ---------- 查看密码 ----------
   if (revealPw) {
     return (
-      <div className="zap-panel vault" onKeyDown={onKeyDown}>
+      <div
+  className="zap-panel vault outline-none"
+  tabIndex={-1}
+  ref={focusPanelRef}
+  onKeyDown={onKeyDown}
+>
         <div className="zap-input-row">
           <span className="zap-logo">
             <Eye className="size-4 text-primary" />
@@ -1133,18 +1166,44 @@ function AppView() {
           </Button>
         </div>
         <div className="zap-form animate-fade-in">
-          <div className="flex flex-col gap-1.5">
-            <Label>{revealPw.title}</Label>
+          <div className="zap-detail-hero">
+            <div className="zap-detail-hero-row">
+              <span className="zap-detail-title">{revealPw.title}</span>
+            </div>
+            <div className="zap-detail-hero-sub">密码仅本次显示</div>
+          </div>
+          <div className="zap-pw-card">
             <Input
               autoFocus
               readOnly
-              className="zap-pw-reveal h-9 font-mono text-[15px] tracking-widest text-primary"
+              className="zap-pw-reveal h-12 border-0 bg-transparent px-0 font-mono text-[17px] tracking-[0.2em] text-primary shadow-none"
               value={revealPw.password}
               onFocus={(e) => e.currentTarget.select()}
+              onContextMenu={(e) => e.preventDefault()}
+              onKeyDown={(e) => {
+                // 拦截一切本机复制入口（Ctrl+C/X/Insert、Shift+F10 与右键菜单）：
+                // 强制走 Rust 受保护通道（排除剪贴板历史 + 焚除），
+                // 浏览器原生复制会绕过全部防护写入 Win+V 历史
+                if (e.shiftKey && e.key === "F10") {
+                  e.preventDefault();
+                  return;
+                }
+                if (e.ctrlKey && ["c", "C", "x", "X", "Insert"].includes(e.key)) {
+                  e.preventDefault();
+                  invoke<string>("vault_action", {
+                    id: revealPw.id,
+                    action: "password",
+                  })
+                    .then((msg) => toast.success(msg))
+                    .catch((err) => toast.error("复制失败：" + String(err)));
+                }
+              }}
             />
           </div>
-          <div className="zap-vault-tag flex items-center gap-1.5">
-            可框选复制 · 关闭密码请用 <Kbd>Esc</Kbd>（阅后即焚，不入剪贴板历史）
+          <div className="zap-pw-hint">
+            <ShieldCheck className="size-3.5" />
+            <Kbd>Ctrl</Kbd>+<Kbd>C</Kbd> 安全复制（不入剪贴板历史）·
+            关闭请用 <Kbd>Esc</Kbd>
           </div>
         </div>
       </div>
@@ -1154,9 +1213,16 @@ function AppView() {
   // ---------- 智能导入 ----------
   if (importing) {
     return (
-      <div className="zap-panel vault" onKeyDown={onKeyDown}>
+      <div
+  className="zap-panel vault outline-none"
+  tabIndex={-1}
+  ref={focusPanelRef}
+  onKeyDown={onKeyDown}
+>
         <div className="zap-input-row">
-          <span className="zap-logo">📥</span>
+          <span className="zap-logo">
+            <Inbox className="size-4 text-primary-foreground" />
+          </span>
           <span className="zap-vault-tag">智能导入</span>
           <Button
             variant="ghost"
@@ -1305,7 +1371,12 @@ function AppView() {
       rows.push({ label: "备注", value: detail.notes, field: "notes" });
     }
     return (
-      <div className="zap-panel vault" onKeyDown={onKeyDown}>
+      <div
+  className="zap-panel vault outline-none"
+  tabIndex={-1}
+  ref={focusPanelRef}
+  onKeyDown={onKeyDown}
+>
         <div className="zap-input-row">
           <span className="zap-logo">
             <KeyRound className="size-4 text-primary" />
@@ -1322,19 +1393,25 @@ function AppView() {
           </Button>
         </div>
         <div className="zap-form">
-          <div className="zap-detail-title flex items-center gap-1.5 animate-fade-in">
-            {detail.pinned === 1 && (
-              <Pin className="size-3.5 fill-current text-primary" />
-            )}
-            {detail.title}
+          <div className="zap-detail-hero animate-fade-in">
+            <div className="zap-detail-hero-row">
+              {detail.pinned === 1 && (
+                <Pin className="zap-detail-hero-pin size-4 fill-current text-primary" />
+              )}
+              <span className="zap-detail-title">{detail.title}</span>
+            </div>
+            <div className="zap-detail-hero-sub">
+              本地账号库 · 密码不进入任何剪贴板历史
+            </div>
           </div>
-          {rows.map((r, i) => (
-            <div
-              key={r.label}
-              className="zap-detail-row animate-fade-in"
-              style={{ animationDelay: `${40 + i * 35}ms` }}
-            >
-              <span className="zap-detail-label">{r.label}</span>
+          <div className="zap-detail-rows">
+            {rows.map((r, i) => (
+              <div
+                key={r.label}
+                className="zap-detail-row animate-fade-in"
+                style={{ animationDelay: `${40 + i * 35}ms` }}
+              >
+                <span className="zap-detail-label">{r.label}</span>
               {r.field === "password" ? (
                 <span
                   className={
@@ -1352,7 +1429,7 @@ function AppView() {
                 <span className="zap-detail-value">{r.value || "（空）"}</span>
               )}
               <span className="zap-detail-ops">
-                {r.field === "password" && (
+                {r.field === "password" && detail.password && (
                   <Button
                     variant="secondary"
                     size="sm"
@@ -1367,45 +1444,41 @@ function AppView() {
                     {showPw ? "隐藏" : "显示"}
                   </Button>
                 )}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="secondary"
-                      size="icon-sm"
-                      className="text-muted-foreground hover:text-foreground"
-                      disabled={!r.value}
-                      onClick={() => void copyField(r.field)}
-                      aria-label={"复制" + r.label}
-                    >
-                      {copiedField === r.field ? (
-                        <Check className="size-3.5 text-success animate-pop" />
-                      ) : (
-                        <Copy className="size-3.5" />
-                      )}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {copiedField === r.field ? "已复制 ✓" : "复制" + r.label}
-                  </TooltipContent>
-                </Tooltip>
-              </span>
-            </div>
-          ))}
-          <div className="zap-form-actions">
-            <Button variant="outline" onClick={editCurrent}>
-              <Pencil className="size-3.5" />
-              编辑
-            </Button>
-            <Button variant="outline" onClick={() => void pinCurrent()}>
-              {detail.pinned === 1 ? (
-                <PinOff className="size-3.5" />
-              ) : (
-                <Pin className="size-3.5" />
-              )}
-              {detail.pinned === 1 ? "取消置顶" : "置顶"}
-            </Button>
-            {confirmDelete ? (
-              <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="secondary"
+                        size="icon-sm"
+                        className="text-muted-foreground hover:text-foreground"
+                        disabled={!r.value}
+                        onClick={() => void copyField(r.field)}
+                        aria-label={"复制" + r.label}
+                      >
+                        {copiedField === r.field ? (
+                          <Check className="size-3.5 text-success animate-pop" />
+                        ) : (
+                          <Copy className="size-3.5" />
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {copiedField === r.field ? "已复制 ✓" : "复制" + r.label}
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+              </div>
+            ))}
+          </div>
+          {confirmDelete ? (
+            <div className="zap-confirm-strip">
+              <div className="zap-confirm-text">
+                <TriangleAlert className="size-3.5" />
+                删除后无法恢复，确认删除「{detail.title}」？
+              </div>
+              <div className="zap-confirm-actions">
+                <Button variant="ghost" onClick={() => setConfirmDelete(false)}>
+                  取消
+                </Button>
                 <Button
                   variant="destructive"
                   className="animate-pulse-ring"
@@ -1414,17 +1487,31 @@ function AppView() {
                   <Trash2 className="size-3.5" />
                   确认删除
                 </Button>
-                <Button variant="ghost" onClick={() => setConfirmDelete(false)}>
-                  取消
-                </Button>
-              </>
-            ) : (
-              <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
+              </div>
+            </div>
+          ) : (
+            <div className="zap-form-actions">
+              <Button onClick={editCurrent}>
+                <Pencil className="size-3.5" />
+                编辑
+              </Button>
+              <Button variant="outline" onClick={() => void pinCurrent()}>
+                {detail.pinned === 1 ? (
+                  <PinOff className="size-3.5" />
+                ) : (
+                  <Pin className="size-3.5" />
+                )}
+                {detail.pinned === 1 ? "取消置顶" : "置顶"}
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => setConfirmDelete(true)}
+              >
                 <Trash2 className="size-3.5" />
                 删除
               </Button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1433,7 +1520,12 @@ function AppView() {
   // ---------- 设置页 ----------
   if (settingsOpen && st) {
     return (
-      <div className="zap-panel vault" onKeyDown={onKeyDown}>
+      <div
+  className="zap-panel vault outline-none"
+  tabIndex={-1}
+  ref={focusPanelRef}
+  onKeyDown={onKeyDown}
+>
         <div className="zap-input-row">
           <span className="zap-logo">
             <SettingsIcon className="size-4 text-primary" />
@@ -1741,19 +1833,23 @@ function AppView() {
   return (
     <div className={"zap-panel" + (isVault ? " vault" : "")}>
       <div className="zap-input-row">
-        <span className="zap-logo">{isVault ? "🔒" : "⚡"}</span>
-        {isVault && <span className="zap-vault-tag">账号库</span>}
+        <span className="zap-logo">
+          {isVault ? (
+            <Lock className="size-3.5 text-primary-foreground" />
+          ) : (
+            <Zap className="size-3.5 text-primary-foreground" />
+          )}
+        </span>
+        {isVault && (
+          <span className="zap-vault-tag zap-vault-tag-pill">账号库</span>
+        )}
         <input
           ref={inputRef}
           autoFocus
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={
-            isVault
-              ? "搜索账号…（Enter 打开详情 · 行尾图标一键复制 · Esc 关闭）"
-              : "搜索应用、文件、剪贴板…（pw 进账号库 · Esc 关闭）"
-          }
+          placeholder={isVault ? "搜索账号…" : "搜索应用、文件、窗口、剪贴板…"}
           spellCheck={false}
         />
         <Button
@@ -1769,7 +1865,26 @@ function AppView() {
         </Button>
       </div>
       <div className="zap-results">
-        {items.map((it, i) => (
+        {items.length === 0 ? (
+          <div className="zap-empty">
+            <span className="zap-empty-ico">
+              {isVault ? (
+                <Lock className="size-5" />
+              ) : (
+                <Search className="size-5" />
+              )}
+            </span>
+            <span className="zap-empty-title">
+              {isVault ? "没有匹配的账号" : "开始输入，即时搜索"}
+            </span>
+            <span className="zap-empty-sub">
+              {isVault
+                ? "换个关键词，或清空后按 Enter 新增账号"
+                : "应用 · 文件 · 窗口 · 剪贴板 · 最近使用"}
+            </span>
+          </div>
+        ) : (
+          items.map((it, i) => (
           <div
             key={it.id + String(i)}
             className={"zap-item" + (i === active ? " active" : "")}
@@ -1807,7 +1922,10 @@ function AppView() {
               </Badge>
             )}
             <div className="zap-texts">
-              <div className="zap-title">{it.title}</div>
+              <div className="zap-title">
+                {pinned(it) && <Pin className="zap-title-pin size-3" />}
+                {it.title.replace(/^📌 /, "")}
+              </div>
               {it.subtitle && <div className="zap-sub">{it.subtitle}</div>}
             </div>
             {it.kind === "vault" && (
@@ -1835,7 +1953,42 @@ function AppView() {
               </Tooltip>
             )}
           </div>
-        ))}
+        ))
+        )}
+      </div>
+      <div className="zap-footer">
+        <span className="zap-footer-hints">
+          <Kbd>↑</Kbd>
+          <Kbd>↓</Kbd>
+          <span>选择</span>
+          <span className="zap-footer-sep" />
+          <Kbd>Enter</Kbd>
+          <span>{isVault ? "详情" : "启动"}</span>
+          {isVault ? (
+            <>
+              <span className="zap-footer-sep" />
+              <Kbd>Alt</Kbd>
+              <span>+</span>
+              <Kbd>1~6</Kbd>
+              <span>行内操作</span>
+            </>
+          ) : (
+            <>
+              <span className="zap-footer-sep" />
+              <Kbd>pw</Kbd>
+              <span>账号库</span>
+            </>
+          )}
+        </span>
+        <span className="zap-footer-hints">
+          <Kbd>Ctrl</Kbd>
+          <span>+</span>
+          <Kbd>,</Kbd>
+          <span>设置</span>
+          <span className="zap-footer-sep" />
+          <Kbd>Esc</Kbd>
+          <span>清空 / 关闭</span>
+        </span>
       </div>
     </div>
   );

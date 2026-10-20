@@ -14,7 +14,7 @@ const Toaster = ({ className, ...props }: ToasterProps) => {
       toastOptions={{
         classNames: {
           toast: cn(
-            "!flex !items-center !gap-2 !w-auto !max-w-[92%] !rounded-lg !border !border-border",
+            "!flex !items-center !gap-2 !w-auto !max-w-[92%] !self-center !rounded-lg !border !border-border",
             "!bg-popover/95 !backdrop-blur-sm !text-popover-foreground !shadow-lg !shadow-black/40",
             "!px-3 !py-2 !text-[12px] !font-medium !animate-toast-in"
           ),
