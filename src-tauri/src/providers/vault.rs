@@ -1,7 +1,6 @@
 //! 账号库：密码经 DPAPI 加密落盘（绑定当前 Windows 账户 + zap 熵），保护域交互。
 //! 铁律：密码永不出现在搜索结果、日志或剪贴板历史中。
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -9,8 +8,8 @@ use rusqlite::{Connection, params};
 
 use super::SearchItem;
 
-/// 账号库复制密码时置位：剪贴板监听跳过下一次入库（阅后即焚）
-pub static SUPPRESS_NEXT_CLIP: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 
 /// 应用专属熵：让 DPAPI 密文只有 zap 能解，同账户下其他程序无能为力
 const ENTROPY: &[u8] = b"zap:vault:v1";
@@ -147,20 +146,89 @@ fn copy_text(text: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// 阅后即焚：延时后若剪贴板仍是这段密码则自动清除（不覆盖用户的新复制）；secs<=0 关闭
-fn schedule_clear(password: String, secs: i64) {
+/// 敏感内容专用复制：排除 Windows 剪贴板历史（Win+V）与云剪贴板同步。
+/// 不排 monitor：zap 自身的剪贴板监听依赖变更事件做入库抑制（begin_self_copy 时间窗），
+/// 排 monitor 有让监听收不到事件、抑制错位的风险。
+#[cfg(windows)]
+fn copy_text_private(text: &str) -> Result<(), String> {
+    use arboard::SetExtWindows;
+    arboard::Clipboard::new()
+        .map_err(|e| e.to_string())?
+        .set()
+        .exclude_from_history()
+        .exclude_from_cloud()
+        .text(text.to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+fn copy_text_private(text: &str) -> Result<(), String> {
+    copy_text(text)
+}
+
+/// 当前剪贴板序列号：任何剪贴板变更都会使其递增，用于"内容是否还是我们复制的那一份"判定
+#[cfg(windows)]
+fn clipboard_seq() -> u32 {
+    unsafe { GetClipboardSequenceNumber() }
+}
+
+#[cfg(not(windows))]
+fn clipboard_seq() -> u32 {
+    0
+}
+
+/// 阅后即焚：延时后若剪贴板仍是这段密码则清空；secs<=0 关闭。
+/// 判定用「序列号未变（快路径）或回读文本仍是这段密码」双保险：
+/// - 序列号没变 = 没人动过剪贴板，直接清；
+/// - 序列号变了也再回读确认——他程序重设了同样内容照样清；
+///   是别的内容（用户复制了新东西）才放弃，绝不覆盖用户的新复制。
+/// Windows 上 OpenClipboard 可能被其他窗口短暂占用（IM/浏览器常驻监听），
+/// arboard 自带 5×5ms 重试窗口太窄，这里 6 次递进重试（合计约 4.2s）并全程落盘日志。
+#[cfg(windows)]
+fn schedule_clear(password: String, seq: u32, secs: i64) {
     if secs <= 0 {
+        super::diag::log("焚除未启用（pwd_clear_secs<=0）");
         return;
     }
+    super::diag::log(&format!("密码已复制：seq={seq}，{secs}s 后焚除"));
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(secs as u64));
-        if let Ok(mut cb) = arboard::Clipboard::new()
-            && cb.get_text().map(|t| t == password).unwrap_or(false)
-        {
-            let _ = cb.clear();
+        for attempt in 1..=6u32 {
+            // ① 判定剪贴板是否还是这段密码
+            if clipboard_seq() != seq {
+                match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+                    Ok(t) if t == password => { /* 他程序重设了同内容：继续清 */ }
+                    Ok(_) => {
+                        super::diag::log("焚除放弃：剪贴板已被新内容替换");
+                        return;
+                    }
+                    Err(e) => {
+                        super::diag::log(&format!(
+                            "焚除判定回读失败（第 {attempt}/6 次）：{e}"
+                        ));
+                        std::thread::sleep(Duration::from_millis(200 * attempt as u64));
+                        continue;
+                    }
+                }
+            }
+            // ② 执行清除
+            match arboard::Clipboard::new().and_then(|mut cb| cb.clear()) {
+                Ok(()) => {
+                    super::diag::log(&format!("密码焚除成功（第 {attempt} 次尝试）"));
+                    return;
+                }
+                Err(e) => {
+                    super::diag::log(&format!("密码焚除失败（第 {attempt}/6 次）：{e}"));
+                    std::thread::sleep(Duration::from_millis(200 * attempt as u64));
+                }
+            }
         }
+        super::diag::log("密码焚除最终失败：6 次重试均未成功");
     });
 }
+
+#[cfg(not(windows))]
+fn schedule_clear(_password: String, _seq: u32, _secs: i64) {}
 
 // ---------- 数据操作 ----------
 
@@ -282,7 +350,7 @@ pub fn action(
                     |r| r.get(0),
                 )
                 .map_err(|e| e.to_string())?;
-            SUPPRESS_NEXT_CLIP.store(true, Ordering::Relaxed);
+            super::clipboard::begin_self_copy();
             copy_text(&username)?;
             bump(conn);
             Ok("用户名已复制".into())
@@ -296,10 +364,11 @@ pub fn action(
                 )
                 .map_err(|e| e.to_string())?;
             let plain = dpapi_decrypt(&enc)?;
-            SUPPRESS_NEXT_CLIP.store(true, Ordering::Relaxed);
-            copy_text(&plain)?;
+            super::clipboard::begin_self_copy();
+            copy_text_private(&plain)?;
             bump(conn);
-            schedule_clear(plain, pwd_clear_secs);
+            // 复制完成后立刻取序列号：焚除时序列号未变才清（不覆盖用户的新复制）
+            schedule_clear(plain, clipboard_seq(), pwd_clear_secs);
             Ok(if pwd_clear_secs > 0 {
                 format!("密码已复制，{pwd_clear_secs} 秒后自动清除")
             } else {
@@ -322,7 +391,7 @@ pub fn action(
                     r.get(0)
                 })
                 .map_err(|e| e.to_string())?;
-            SUPPRESS_NEXT_CLIP.store(true, Ordering::Relaxed);
+            super::clipboard::begin_self_copy();
             copy_text(&notes)?;
             bump(conn);
             Ok("备注已复制".into())
@@ -798,7 +867,7 @@ mod crud_tests {
         .unwrap();
         assert_eq!(action(&conn, 1, "notes", 0).unwrap(), "备注已复制");
         assert!(
-            SUPPRESS_NEXT_CLIP.load(std::sync::atomic::Ordering::Relaxed),
+            crate::providers::clipboard::in_suppress_window(),
             "账号库复制应抑制剪贴板历史"
         );
         let items = search(&conn, "行云");
