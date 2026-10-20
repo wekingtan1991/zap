@@ -203,9 +203,7 @@ fn schedule_clear(password: String, seq: u32, secs: i64) {
                         return;
                     }
                     Err(e) => {
-                        super::diag::log(&format!(
-                            "焚除判定回读失败（第 {attempt}/6 次）：{e}"
-                        ));
+                        super::diag::log(&format!("焚除判定回读失败（第 {attempt}/6 次）：{e}"));
                         std::thread::sleep(Duration::from_millis(200 * attempt as u64));
                         continue;
                     }
