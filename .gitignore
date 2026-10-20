@@ -44,4 +44,5 @@ capture.log
 # IDE / 工具本地数据
 .codebuddy/
 .claude/
+.workbuddy/
 *.tsbuildinfo
