@@ -1,7 +1,8 @@
 #!/bin/sh
 # pre-push 门禁：与 CI 同门槛，任一失败即中止推送（--no-verify 可跳过）
 set -e
-cd "$(dirname "$0")/src-tauri"
+root="$(git rev-parse --show-toplevel)"
+cd "$root/src-tauri"
 
 echo "[pre-push] cargo fmt --check"
 cargo fmt --check
@@ -10,7 +11,7 @@ echo "[pre-push] cargo clippy --all-targets -- -D warnings"
 cargo clippy --all-targets -- -D warnings --quiet
 
 echo "[pre-push] pnpm exec tsc --noEmit"
-cd ..
+cd "$root"
 pnpm exec tsc --noEmit
 
 echo "[pre-push] 全部通过"
