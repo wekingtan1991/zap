@@ -1,6 +1,7 @@
 pub mod appconfig;
 pub mod apps;
 pub mod clipboard;
+pub mod diag;
 pub mod everything;
 pub mod files;
 pub mod recent;

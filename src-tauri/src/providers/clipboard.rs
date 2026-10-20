@@ -1,6 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use clipboard_master::{CallbackResult, ClipboardHandler, Master};
 use rusqlite::{Connection, params};
@@ -8,8 +8,21 @@ use windows::Win32::System::DataExchange::GetClipboardOwner;
 
 use super::SearchItem;
 
-/// 账号库复制密码时置位：下一次剪贴板变更不入库（阅后即焚）
-pub static SUPPRESS_NEXT_CLIP: AtomicBool = AtomicBool::new(false);
+/// 账号库复制（密码/用户名/备注）时开启：窗口期内的剪贴板变更不入库（阅后即焚）。
+/// 用时间窗而非单次标记：密码复制会连续写多次剪贴板（明文 + 2 个排除格式），
+/// 每次都触发变更事件，单次标记只能挡第一条。
+pub static SUPPRESS_CLIP_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+/// 当前是否处于「zap 自身复制」抑制窗口
+pub fn in_suppress_window() -> bool {
+    let until = SUPPRESS_CLIP_UNTIL.load(Ordering::Relaxed);
+    until != 0 && (now_ms() as u64) < until
+}
+
+/// 标记一次 zap 自身复制：后续 1.5s 内的剪贴板变更事件不入库
+pub fn begin_self_copy() {
+    SUPPRESS_CLIP_UNTIL.store(now_ms() as u64 + 1500, Ordering::Relaxed);
+}
 
 /// 剪贴板历史总开关（设置页/托盘切换），关闭时监听仍运行但不入库
 pub static CLIP_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -58,8 +71,8 @@ pub fn spawn_watcher(db_path: PathBuf) {
         }
         impl ClipboardHandler for Handler {
             fn on_clipboard_change(&mut self) -> CallbackResult {
-                // 账号库阅后即焚：抑制一次入库
-                if SUPPRESS_NEXT_CLIP.swap(false, Ordering::Relaxed) {
+                // 账号库阅后即焚：自身复制窗口内的变更一律不入库（高频路径，不落日志）
+                if in_suppress_window() {
                     return CallbackResult::Next;
                 }
                 // 总开关关闭：照常消费事件但不入库

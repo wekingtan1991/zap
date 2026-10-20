@@ -479,6 +479,7 @@ pub fn run() {
             // 数据库与剪贴板监听线程
             let db_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&db_dir)?;
+            providers::diag::init(db_dir.join("zap.log"));
             let db_path = db_dir.join("zap.db");
             let engine = SearchEngine::new(&db_path);
             providers::clipboard::spawn_watcher(db_path);
