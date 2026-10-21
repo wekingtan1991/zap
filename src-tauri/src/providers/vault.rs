@@ -298,12 +298,13 @@ pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
         return rows.iter().take(8).map(row_to_item).collect();
     }
 
+    let q = query.trim().to_lowercase();
     let mut scored: Vec<(f32, i64, i64)> = rows
         .iter()
         .filter_map(|row| {
             // 备注也参与匹配（标题/用户名/网址/备注）
             let hay = format!("{} {} {} {}", row.1, row.2, row.3, row.4);
-            super::score_match(&hay, query).map(|s| (s, row.0, row.5))
+            super::score_lowered(&hay, &q).map(|s| (s, row.0, row.5))
         })
         .collect();
     // 同分档内置顶优先，其次新在前

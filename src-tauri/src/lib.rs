@@ -398,7 +398,7 @@ fn toggle_panel(app: &AppHandle) {
     let state = app.state::<AppState>();
     *state.shown_at.lock().expect("shown_at poisoned") = Some(Instant::now());
     let _ = win.emit("zap://shown", ());
-    // 面板呼出即后台重建应用索引：新装/卸载的软件无需重启即可搜到（防并发叠加）
+    // 面板呼出后台重建应用索引（10 秒节流）：新装/卸载的软件无需重启即可搜到
     let engine = state.engine.clone();
     drop(tauri::async_runtime::spawn_blocking(move || {
         engine.refresh_apps()

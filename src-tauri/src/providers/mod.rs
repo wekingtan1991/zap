@@ -33,31 +33,57 @@ pub struct SearchItem {
     pub score: f32,
 }
 
-/// 统一匹配打分：直连（前缀>包含>子序列）→ 拼音全拼 → 拼音首字母。
-/// haystack/query 传原文即可，内部处理大小写与中文转拼音。
-pub(crate) fn score_match(haystack: &str, query: &str) -> Option<f32> {
-    let q = query.trim().to_lowercase();
-    if q.is_empty() {
-        return None;
+/// 预计算的匹配形态：小写原文 + 拼音全拼 + 首字母串。
+/// 长驻索引（应用/最近文件/设置表/窗口快照）在扫描时构建一次，
+/// 搜索时只做打分——否则每次击键都要对几百个条目重转拼音。
+#[derive(Clone)]
+pub(crate) struct MatchForms {
+    lower: String,
+    full: String,
+    initials: String,
+}
+
+impl MatchForms {
+    pub fn new(s: &str) -> Self {
+        let lower = s.to_lowercase();
+        // 纯 ASCII 文本没有拼音形态
+        let (full, initials) = if lower.is_ascii() {
+            (String::new(), String::new())
+        } else {
+            pinyin_forms(s)
+        };
+        Self {
+            lower,
+            full,
+            initials,
+        }
     }
-    let hay = haystack.to_lowercase();
-    if let Some(s) = score_plain(&hay, &q) {
-        return Some(s);
+
+    /// 统一匹配打分：直连（前缀>包含>子序列）→ 拼音全拼 → 拼音首字母。
+    /// query 须已 trim + 小写。
+    pub fn score(&self, q_lower: &str) -> Option<f32> {
+        if q_lower.is_empty() {
+            return None;
+        }
+        if let Some(s) = score_plain(&self.lower, q_lower) {
+            return Some(s);
+        }
+        if let Some(s) = score_plain(&self.full, q_lower) {
+            return Some(s * 0.85);
+        }
+        if !self.initials.is_empty()
+            && let Some(s) = score_plain(&self.initials, q_lower)
+        {
+            return Some(s * 0.7);
+        }
+        None
     }
-    // 纯 ASCII 文本没有拼音形态
-    if hay.is_ascii() {
-        return None;
-    }
-    let (full, initials) = pinyin_forms(haystack);
-    if let Some(s) = score_plain(&full, &q) {
-        return Some(s * 0.85);
-    }
-    if !initials.is_empty()
-        && let Some(s) = score_plain(&initials, &q)
-    {
-        return Some(s * 0.7);
-    }
-    None
+}
+
+/// query 已 trim+小写化后的打分：haystack 现场转形态。
+/// 供动态内容（剪贴板行、vault 字段拼接）使用，省去每条目重复小写化 query。
+pub(crate) fn score_lowered(haystack: &str, q_lower: &str) -> Option<f32> {
+    MatchForms::new(haystack).score(q_lower)
 }
 
 fn score_plain(hay_lower: &str, q_lower: &str) -> Option<f32> {
@@ -141,9 +167,10 @@ impl SearchEngine {
         vault::search(&conn, query)
     }
 
-    /// 后台重建应用索引（面板呼出时调用）；false = 上一次重扫未完成
+    /// 后台重建应用索引（面板呼出时调用）。10 秒内已扫过则跳过，
+    /// 避免连续呼出反复走目录树 + UWP 枚举；false = 本次跳过或上次未完成
     pub fn refresh_apps(&self) -> bool {
-        self.apps.refresh()
+        self.apps.refresh_if_stale(apps::REFRESH_MIN_INTERVAL)
     }
 
     pub fn vault_add(
@@ -199,15 +226,20 @@ impl SearchEngine {
 
     pub fn search(&self, query: &str) -> Vec<SearchItem> {
         let q = query.trim();
-        let conn = self.clip.lock().expect("clip db poisoned");
         if q.is_empty() {
             // 打开面板即见最近剪贴板，输入后各源汇入
+            let conn = self.clip.lock().expect("clip db poisoned");
             return clipboard::search(&conn, "", 5);
         }
         let mut items = self.apps.search(q, 8);
         items.extend(files::search(q, 8));
         items.extend(winsys::search(q, 5));
-        items.extend(clipboard::search(&conn, q, 6));
+        // clip 锁只在真正查库时短暂持有：files 的 HTTP（超时 250ms）与
+        // winsys 的窗口枚举若在锁内，会拖住共用这把锁的 vault 与设置操作
+        {
+            let conn = self.clip.lock().expect("clip db poisoned");
+            items.extend(clipboard::search(&conn, q, 6));
+        }
         items.extend(recent::search(&self.recents, q, 5));
         items.extend(settings::search(q, 8));
         items.extend(web::fallback(q));
@@ -217,7 +249,11 @@ impl SearchEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::score_match;
+    /// 与生产路径同构：原文入、现场转形态（原 score_match 便捷入口已并入 MatchForms）
+    fn score_match(haystack: &str, query: &str) -> Option<f32> {
+        let q = query.trim().to_lowercase();
+        super::MatchForms::new(haystack).score(&q)
+    }
 
     #[test]
     fn 拼音全拼与首字母() {

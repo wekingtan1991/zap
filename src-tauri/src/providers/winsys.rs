@@ -1,5 +1,8 @@
 //! 窗口切换器：枚举可见顶级窗口，搜索后置前
 
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -10,11 +13,32 @@ use windows::core::BOOL;
 
 use super::SearchItem;
 
+/// 窗口快照的复用窗口：连续击键共用一次枚举结果（EnumWindows + 逐窗口
+/// 进程路径解析不便宜），过期后下次搜索重建。激活用的是 hwnd，快照期间
+/// 窗口关闭只导致 SetForegroundWindow 空打，无副作用。
+const SNAPSHOT_TTL: Duration = Duration::from_millis(1500);
+
+static SNAPSHOT: Mutex<Option<(Instant, Arc<Vec<WinEntry>>)>> = Mutex::new(None);
+
+fn snapshot() -> Arc<Vec<WinEntry>> {
+    let mut guard = SNAPSHOT.lock().expect("win snapshot poisoned");
+    if let Some((at, list)) = guard.as_ref()
+        && at.elapsed() < SNAPSHOT_TTL
+    {
+        return list.clone();
+    }
+    let list = Arc::new(enumerate());
+    *guard = Some((Instant::now(), list.clone()));
+    list
+}
+
 #[derive(Clone)]
 pub struct WinEntry {
     pub hwnd: isize,
     pub title: String,
     pub process: String,
+    /// "标题 进程名" 的匹配形态（小写/拼音），枚举时算一次
+    forms: super::MatchForms,
 }
 
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -58,10 +82,12 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let process = pid
             .and_then(super::sysutil::process_stem_of_pid)
             .unwrap_or_default();
+        let forms = super::MatchForms::new(&format!("{title} {process}"));
         out.push(WinEntry {
             hwnd: hwnd.0 as isize,
             title,
             process,
+            forms,
         });
         true.into()
     }
@@ -76,13 +102,11 @@ pub fn enumerate() -> Vec<WinEntry> {
 }
 
 pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
-    let entries = enumerate();
+    let q = query.trim().to_lowercase();
+    let entries = snapshot();
     let mut scored: Vec<(f32, &WinEntry)> = entries
         .iter()
-        .filter_map(|e| {
-            let hay = format!("{} {}", e.title, e.process);
-            super::score_match(&hay, query).map(|s| (s, e))
-        })
+        .filter_map(|e| e.forms.score(&q).map(|s| (s, e)))
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(limit);

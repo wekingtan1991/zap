@@ -78,12 +78,12 @@ pub fn probe() -> bool {
 }
 
 pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
+    // 正常路径（退避跳过、未探测到端口、成功解析）一律静默：搜索是每击键
+    // 一次的热路径，这里刷日志只有噪音；真正的失败才落 stderr
     if recently_failed() {
-        eprintln!("zap: files 跳过（退避期内）");
         return Vec::new();
     }
     let Some(port) = resolve_port() else {
-        eprintln!("zap: files 未探测到端口");
         return Vec::new();
     };
     let url = format!(
@@ -131,10 +131,5 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
             }
         })
         .collect();
-    eprintln!(
-        "zap: files 解析 {} 条（原始 {} 条）",
-        items.len(),
-        results.len()
-    );
     items
 }

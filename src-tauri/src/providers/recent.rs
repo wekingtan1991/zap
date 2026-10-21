@@ -8,6 +8,8 @@ pub struct RecentEntry {
     pub name: String,
     pub path: String,
     pub mtime: i64,
+    /// 名称的匹配形态（小写/拼音），扫描时算一次
+    pub forms: super::MatchForms,
 }
 
 pub fn scan() -> Vec<RecentEntry> {
@@ -30,10 +32,13 @@ pub fn scan() -> Vec<RecentEntry> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .ok()?
                     .as_millis() as i64;
+                let name = p.file_stem()?.to_string_lossy().to_string();
+                let forms = super::MatchForms::new(&name);
                 Some(RecentEntry {
-                    name: p.file_stem()?.to_string_lossy().to_string(),
+                    name,
                     path: p.to_string_lossy().to_string(),
                     mtime,
+                    forms,
                 })
             } else {
                 None
@@ -45,11 +50,13 @@ pub fn scan() -> Vec<RecentEntry> {
 }
 
 pub fn search(entries: &[RecentEntry], query: &str, limit: usize) -> Vec<SearchItem> {
+    let q = query.trim().to_lowercase();
     let mut scored: Vec<(f32, usize)> = entries
         .iter()
         .enumerate()
         .filter_map(|(i, e)| {
-            super::score_match(&e.name, query)
+            e.forms
+                .score(&q)
                 .map(|s| (s - e.name.chars().count() as f32 * 0.05, i))
         })
         .collect();

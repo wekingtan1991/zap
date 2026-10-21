@@ -1,5 +1,7 @@
 //! 系统设置直达：索引 Windows 设置页（ms-settings: URI），中文/英文/缩写均可命中
 
+use std::sync::LazyLock;
+
 use super::SearchItem;
 
 struct SettingEntry {
@@ -136,19 +138,27 @@ const SETTINGS: &[SettingEntry] = &[
     setting!("远程桌面连接", "mstsc", "mstsc remote desktop"),
 ];
 
-pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
-    let mut scored: Vec<(f32, usize)> = SETTINGS
+/// 静态表的匹配形态（含追加的"设置/settings"关键词），首次搜索时构建一次
+static FORMS: LazyLock<Vec<super::MatchForms>> = LazyLock::new(|| {
+    SETTINGS
         .iter()
-        .enumerate()
-        .filter_map(|(i, e)| {
-            // 所有条目追加"设置/settings"关键词：搜"设置"可浏览全部设置页
+        .map(|e| {
             let hay = if e.keywords.is_empty() {
                 format!("{} 设置 settings", e.title)
             } else {
                 format!("{} {} 设置 settings", e.title, e.keywords)
             };
-            super::score_match(&hay, query).map(|s| (s - 45.0, i))
+            super::MatchForms::new(&hay)
         })
+        .collect()
+});
+
+pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
+    let q = query.trim().to_lowercase();
+    let mut scored: Vec<(f32, usize)> = FORMS
+        .iter()
+        .enumerate()
+        .filter_map(|(i, forms)| forms.score(&q).map(|s| (s - 45.0, i)))
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(limit);
