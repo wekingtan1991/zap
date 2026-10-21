@@ -14,7 +14,10 @@ const Toaster = ({ className, ...props }: ToasterProps) => {
       toastOptions={{
         classNames: {
           toast: cn(
-            "!flex !items-center !gap-2 !w-auto !max-w-[92%] !self-center !rounded-lg !border !border-border",
+            // sonner 容器固定 356px 居中、li 是 absolute 且 center 模式不设偏移，
+            // 默认靠「li 与容器同宽」的巧合居中；这里收窄为内容宽后必须用
+            // left/right:0 + margin auto 才是真居中（!w-auto 的静态定位会贴容器左缘）
+            "!flex !items-center !gap-2 !left-0 !right-0 !mx-auto !w-fit !max-w-[92%] !rounded-lg !border !border-border",
             "!bg-popover/95 !backdrop-blur-sm !text-popover-foreground !shadow-lg !shadow-black/40",
             "!px-3 !py-2 !text-[12px] !font-medium !animate-toast-in"
           ),
