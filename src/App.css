@@ -570,3 +570,186 @@
   margin: 0 4px;
   background: rgba(255, 255, 255, 0.12);
 }
+
+/* ---------- JSON 工作台（json-tools 插件视图） ---------- */
+.zap-json-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+}
+
+/* 状态条：合法（琥珀）/ 报错（红）统一卡样式 */
+.zap-json-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  background: rgba(245, 158, 11, 0.08);
+  color: #fcd34d;
+  flex-shrink: 0;
+}
+
+.zap-json-status.zap-json-bad {
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.08);
+  color: #fecaca;
+}
+
+.zap-json-status svg {
+  flex-shrink: 0;
+}
+
+.zap-json-meta {
+  margin-left: auto;
+  color: #8a8f98;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 正文卡：树 / 文本共用外壳 */
+.zap-json-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.zap-json-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 100%;
+  color: #6b7280;
+  font-size: 12px;
+  user-select: none;
+  text-align: center;
+}
+
+/* 文本模式：行号 + 内容 */
+.zap-json-line {
+  display: flex;
+  white-space: pre;
+}
+
+.zap-json-ln {
+  flex-shrink: 0;
+  width: 42px;
+  padding-right: 12px;
+  text-align: right;
+  color: #4b5563;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 树模式：可折叠节点。箭头占固定槽位，{ 与 } 同列对齐（VS Code/DevTools 风格） */
+.zap-json-node {
+  padding-left: 20px;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.zap-json-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  border-radius: 6px;
+  padding: 1px 4px;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.zap-json-key {
+  color: #7dd3fc;
+}
+
+/* 键 + 冒号紧贴为一个词元：行内 gap 只作用于词元之间，冒号前不留空 */
+.zap-json-kv {
+  display: inline-flex;
+}
+
+.zap-json-colon {
+  color: #6b7280;
+}
+
+.zap-json-gutter {
+  width: 14px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+button.zap-json-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: #e8eaed;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  word-break: break-all;
+}
+
+button.zap-json-toggle:hover .zap-json-key {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.zap-json-gutter svg {
+  color: #6b7280;
+  transition: transform 0.12s ease;
+}
+
+.zap-json-gutter svg.zap-json-open {
+  transform: rotate(90deg);
+}
+
+.zap-json-count {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+/* 标量值配色 */
+.zap-json-str {
+  color: #a5d6a7;
+}
+
+.zap-json-num {
+  color: #fbbf24;
+}
+
+.zap-json-bool {
+  color: #c084fc;
+}
+
+.zap-json-null {
+  color: #6b7280;
+  font-style: italic;
+}
+
+/* 动作条：复制美化 / 复制压缩 / 视图切换 */
+.zap-json-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.zap-json-actions > * {
+  flex: 1;
+}

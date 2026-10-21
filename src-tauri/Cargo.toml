@@ -33,6 +33,7 @@ arboard = "3.6.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "default-tls"] }
 base64 = "0.23.1"
 pinyin = "0.11.0"
+serde_yaml_ng = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Com", "Win32_System_DataExchange", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }

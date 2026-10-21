@@ -155,6 +155,8 @@ struct AppSettingsDto {
     pwd_clear_secs: i64,
     autostart: bool,
     everything_autostart: bool,
+    /// 可开关插件清单（仅工具插件；核心搜索源不列）
+    plugins: Vec<providers::PluginInfo>,
 }
 
 #[tauri::command]
@@ -174,7 +176,16 @@ fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSetting
             .get_setting(providers::appconfig::KEY_EVERYTHING_AUTOSTART)
             .map(|v| v != "0")
             .unwrap_or(providers::appconfig::DEFAULT_EVERYTHING_AUTOSTART),
+        plugins: state.engine.plugin_states(),
     }
+}
+
+/// 插件开关（save_settings 入参）
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginSwitchDto {
+    id: String,
+    enabled: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -184,6 +195,8 @@ struct SaveOutcome {
     hotkey_error: Option<String>,
 }
 
+// Tauri 命令按字段平铺（前端 invoke 传同名参数），显式放行参数个数提示
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn save_settings(
     app: AppHandle,
@@ -193,6 +206,7 @@ fn save_settings(
     clip_max: i64,
     pwd_clear_secs: i64,
     everything_autostart: bool,
+    plugins: Vec<PluginSwitchDto>,
 ) -> Result<SaveOutcome, String> {
     let hotkey = hotkey.trim().to_lowercase();
     let mut hotkey_error = None;
@@ -247,6 +261,10 @@ fn save_settings(
         providers::appconfig::KEY_EVERYTHING_AUTOSTART,
         if everything_autostart { "1" } else { "0" },
     )?;
+    // 插件开关：逐个写存档并同步原子量（未知 id 直接报错，防前端脏数据静默丢失）
+    for p in &plugins {
+        state.engine.set_plugin_enabled(&p.id, p.enabled)?;
+    }
     if let Some(item) = state.clip_item.lock().expect("clip_item poisoned").as_ref() {
         let _ = item.set_checked(clip_enabled);
     }
@@ -278,6 +296,49 @@ fn stop_hotkey_capture() {
 #[tauri::command]
 fn vault_parse(text: String) -> Vec<providers::vault::ParsedAccount> {
     providers::vault::parse_blob(&text)
+}
+
+// ---------- JSON 工具插件 ----------
+
+#[tauri::command]
+fn json_analyze(text: String) -> Result<providers::jsontools::JsonReport, String> {
+    providers::jsontools::analyze(&text)
+}
+
+#[tauri::command]
+fn json_format(text: String, pretty: bool) -> Result<String, String> {
+    providers::jsontools::format_text(&text, pretty)
+}
+
+#[tauri::command]
+fn json_to_yaml(text: String) -> Result<String, String> {
+    providers::jsontools::to_yaml(&text)
+}
+
+#[tauri::command]
+fn json_to_ts(text: String) -> Result<String, String> {
+    providers::jsontools::to_ts(&text)
+}
+
+/// 识别条目回查原文：按行号读剪贴板历史（进入工作台时以识别时刻的内容为准）
+#[tauri::command]
+fn clip_row(state: tauri::State<AppState>, id: i64) -> Result<String, String> {
+    state
+        .engine
+        .clip_row(id)
+        .ok_or_else(|| "该条剪贴板已被清理".into())
+}
+
+/// 通用文本复制（JSON 美化/压缩结果回填等）：
+/// 走自身复制抑制窗，派生结果不重复进入剪贴板历史
+#[tauri::command]
+fn copy_text(text: String) -> Result<String, String> {
+    providers::clipboard::begin_self_copy();
+    arboard::Clipboard::new()
+        .map_err(|e| e.to_string())?
+        .set_text(text)
+        .map_err(|e| e.to_string())?;
+    Ok("已复制".into())
 }
 
 #[tauri::command]
@@ -469,6 +530,12 @@ pub fn run() {
             vault_update,
             vault_parse,
             vault_import,
+            json_analyze,
+            json_format,
+            json_to_yaml,
+            json_to_ts,
+            clip_row,
+            copy_text,
             get_app_settings,
             save_settings,
             autostart_set,

@@ -13,25 +13,20 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { toast } from "sonner";
 import {
   ArrowLeft,
-  Check,
   Clipboard,
-  Copy,
   Download,
   Eye,
-  EyeOff,
   Inbox,
   KeyRound,
   Loader2,
   Lock,
-  Pencil,
   Pin,
-  PinOff,
+  Puzzle,
   RefreshCw,
   RotateCw,
   Search,
   Settings as SettingsIcon,
   ShieldCheck,
-  Trash2,
   TriangleAlert,
   Zap,
 } from "lucide-react";
@@ -50,68 +45,18 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Kbd } from "@/components/ui/kbd";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
-
-interface SearchItem {
-  id: string;
-  title: string;
-  subtitle: string;
-  kind: string;
-  target: string;
-  icon?: string | null;
-  score: number;
-}
-
-const KIND_LABEL: Record<string, string> = {
-  app: "应用",
-  clip: "剪贴板",
-  file: "文件",
-  win: "窗口",
-  recent: "最近",
-  settings: "设置",
-  vault: "账号",
-  web: "搜索",
-  url: "网址",
-  cmd: "功能",
-  info: "状态",
-};
-
-/// 列表徽标配色（shadcn Badge 变体），与各类源的语义色一一对应
-const BADGE_VARIANT: Record<
-  string,
-  | "app"
-  | "clip"
-  | "win"
-  | "recent"
-  | "file"
-  | "cmd"
-  | "settings"
-  | "vault"
-  | "web"
-  | "url"
-  | "info"
-> = {
-  app: "app",
-  clip: "clip",
-  file: "file",
-  win: "win",
-  recent: "recent",
-  settings: "settings",
-  vault: "vault",
-  web: "web",
-  url: "url",
-  cmd: "cmd",
-  info: "info",
-};
-
-/// 是否已置顶：后端给置顶条目的标题加了 📌 前缀
-const pinned = (it: SearchItem) => it.title.startsWith("📌");
+import { kindUi, type ItemActions } from "@/plugins/registry";
+import { isPinned, type SearchItem } from "@/plugins/types";
+import {
+  kickEverythingEnsure,
+  runCommand,
+  startupEntries,
+  type CommandCtx,
+} from "@/plugins/commands";
+import { VaultDetailView, type VaultDetail } from "@/plugins/vault/VaultDetailView";
+import { JsonWorkbench } from "@/plugins/json/JsonWorkbench";
 
 /// 热键串展示格式化：ctrl+space → Ctrl + Space（键位首字母大写，+ 两侧留空）
 const formatHotkey = (hk: string) =>
@@ -164,15 +109,11 @@ interface ParsedAccount {
   url: string;
 }
 
-/// 账号详情页数据（vault_get 的完整记录，密码为解密后明文，默认掩码展示）
-interface VaultDetail {
-  id: number;
+interface PluginState {
+  id: string;
   title: string;
-  username: string;
-  password: string;
-  url: string;
-  notes: string;
-  pinned: number;
+  hint: string;
+  enabled: boolean;
 }
 
 interface AppSettings {
@@ -182,6 +123,8 @@ interface AppSettings {
   pwdClearSecs: number;
   autostart: boolean;
   everythingAutostart: boolean;
+  /// 可开关插件清单（后端 meta 下发，设置页「插件」分区渲染）
+  plugins: PluginState[];
 }
 
 /// 渲染兜底：任何视图抛错都不再整页白屏，而是提示可读信息 + 一键复位
@@ -259,6 +202,8 @@ function AppView() {
   const busyRef = useRef(false);
   const vaultTermRef = useRef("");
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  /// JSON 识别条目进入的工作台（剪贴板行号寻址）
+  const [jsonItem, setJsonItem] = useState<SearchItem | null>(null);
 
   // 子页面（设置/详情/表单/导入/查看密码）挂载时接管焦点：主面板卸载后焦点会掉到
   // body（React 根节点之外），面板上的 onKeyDown 收不到任何按键，Esc 将失效。
@@ -277,6 +222,9 @@ function AppView() {
   // 保护域：pw 前缀进入账号库
   const isVault = query.trim().toLowerCase().startsWith("pw");
   const vaultTerm = isVault ? query.trim().slice(2).trim() : "";
+  // 工具域：json 前缀进入 JSON 工作台，其后文本即待分析内容
+  const isJson = !isVault && query.trim().toLowerCase().startsWith("json");
+  const jsonText = isJson ? query.trim().slice(4).trim() : "";
   useEffect(() => {
     vaultTermRef.current = vaultTerm;
   }, [vaultTerm]);
@@ -377,6 +325,7 @@ function AppView() {
       setSt(null);
       setHkRecording(false);
       setHkError("");
+      setJsonItem(null);
       stopHkCapture();
       setActive(0);
       setTimeout(() => inputRef.current?.focus(), 30);
@@ -384,40 +333,15 @@ function AppView() {
       invoke<SearchItem[]>("search", { query: "" })
         .then(async (res) => {
           if (queryRef.current) return;
-          let list = res;
-          let evDown = false;
-          try {
-            const st = await invoke<string>("everything_status");
-            evDown = st !== "running";
-            if (evDown) {
-              list = [
-                ...list,
-                {
-                  id: "cmd:everything",
-                  title: "启用全盘文件搜索（Everything）",
-                  subtitle:
-                    st === "installed_not_running"
-                      ? "启动已就绪的 Everything · 弹出 UAC 请点“是”"
-                      : "自动下载并配置，约 2MB · 弹出 UAC 请点“是”",
-                  kind: "cmd",
-                  target: "everything_setup",
-                  score: 0,
-                },
-              ];
-            }
-          } catch {
-            // 状态查询失败不影响列表
-          }
-          if (!queryRef.current) setItems(list);
-          // Everything 未运行：后台自动启动（后端按设置与节流决定是否真的动作）
-          if (evDown) {
-            invoke<string>("everything_ensure")
-              .then((after) => {
-                if (after === "running" && !queryRef.current) {
-                  setItems((cur) => cur.filter((x) => x.id !== "cmd:everything"));
-                }
-              })
-              .catch(() => {});
+          // 呼出期状态注入：Everything 未运行追加启用条目（逻辑收敛在 commands 模块）
+          const extra = await startupEntries();
+          if (!queryRef.current) setItems([...res, ...extra]);
+          if (extra.length > 0) {
+            kickEverythingEnsure(() => {
+              if (!queryRef.current) {
+                setItems((cur) => cur.filter((x) => x.id !== "cmd:everything"));
+              }
+            });
           }
         })
         .catch(() => {});
@@ -427,9 +351,9 @@ function AppView() {
     };
   }, []);
 
-  // 普通域搜索（保护域下不生效）
+  // 普通域搜索（保护域/工具域下不生效）
   useEffect(() => {
-    if (isVault) return;
+    if (isVault || isJson) return;
     const timer = setTimeout(async () => {
       try {
         const res = await invoke<SearchItem[]>("search", { query: query.trim() });
@@ -453,6 +377,7 @@ function AppView() {
       setForm(null);
       setDetail(null);
       setImporting(false);
+      setJsonItem(null);
       setSt(s);
       setHkRecording(false);
       setHkError("");
@@ -493,6 +418,7 @@ function AppView() {
         clipMax: st.clipMax,
         pwdClearSecs: st.pwdClearSecs,
         everythingAutostart: st.everythingAutostart,
+        plugins: st.plugins.map((p) => ({ id: p.id, enabled: p.enabled })),
       });
       if (res.hotkeyError) {
         setHkError(res.hotkeyError);
@@ -728,6 +654,12 @@ function AppView() {
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
 
+  // JSON 工作台（识别条目进入）：Esc 返回列表
+  const closeJson = useCallback(() => {
+    setJsonItem(null);
+    setTimeout(() => inputRef.current?.focus(), 30);
+  }, []);
+
   const openDetail = useCallback(
     async (item: SearchItem) => {
       const id = Number(item.target);
@@ -806,49 +738,51 @@ function AppView() {
     setDetail(null);
   }, [detail]);
 
-  const runEverythingSetup = useCallback(async () => {
-    if (busyRef.current) return;
-    setBusy(true);
-    setItems([
-      {
-        id: "setup-busy",
-        title: "正在准备 Everything…",
-        subtitle: "下载约 2MB 并自动配置；若弹出 UAC 请点“是”",
-        kind: "info",
-        target: "",
-        score: 0,
-      },
-    ]);
-    await invoke("set_hold_panel", { hold: true }).catch(() => {});
-    const result = await invoke<string>("everything_setup").catch(
-      (e) => "error: " + e
-    );
-    await invoke("set_hold_panel", { hold: false }).catch(() => {});
-    if (result === "running") {
-      setItems([
-        {
-          id: "setup-done",
-          title: "全盘搜索已启用 ✓",
-          subtitle: "输入任意文件名即可搜索全盘，Esc 关闭后立即生效",
-          kind: "info",
-          target: "",
-          score: 0,
-        },
-      ]);
-    } else {
-      setItems([
-        {
-          id: "setup-fail",
-          title: "启用未完成",
-          subtitle: String(result),
-          kind: "info",
-          target: "",
-          score: 0,
-        },
-      ]);
-    }
-    setBusy(false);
-  }, []);
+  // ---------- 统一条目分发 ----------
+  // Enter 与点击共用：伪条目（新增/导入）→ 注册表 activate → 默认 openExternal。
+  // kind 行为收敛在 plugins/registry.tsx，这里只接装配，不写 kind 特判
+  const actions: ItemActions = {
+    openVaultDetail: (it) => void openDetail(it),
+    openJson: (it) => setJsonItem(it),
+    runCommand: (target) =>
+      void runCommand(target, {
+        busyRef,
+        setBusy,
+        setItems,
+      } satisfies CommandCtx),
+    openExternal: activate,
+    vaultPin: (it) => void vaultAction(it, "pin"),
+  };
+
+  const runItem = useCallback(
+    (it: SearchItem | undefined) => {
+      if (!it || busyRef.current) return;
+      // 保护域伪条目：id 寻址（列表展示与普通条目无异，动作单独接）
+      if (it.id === "vault:add") {
+        setFormError("");
+        setForm({ ...EMPTY_FORM });
+        return;
+      }
+      if (it.id === "vault:import") {
+        setImporting(true);
+        return;
+      }
+      const ui = kindUi(it.kind);
+      if (!ui) {
+        // 未注册 kind：按旧约定交给后端（条目结构向后兼容）
+        activate(it);
+        return;
+      }
+      if (ui.activate) {
+        ui.activate(it, actions);
+        return;
+      }
+      if (ui.external !== false) activate(it);
+    },
+    // actions 引用稳定的 useState setter / useCallback 闭包，逐项列出即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activate, openDetail, vaultAction]
+  );
 
   const saveForm = useCallback(async () => {
     if (!form) return;
@@ -955,6 +889,15 @@ function AppView() {
       return;
     }
 
+    // JSON 工作台（识别条目进入）：Esc 返回列表
+    if (jsonItem) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeJson();
+      }
+      return;
+    }
+
     // Ctrl+, 打开设置
     if (e.ctrlKey && e.key === ",") {
       e.preventDefault();
@@ -978,18 +921,7 @@ function AppView() {
       }
       if (e.key === "Enter") {
         e.preventDefault();
-        const it = items[active];
-        if (!it) return;
-        if (it.id === "vault:add") {
-          setFormError("");
-          setForm({ ...EMPTY_FORM });
-          return;
-        }
-        if (it.id === "vault:import") {
-          setImporting(true);
-          return;
-        }
-        if (it.kind === "vault") void openDetail(it);
+        runItem(items[active]);
         return;
       }
       // Esc 落到下方通用导航
@@ -1003,14 +935,8 @@ function AppView() {
       setActive((a) => Math.max(a - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const it = items[active];
-      if (!it || busy) return;
-      if (it.kind === "info") return;
-      if (it.kind === "cmd") {
-        runEverythingSetup();
-        return;
-      }
-      activate(it);
+      // 工具域无列表（items 是进入前的陈旧结果），Enter 不动作
+      if (!isJson) runItem(items[active]);
     } else if (e.key === "Escape") {
       // 渐进式退出：有词清词（账号库下即退回主面板），空了才收起面板
       e.preventDefault();
@@ -1356,164 +1282,39 @@ function AppView() {
     );
   }
 
-  // ---------- 账号详情：点击标题打开，逐行展示，行尾一键复制 ----------
+  // ---------- 账号详情：点击标题打开，逐行展示，行尾一键复制（渲染收敛进插件视图） ----------
   if (detail) {
-    const rows: {
-      label: string;
-      value: string;
-      field: "username" | "password" | "url" | "notes";
-    }[] = [
-      { label: "用户名", value: detail.username, field: "username" },
-      { label: "密码", value: detail.password, field: "password" },
-      { label: "网址", value: detail.url, field: "url" },
-    ];
-    if (detail.notes) {
-      rows.push({ label: "备注", value: detail.notes, field: "notes" });
-    }
     return (
-      <div
-  className="zap-panel vault outline-none"
-  tabIndex={-1}
-  ref={focusPanelRef}
-  onKeyDown={onKeyDown}
->
-        <div className="zap-input-row">
-          <span className="zap-logo">
-            <KeyRound className="size-4 text-primary" />
-          </span>
-          <span className="zap-vault-tag">账号详情</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-            onClick={closeDetail}
-          >
-            <ArrowLeft className="size-3" />
-            返回（Esc）
-          </Button>
-        </div>
-        <div className="zap-form">
-          <div className="zap-detail-hero animate-fade-in">
-            <div className="zap-detail-hero-row">
-              {detail.pinned === 1 && (
-                <Pin className="zap-detail-hero-pin size-4 fill-current text-primary" />
-              )}
-              <span className="zap-detail-title">{detail.title}</span>
-            </div>
-            <div className="zap-detail-hero-sub">
-              本地账号库 · 密码不进入任何剪贴板历史
-            </div>
-          </div>
-          <div className="zap-detail-rows">
-            {rows.map((r, i) => (
-              <div
-                key={r.label}
-                className="zap-detail-row animate-fade-in"
-                style={{ animationDelay: `${40 + i * 35}ms` }}
-              >
-                <span className="zap-detail-label">{r.label}</span>
-              {r.field === "password" ? (
-                <span
-                  className={
-                    "zap-detail-value transition-all duration-200" +
-                    (showPw ? "" : " zap-detail-mask")
-                  }
-                >
-                  {detail.password
-                    ? showPw
-                      ? detail.password
-                      : "••••••••"
-                    : "（空）"}
-                </span>
-              ) : (
-                <span className="zap-detail-value">{r.value || "（空）"}</span>
-              )}
-              <span className="zap-detail-ops">
-                {r.field === "password" && detail.password && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-                    onClick={() => setShowPw((v) => !v)}
-                  >
-                    {showPw ? (
-                      <EyeOff className="size-3" />
-                    ) : (
-                      <Eye className="size-3" />
-                    )}
-                    {showPw ? "隐藏" : "显示"}
-                  </Button>
-                )}
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="secondary"
-                        size="icon-sm"
-                        className="text-muted-foreground hover:text-foreground"
-                        disabled={!r.value}
-                        onClick={() => void copyField(r.field)}
-                        aria-label={"复制" + r.label}
-                      >
-                        {copiedField === r.field ? (
-                          <Check className="size-3.5 text-success animate-pop" />
-                        ) : (
-                          <Copy className="size-3.5" />
-                        )}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {copiedField === r.field ? "已复制 ✓" : "复制" + r.label}
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-              </div>
-            ))}
-          </div>
-          {confirmDelete ? (
-            <div className="zap-confirm-strip">
-              <div className="zap-confirm-text">
-                <TriangleAlert className="size-3.5" />
-                删除后无法恢复，确认删除「{detail.title}」？
-              </div>
-              <div className="zap-confirm-actions">
-                <Button variant="ghost" onClick={() => setConfirmDelete(false)}>
-                  取消
-                </Button>
-                <Button
-                  variant="destructive"
-                  className="animate-pulse-ring"
-                  onClick={() => void deleteCurrent()}
-                >
-                  <Trash2 className="size-3.5" />
-                  确认删除
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="zap-form-actions">
-              <Button onClick={editCurrent}>
-                <Pencil className="size-3.5" />
-                编辑
-              </Button>
-              <Button variant="outline" onClick={() => void pinCurrent()}>
-                {detail.pinned === 1 ? (
-                  <PinOff className="size-3.5" />
-                ) : (
-                  <Pin className="size-3.5" />
-                )}
-                {detail.pinned === 1 ? "取消置顶" : "置顶"}
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => setConfirmDelete(true)}
-              >
-                <Trash2 className="size-3.5" />
-                删除
-              </Button>
-            </div>
-          )}
-        </div>
-      </div>
+      <VaultDetailView
+        detail={detail}
+        showPw={showPw}
+        confirmDelete={confirmDelete}
+        copiedField={copiedField}
+        focusRef={focusPanelRef}
+        onKeyDown={onKeyDown}
+        onClose={closeDetail}
+        onTogglePw={() => setShowPw((v) => !v)}
+        onAskDelete={() => setConfirmDelete(true)}
+        onCancelDelete={() => setConfirmDelete(false)}
+        onDelete={() => void deleteCurrent()}
+        onCopyField={(f) => void copyField(f)}
+        onEdit={editCurrent}
+        onPin={() => void pinCurrent()}
+      />
+    );
+  }
+
+  // ---------- JSON 工作台：识别条目进入（完整面板） ----------
+  if (jsonItem) {
+    const rowid = Number(jsonItem.target);
+    return (
+      <JsonWorkbench
+        clipRow={Number.isNaN(rowid) ? undefined : rowid}
+        full
+        onBack={closeJson}
+        focusRef={focusPanelRef}
+        onKeyDown={onKeyDown}
+      />
     );
   }
 
@@ -1702,6 +1503,54 @@ function AppView() {
           </div>
           <div className="mt-3 border-t border-white/5 pt-3">
             <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+              <Puzzle className="size-3 text-primary/75" />
+              插件
+            </div>
+            {st.plugins.length === 0 ? (
+              <div className="py-2 text-[11px] text-muted-foreground">
+                暂无可开关插件
+              </div>
+            ) : (
+              st.plugins.map((p) => (
+                <div
+                  key={p.id}
+                  className="flex min-h-[38px] items-center justify-between gap-3"
+                >
+                  <span className="flex min-w-0 flex-col gap-px">
+                    <Label
+                      htmlFor={"set-plugin-" + p.id}
+                      className="text-[13px] font-normal text-foreground"
+                    >
+                      {p.title}
+                    </Label>
+                    <span className="text-[11px] leading-snug text-muted-foreground">
+                      {p.hint}
+                    </span>
+                  </span>
+                  <Checkbox
+                    id={"set-plugin-" + p.id}
+                    checked={p.enabled}
+                    onCheckedChange={(v) =>
+                      setSt((s) =>
+                        s
+                          ? {
+                              ...s,
+                              plugins: s.plugins.map((x) =>
+                                x.id === p.id
+                                  ? { ...x, enabled: v === true }
+                                  : x
+                              ),
+                            }
+                          : s
+                      )
+                    }
+                  />
+                </div>
+              ))
+            )}
+          </div>
+          <div className="mt-3 border-t border-white/5 pt-3">
+            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
               <RefreshCw className="size-3 text-primary/75" />
               软件更新
             </div>
@@ -1849,7 +1698,13 @@ function AppView() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={isVault ? "搜索账号…" : "搜索应用、文件、窗口、剪贴板…"}
+          placeholder={
+            isVault
+              ? "搜索账号…"
+              : isJson
+                ? "在 json 后粘贴或输入 JSON，实时校验美化"
+                : "搜索应用、文件、窗口、剪贴板…"
+          }
           spellCheck={false}
         />
         <Button
@@ -1865,7 +1720,9 @@ function AppView() {
         </Button>
       </div>
       <div className="zap-results">
-        {items.length === 0 ? (
+        {isJson ? (
+          <JsonWorkbench text={jsonText} onBack={() => setQuery("")} />
+        ) : items.length === 0 ? (
           <div className="zap-empty">
             <span className="zap-empty-ico">
               {isVault ? (
@@ -1884,77 +1741,34 @@ function AppView() {
             </span>
           </div>
         ) : (
-          items.map((it, i) => (
-          <div
-            key={it.id + String(i)}
-            className={"zap-item" + (i === active ? " active" : "")}
-            onMouseEnter={() => setActive(i)}
-            onClick={() => {
-              if (busy) return;
-              if (it.id === "vault:add") {
-                setFormError("");
-                setForm({ ...EMPTY_FORM });
-                return;
-              }
-              if (it.id === "vault:import") {
-                setImporting(true);
-                return;
-              }
-              if (it.kind === "info") return;
-              if (isVault) {
-                if (it.kind === "vault") {
-                  void openDetail(it);
-                  return;
-                }
-              }
-              if (it.kind === "cmd") {
-                runEverythingSetup();
-                return;
-              }
-              activate(it);
-            }}
-          >
-            {it.icon ? (
-              <img className="zap-ico" src={it.icon} alt="" draggable={false} />
-            ) : (
-              <Badge variant={BADGE_VARIANT[it.kind] ?? "secondary"}>
-                {KIND_LABEL[it.kind] ?? it.kind}
-              </Badge>
-            )}
-            <div className="zap-texts">
-              <div className="zap-title">
-                {pinned(it) && <Pin className="zap-title-pin size-3" />}
-                {it.title.replace(/^📌 /, "")}
+          items.map((it, i) => {
+            const ui = kindUi(it.kind);
+            return (
+            <div
+              key={it.id + String(i)}
+              className={"zap-item" + (i === active ? " active" : "")}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => runItem(it)}
+            >
+              {it.icon ? (
+                <img className="zap-ico" src={it.icon} alt="" draggable={false} />
+              ) : (
+                <Badge variant={ui?.badge ?? "secondary"}>
+                  {ui?.label ?? it.kind}
+                </Badge>
+              )}
+              <div className="zap-texts">
+                <div className="zap-title">
+                  {isPinned(it) && <Pin className="zap-title-pin size-3" />}
+                  {it.title.replace(/^📌 /, "")}
+                </div>
+                {it.subtitle && <div className="zap-sub">{it.subtitle}</div>}
               </div>
-              {it.subtitle && <div className="zap-sub">{it.subtitle}</div>}
+              {ui?.rowAction?.(it, actions)}
             </div>
-            {it.kind === "vault" && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="zap-row-pin text-muted-foreground hover:text-primary"
-                    aria-label={pinned(it) ? "取消置顶" : "置顶"}
-                    onClick={(e) => {
-                      // 行尾动作：阻止冒泡，避免顺带打开详情页
-                      e.stopPropagation();
-                      void vaultAction(it, "pin");
-                    }}
-                  >
-                    {pinned(it) ? (
-                      <PinOff className="size-3.5" />
-                    ) : (
-                      <Pin className="size-3.5" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{pinned(it) ? "取消置顶" : "置顶"}</TooltipContent>
-              </Tooltip>
-            )}
-          </div>
-        ))
-        )}
+            );
+          })
+          )}
       </div>
       <div className="zap-footer">
         <span className="zap-footer-hints">
@@ -1977,6 +1791,9 @@ function AppView() {
               <span className="zap-footer-sep" />
               <Kbd>pw</Kbd>
               <span>账号库</span>
+              <span className="zap-footer-sep" />
+              <Kbd>json</Kbd>
+              <span>JSON 工具</span>
             </>
           )}
         </span>

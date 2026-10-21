@@ -42,3 +42,12 @@ pub fn fallback(query: &str) -> Vec<SearchItem> {
     }
     items
 }
+
+/// 网页兜底源插件适配：保证"输入任何东西都有回应"，恒居结果末尾
+pub struct WebPlugin;
+
+impl super::plugin::Plugin for WebPlugin {
+    fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
+        fallback(query)
+    }
+}

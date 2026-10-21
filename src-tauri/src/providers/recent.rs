@@ -79,3 +79,14 @@ pub fn search(entries: &[RecentEntry], query: &str, limit: usize) -> Vec<SearchI
         })
         .collect()
 }
+
+/// 最近文件源插件适配：启动时 scan() 一次的长驻索引，随插件注册进引擎
+pub struct RecentsPlugin {
+    pub entries: Vec<RecentEntry>,
+}
+
+impl super::plugin::Plugin for RecentsPlugin {
+    fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
+        search(&self.entries, query, 5)
+    }
+}
