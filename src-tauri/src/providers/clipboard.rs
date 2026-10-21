@@ -168,12 +168,13 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
             .collect();
     }
 
+    let q = query.trim().to_lowercase();
     let mut scored: Vec<(f32, String, i64)> = rows
         .iter()
         .filter_map(|(c, t)| {
             // 长内容截断参与拼音匹配；直接子串匹配仍覆盖全文
             let head: String = c.chars().take(256).collect();
-            super::score_match(&head, query).map(|s| (s, c.clone(), *t))
+            super::score_lowered(&head, &q).map(|s| (s, c.clone(), *t))
         })
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then_with(|| b.2.cmp(&a.2)));

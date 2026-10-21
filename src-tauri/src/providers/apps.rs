@@ -1,13 +1,20 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use super::SearchItem;
 
+/// 旧索引条目的图标按缓存键转内存复用：重扫免掉几百次 PNG 读盘 + base64
+type MemIcons = HashMap<u64, String>;
+
+/// 面板呼出触发的重扫节流：间隔内跳过，避免每次呼出都全量走目录树 + UWP 枚举
+pub(crate) const REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(10);
+
 /// 本地应用索引：开始菜单 .lnk（UWP 留待后续版本），提取应用图标。
-/// 面板每次呼出时后台 refresh() 重建，新装/卸载的应用无需重启即可生效。
+/// 面板呼出时后台 refresh_if_stale() 节流重建，新装/卸载的应用即可搜到。
 pub struct AppIndex {
     roots: Vec<PathBuf>,
     cache: Option<PathBuf>,
@@ -15,6 +22,8 @@ pub struct AppIndex {
     uwp: bool,
     /// 防止重扫并发叠加：上次未完成时跳过本次
     refreshing: AtomicBool,
+    /// 上次完成重扫的时刻（构造时的首扫计入），节流判断用
+    last_refresh: Mutex<Option<Instant>>,
     entries: RwLock<Arc<Vec<AppEntry>>>,
 }
 
@@ -23,6 +32,10 @@ struct AppEntry {
     path: String,
     /// 应用图标 PNG data URL；提取失败为 None，前端退回文字角标
     icon: Option<String>,
+    /// 图标缓存键（路径+mtime 哈希）；内存复用与缓存清理共用，省去重算的 stat
+    icon_key: u64,
+    /// 名称的匹配形态（小写/拼音全拼/首字母），扫描时算一次
+    forms: super::MatchForms,
 }
 
 impl AppIndex {
@@ -39,26 +52,32 @@ impl AppIndex {
     }
 
     fn new(roots: Vec<PathBuf>, cache: Option<PathBuf>, uwp: bool) -> Self {
-        let entries = Self::collect(&roots, cache.as_deref(), uwp);
+        let entries = Self::collect(&roots, cache.as_deref(), uwp, &MemIcons::new());
         Self {
             roots,
             cache,
             uwp,
             refreshing: AtomicBool::new(false),
+            last_refresh: Mutex::new(Some(Instant::now())),
             entries: RwLock::new(Arc::new(entries)),
         }
     }
 
-    fn collect(roots: &[PathBuf], cache: Option<&Path>, uwp: bool) -> Vec<AppEntry> {
+    fn collect(
+        roots: &[PathBuf],
+        cache: Option<&Path>,
+        uwp: bool,
+        mem: &MemIcons,
+    ) -> Vec<AppEntry> {
         if let Some(dir) = cache {
             let _ = fs::create_dir_all(dir);
         }
         let mut entries = Vec::new();
         for root in roots {
-            walk(root, 0, cache, &mut entries);
+            walk(root, 0, cache, mem, &mut entries);
         }
         if uwp {
-            scan_uwp(cache, &mut entries);
+            scan_uwp(cache, mem, &mut entries);
         }
         entries
     }
@@ -68,20 +87,39 @@ impl AppIndex {
         if self.refreshing.swap(true, Ordering::SeqCst) {
             return false;
         }
-        let fresh = Self::collect(&self.roots, self.cache.as_deref(), self.uwp);
+        let mem: MemIcons = self
+            .entries
+            .read()
+            .expect("app index poisoned")
+            .iter()
+            .filter_map(|e| e.icon.clone().map(|ic| (e.icon_key, ic)))
+            .collect();
+        let fresh = Self::collect(&self.roots, self.cache.as_deref(), self.uwp, &mem);
         if let Some(dir) = &self.cache {
             Self::prune_cache(dir, &fresh);
         }
         *self.entries.write().expect("app index poisoned") = Arc::new(fresh);
         self.refreshing.store(false, Ordering::SeqCst);
+        *self.last_refresh.lock().expect("last_refresh poisoned") = Some(Instant::now());
         true
+    }
+
+    /// 面板呼出用的节流版重扫：距上次完成不足 min_interval 则跳过（返回 false）
+    pub fn refresh_if_stale(&self, min_interval: Duration) -> bool {
+        {
+            let last = self.last_refresh.lock().expect("last_refresh poisoned");
+            if last.is_some_and(|t| t.elapsed() < min_interval) {
+                return false;
+            }
+        }
+        self.refresh()
     }
 
     /// 清掉已卸载应用遗留的图标缓存文件
     fn prune_cache(dir: &Path, entries: &[AppEntry]) {
         let keep: HashSet<String> = entries
             .iter()
-            .map(|e| format!("{:016x}.png", cache_key(&e.path)))
+            .map(|e| format!("{:016x}.png", e.icon_key))
             .collect();
         let Ok(rd) = fs::read_dir(dir) else { return };
         for f in rd.flatten() {
@@ -102,10 +140,11 @@ impl AppIndex {
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<SearchItem> {
         let entries = self.entries.read().expect("app index poisoned").clone();
+        let q = query.trim().to_lowercase();
         let mut scored: Vec<(f32, usize)> = Vec::new();
 
         for (i, e) in entries.iter().enumerate() {
-            if let Some(s) = super::score_match(&e.name, query) {
+            if let Some(s) = e.forms.score(&q) {
                 // 名字越短权重略高
                 scored.push((s - e.name.chars().count() as f32 * 0.05, i));
             }
@@ -138,7 +177,7 @@ fn is_uninstaller(name: &str) -> bool {
     n.contains("卸载") || n.contains("uninst")
 }
 
-fn walk(dir: &Path, depth: u8, cache: Option<&Path>, out: &mut Vec<AppEntry>) {
+fn walk(dir: &Path, depth: u8, cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
     if depth > 4 {
         return;
     }
@@ -146,7 +185,7 @@ fn walk(dir: &Path, depth: u8, cache: Option<&Path>, out: &mut Vec<AppEntry>) {
     for entry in rd.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            walk(&p, depth + 1, cache, out);
+            walk(&p, depth + 1, cache, mem, out);
         } else if p.extension().is_some_and(|ext| ext == "lnk") {
             let Some(stem) = p.file_stem() else { continue };
             let name = stem.to_string_lossy().to_string();
@@ -154,17 +193,28 @@ fn walk(dir: &Path, depth: u8, cache: Option<&Path>, out: &mut Vec<AppEntry>) {
                 continue;
             }
             let path = p.to_string_lossy().to_string();
-            let icon = icon_data_url(cache, &path);
-            out.push(AppEntry { name, path, icon });
+            let icon_key = cache_key(&path);
+            let icon = icon_data_url(cache, &path, icon_key, mem);
+            let forms = super::MatchForms::new(&name);
+            out.push(AppEntry {
+                name,
+                path,
+                icon,
+                icon_key,
+                forms,
+            });
         }
     }
 }
 
-/// 图标 data URL：优先读磁盘缓存，未命中则提取并写回（写失败只影响下次启动速度）
-fn icon_data_url(cache: Option<&Path>, lnk: &str) -> Option<String> {
+/// 图标 data URL：内存复用 → 磁盘缓存 → 现场提取（写失败只影响下次启动速度）
+fn icon_data_url(cache: Option<&Path>, lnk: &str, key: u64, mem: &MemIcons) -> Option<String> {
+    if let Some(hit) = mem.get(&key) {
+        return Some(hit.clone());
+    }
     match cache {
         Some(dir) => {
-            let file = dir.join(format!("{:016x}.png", cache_key(lnk)));
+            let file = dir.join(format!("{:016x}.png", key));
             if let Ok(bytes) = fs::read(&file) {
                 return Some(to_data_url(&bytes));
             }
@@ -208,7 +258,7 @@ fn wide(s: &str) -> Vec<u16> {
 
 /// UWP/商店应用：枚举 shell:AppsFolder，补齐开始菜单 .lnk 覆盖不到的部分
 /// （如 Windows 计算器）。target 存 `shell:AppsFolder\<AUMID>`，打开时经 explorer。
-fn scan_uwp(cache: Option<&Path>, out: &mut Vec<AppEntry>) {
+fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
     use std::iter::once;
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::DeleteObject;
@@ -282,40 +332,48 @@ fn scan_uwp(cache: Option<&Path>, out: &mut Vec<AppEntry>) {
                     continue;
                 }
                 let target = format!("shell:AppsFolder\\{aumid}");
-                let icon = (|| -> Option<String> {
-                    if let Some(dir) = cache {
-                        let file = dir.join(format!("{:016x}.png", cache_key(&target)));
-                        if let Ok(bytes) = fs::read(&file) {
-                            return Some(to_data_url(&bytes));
+                let icon_key = cache_key(&target);
+                let icon = if let Some(hit) = mem.get(&icon_key) {
+                    Some(hit.clone())
+                } else {
+                    (|| -> Option<String> {
+                        if let Some(dir) = cache {
+                            let file = dir.join(format!("{:016x}.png", icon_key));
+                            if let Ok(bytes) = fs::read(&file) {
+                                return Some(to_data_url(&bytes));
+                            }
                         }
-                    }
-                    let png = (|| -> Option<Vec<u8>> {
-                        let app_path: Vec<u16> =
-                            target.encode_utf16().chain(std::iter::once(0)).collect();
-                        // 直接向条目请求图像工厂接口
-                        let factory: IShellItemImageFactory = SHCreateItemFromParsingName(
-                            PCWSTR(app_path.as_ptr()),
-                            None::<&IBindCtx>,
-                        )
-                        .ok()?;
-                        let hbm = factory
-                            .GetImage(SIZE { cx: 64, cy: 64 }, SIIGBF_BIGGERSIZEOK)
+                        let png = (|| -> Option<Vec<u8>> {
+                            let app_path: Vec<u16> =
+                                target.encode_utf16().chain(std::iter::once(0)).collect();
+                            // 直接向条目请求图像工厂接口
+                            let factory: IShellItemImageFactory = SHCreateItemFromParsingName(
+                                PCWSTR(app_path.as_ptr()),
+                                None::<&IBindCtx>,
+                            )
                             .ok()?;
-                        let png =
-                            bitmap_to_rgba(hbm).and_then(|(w, h, buf)| bitmap_to_png(w, h, buf));
-                        let _ = DeleteObject(hbm.into());
-                        png
-                    })()?;
-                    if let Some(dir) = cache {
-                        let file = dir.join(format!("{:016x}.png", cache_key(&target)));
-                        let _ = fs::write(&file, &png);
-                    }
-                    Some(to_data_url(&png))
-                })();
+                            let hbm = factory
+                                .GetImage(SIZE { cx: 64, cy: 64 }, SIIGBF_BIGGERSIZEOK)
+                                .ok()?;
+                            let png = bitmap_to_rgba(hbm)
+                                .and_then(|(w, h, buf)| bitmap_to_png(w, h, buf));
+                            let _ = DeleteObject(hbm.into());
+                            png
+                        })()?;
+                        if let Some(dir) = cache {
+                            let file = dir.join(format!("{:016x}.png", icon_key));
+                            let _ = fs::write(&file, &png);
+                        }
+                        Some(to_data_url(&png))
+                    })()
+                };
+                let forms = super::MatchForms::new(&title);
                 out.push(AppEntry {
                     name: title,
                     path: target,
                     icon,
+                    icon_key,
+                    forms,
                 });
             }
         }
@@ -467,7 +525,7 @@ mod tests {
         fs::write(dir.join("Uninstall.lnk"), "").unwrap();
 
         let mut out = Vec::new();
-        walk(&dir, 0, None, &mut out);
+        walk(&dir, 0, None, &MemIcons::new(), &mut out);
         let names: Vec<&str> = out.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["豆包"]);
 
