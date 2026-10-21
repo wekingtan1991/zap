@@ -501,6 +501,18 @@ fn hicon_to_png(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) -> Option
     bitmap_to_png(w, h, buf)
 }
 
+/// 应用源插件适配。引擎另持 `Arc<AppsPlugin>` 具体句柄：
+/// 呼出时的 refresh_if_stale 要走具体类型，不经过 trait 对象
+pub struct AppsPlugin {
+    pub index: AppIndex,
+}
+
+impl super::plugin::Plugin for AppsPlugin {
+    fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
+        self.index.search(query, 8)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

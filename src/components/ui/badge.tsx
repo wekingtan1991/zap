@@ -27,6 +27,7 @@ const badgeVariants = cva(
         info: "border-transparent bg-[rgba(148,163,184,0.16)] text-[#cbd5e1]",
         web: "border-transparent bg-[rgba(59,130,246,0.16)] text-[#7ab3ff]",
         url: "border-transparent bg-[rgba(250,204,21,0.16)] text-[#ffd84d]",
+        json: "border-transparent bg-[rgba(56,189,248,0.16)] text-[#7dd3fc]",
       },
     },
     defaultVariants: {
@@ -54,3 +55,8 @@ function Badge({
 }
 
 export { Badge, badgeVariants };
+
+/// 徽标语义色全集：插件注册表（src/plugins/registry.tsx）以该类型声明条目配色
+export type BadgeVariant = NonNullable<
+  VariantProps<typeof badgeVariants>["variant"]
+>;

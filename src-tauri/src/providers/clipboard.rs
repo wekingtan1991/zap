@@ -235,3 +235,40 @@ fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+/// 最新一条历史的 (行号, 内容)：面板呼出时内容识别的输入。
+/// 无历史（首次使用/已清空）返回 None
+pub fn latest(conn: &Connection) -> Option<(i64, String)> {
+    conn.query_row(
+        "SELECT id, content FROM clipboard_history ORDER BY id DESC LIMIT 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
+}
+
+/// 按行号取原文：识别条目进入工作台后回查当时的内容（历史保留期内行号恒有效）
+pub fn get_by_id(conn: &Connection, id: i64) -> Option<String> {
+    conn.query_row(
+        "SELECT content FROM clipboard_history WHERE id=?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// 剪贴板历史源插件适配：唯一 needs_conn 的常规源，
+/// 引擎在 clip 锁短暂持有内调用（与 HTTP/窗口枚举隔离）
+pub struct ClipboardPlugin;
+
+impl super::plugin::Plugin for ClipboardPlugin {
+    fn needs_conn(&self) -> bool {
+        true
+    }
+    fn search(&self, query: &str, conn: Option<&Connection>) -> Vec<SearchItem> {
+        match conn {
+            Some(c) => search(c, query, 6),
+            None => Vec::new(),
+        }
+    }
+}

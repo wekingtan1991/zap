@@ -4,6 +4,8 @@ pub mod clipboard;
 pub mod diag;
 pub mod everything;
 pub mod files;
+pub mod jsontools;
+pub mod plugin;
 pub mod recent;
 pub mod settings;
 pub mod sysutil;
@@ -133,9 +135,13 @@ fn pinyin_forms(s: &str) -> (String, String) {
 }
 
 pub struct SearchEngine {
-    apps: apps::AppIndex,
+    /// 共享连接：剪贴板历史 / vault / appconfig 共用（WAL 下与监听线程的写连接并存）
     clip: Mutex<Connection>,
-    recents: Vec<recent::RecentEntry>,
+    /// 应用源具体句柄：呼出时 refresh_if_stale 要走具体类型，不经过 trait 对象；
+    /// 同一 Arc 也注册在 plugins 里，搜索时与其他源一视同仁
+    apps: std::sync::Arc<apps::AppsPlugin>,
+    /// 插件注册表：搜索贡献 + 剪贴板识别；顺序即结果顺序，勿随意调整
+    plugins: Vec<std::sync::Arc<dyn plugin::Plugin>>,
 }
 
 impl SearchEngine {
@@ -145,10 +151,38 @@ impl SearchEngine {
         appconfig::init_table(&conn);
         // 图标缓存随库存放，键 = lnk 路径+mtime 哈希
         let icon_cache = db_path.parent().map(|p| p.join("icons"));
+        let apps = std::sync::Arc::new(apps::AppsPlugin {
+            index: apps::AppIndex::scan(icon_cache.as_deref()),
+        });
+        // 注册顺序 = 结果展示顺序（JSON 工具识别 / apps / files / winsys /
+        // 剪贴板 / 最近 / 设置 / 网页兜底）。JSON 工具只贡献识别条目、不参与
+        // 常规搜索，放最前是识别条目之间的展示顺序；其余与插件化前的拼接
+        // 顺序一致，保持前端展示不变
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
+            std::sync::Arc::new(jsontools::JsonToolsPlugin),
+            apps.clone(),
+            std::sync::Arc::new(files::FilesPlugin),
+            std::sync::Arc::new(winsys::WinsysPlugin),
+            std::sync::Arc::new(clipboard::ClipboardPlugin),
+            std::sync::Arc::new(recent::RecentsPlugin {
+                entries: recent::scan(),
+            }),
+            std::sync::Arc::new(settings::SettingsPlugin),
+            std::sync::Arc::new(web::WebPlugin),
+        ];
+        // 插件开关从存档加载到静态原子量（热路径只读原子量，不查库）
+        for p in &plugins {
+            if let Some(meta) = p.meta() {
+                let on = appconfig::get(&conn, meta.key)
+                    .map(|v| v != "0")
+                    .unwrap_or(meta.default_on);
+                meta.state.store(on, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         Self {
-            apps: apps::AppIndex::scan(icon_cache.as_deref()),
             clip: Mutex::new(conn),
-            recents: recent::scan(),
+            apps,
+            plugins,
         }
     }
 
@@ -167,10 +201,16 @@ impl SearchEngine {
         vault::search(&conn, query)
     }
 
+    /// 按行号取剪贴板原文（JSON 识别条目进工作台时回查当时的内容）
+    pub fn clip_row(&self, id: i64) -> Option<String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipboard::get_by_id(&conn, id)
+    }
+
     /// 后台重建应用索引（面板呼出时调用）。10 秒内已扫过则跳过，
     /// 避免连续呼出反复走目录树 + UWP 枚举；false = 本次跳过或上次未完成
     pub fn refresh_apps(&self) -> bool {
-        self.apps.refresh_if_stale(apps::REFRESH_MIN_INTERVAL)
+        self.apps.index.refresh_if_stale(apps::REFRESH_MIN_INTERVAL)
     }
 
     pub fn vault_add(
@@ -227,24 +267,93 @@ impl SearchEngine {
     pub fn search(&self, query: &str) -> Vec<SearchItem> {
         let q = query.trim();
         if q.is_empty() {
-            // 打开面板即见最近剪贴板，输入后各源汇入
             let conn = self.clip.lock().expect("clip db poisoned");
-            return clipboard::search(&conn, "", 5);
+            return assemble_opening(&self.plugins, &conn);
         }
-        let mut items = self.apps.search(q, 8);
-        items.extend(files::search(q, 8));
-        items.extend(winsys::search(q, 5));
-        // clip 锁只在真正查库时短暂持有：files 的 HTTP（超时 250ms）与
-        // winsys 的窗口枚举若在锁内，会拖住共用这把锁的 vault 与设置操作
-        {
-            let conn = self.clip.lock().expect("clip db poisoned");
-            items.extend(clipboard::search(&conn, q, 6));
+        let mut items = Vec::new();
+        for p in &self.plugins {
+            if plugin_off(p.as_ref()) {
+                continue;
+            }
+            if p.needs_conn() {
+                // clip 锁只在真正查库的插件上短暂持有：files 的 HTTP（超时 250ms）与
+                // winsys 的窗口枚举若在锁内，会拖住共用这把锁的 vault 与设置操作
+                let conn = self.clip.lock().expect("clip db poisoned");
+                items.extend(p.search(q, Some(&conn)));
+            } else {
+                items.extend(p.search(q, None));
+            }
         }
-        items.extend(recent::search(&self.recents, q, 5));
-        items.extend(settings::search(q, 8));
-        items.extend(web::fallback(q));
         items
     }
+
+    /// 设置页插件清单（仅可开关插件；核心源不列）
+    pub fn plugin_states(&self) -> Vec<PluginInfo> {
+        self.plugins
+            .iter()
+            .filter_map(|p| {
+                p.meta().map(|m| PluginInfo {
+                    id: m.id.to_string(),
+                    title: m.title.to_string(),
+                    hint: m.hint.to_string(),
+                    enabled: m.state.load(std::sync::atomic::Ordering::Relaxed),
+                })
+            })
+            .collect()
+    }
+
+    /// 开关插件：写存档 + 同步原子量（搜索/识别热路径立即生效）
+    pub fn set_plugin_enabled(&self, id: &str, on: bool) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        for p in &self.plugins {
+            if let Some(meta) = p.meta()
+                && meta.id == id
+            {
+                appconfig::set(&conn, meta.key, if on { "1" } else { "0" })?;
+                meta.state.store(on, std::sync::atomic::Ordering::Relaxed);
+                return Ok(());
+            }
+        }
+        Err(format!("未知插件：{id}"))
+    }
+}
+
+/// 插件是否已被停用（无清单 = 核心源 = 恒启用）
+fn plugin_off(p: &dyn plugin::Plugin) -> bool {
+    p.meta()
+        .is_some_and(|m| !m.state.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// 设置页插件状态
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInfo {
+    pub id: String,
+    pub title: String,
+    pub hint: String,
+    pub enabled: bool,
+}
+
+/// 空面板呼出的结果组装：插件对最新剪贴板的识别置顶，其后是最近剪贴板若干条。
+/// 识别走库内最新一条——与列表展示同源，识别结果和用户看到的条目必然一致；
+/// 记录关闭时库会变陈旧，此时宁可不识别也不误报
+fn assemble_opening(
+    plugins: &[std::sync::Arc<dyn plugin::Plugin>],
+    conn: &Connection,
+) -> Vec<SearchItem> {
+    let mut items = Vec::new();
+    if clipboard::CLIP_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some((rowid, text)) = clipboard::latest(conn)
+    {
+        for p in plugins {
+            if plugin_off(p.as_ref()) {
+                continue;
+            }
+            items.extend(p.detect(rowid, &text));
+        }
+    }
+    items.extend(clipboard::search(conn, "", 5));
+    items
 }
 
 #[cfg(test)]
@@ -270,5 +379,92 @@ mod tests {
         assert_eq!(score_match("Display", "display"), Some(100.0));
         assert!(score_match("显示", "显示").unwrap() >= 100.0);
         assert_eq!(score_match("显示", "不匹配"), None);
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    /// 串行化对全局 CLIP_ENABLED 的读改窗口（cargo test 默认多线程并行，
+    /// 开关测试与依赖开关态的断言并发会互踩）
+    static CLIP_ENABLED_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 只实现识别的最小插件：把收到的 rowid/文本原样写成条目，供装配断言
+    struct ProbePlugin;
+    impl plugin::Plugin for ProbePlugin {
+        fn search(&self, _q: &str, _c: Option<&Connection>) -> Vec<SearchItem> {
+            Vec::new()
+        }
+        fn detect(&self, rowid: i64, text: &str) -> Vec<SearchItem> {
+            vec![SearchItem {
+                id: format!("probe:{rowid}"),
+                title: format!("probe:{text}"),
+                subtitle: String::new(),
+                kind: "info".into(),
+                target: String::new(),
+                icon: None,
+                score: 0.0,
+            }]
+        }
+    }
+
+    /// :memory: 库走 open_db 同一建表路径
+    fn mem_conn() -> Connection {
+        clipboard::open_db(Path::new(":memory:")).expect("mem db")
+    }
+
+    fn insert_clip(conn: &Connection, content: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO clipboard_history (content, created_at) VALUES (?1, ?2)",
+            rusqlite::params![content, 1000],
+        )
+        .expect("insert");
+        conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .expect("rowid")
+    }
+
+    #[test]
+    fn 空库呼出不识别只返回空列表() {
+        let conn = mem_conn();
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> =
+            vec![std::sync::Arc::new(ProbePlugin)];
+        let items = super::assemble_opening(&plugins, &conn);
+        assert!(items.is_empty(), "无历史时不应有识别条目：{items:?}");
+    }
+
+    #[test]
+    fn 识别条目置顶且基于最新一条() {
+        let _serial = CLIP_ENABLED_LOCK.lock().unwrap();
+        let conn = mem_conn();
+        insert_clip(&conn, "{\"a\":1}");
+        insert_clip(&conn, "[1,2,3]");
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> =
+            vec![std::sync::Arc::new(ProbePlugin)];
+        let items = super::assemble_opening(&plugins, &conn);
+        assert_eq!(items[0].id, "probe:2", "识别条目应置顶且携带最新行号");
+        assert_eq!(items[0].title, "probe:[1,2,3]");
+        assert_eq!(items.len(), 3, "识别 1 条 + 最近剪贴板 2 条");
+        assert_eq!(items[1].kind, "clip");
+        assert_eq!(items[2].kind, "clip");
+    }
+
+    #[test]
+    fn 记录关闭时跳过识别但仍展示最近剪贴板() {
+        let _serial = CLIP_ENABLED_LOCK.lock().unwrap();
+        let conn = mem_conn();
+        insert_clip(&conn, "{\"a\":1}");
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> =
+            vec![std::sync::Arc::new(ProbePlugin)];
+        clipboard::CLIP_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+        let items = super::assemble_opening(&plugins, &conn);
+        clipboard::CLIP_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            items.iter().all(|i| i.kind == "clip"),
+            "关闭记录时不应出现识别条目：{items:?}"
+        );
+        assert_eq!(items.len(), 1);
     }
 }

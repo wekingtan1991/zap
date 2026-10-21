@@ -139,3 +139,13 @@ pub fn activate(hwnd_val: isize) -> bool {
         SetForegroundWindow(hwnd).as_bool()
     }
 }
+
+/// 窗口切换源插件适配。搜索时走窗口快照枚举（Win32 调用），
+/// 保持 needs_conn = false：不得在 clip 锁内执行
+pub struct WinsysPlugin;
+
+impl super::plugin::Plugin for WinsysPlugin {
+    fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
+        search(query, 5)
+    }
+}

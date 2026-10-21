@@ -180,6 +180,15 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
         .collect()
 }
 
+/// 系统设置源插件适配：纯静态表 + LazyLock 匹配形态，无状态
+pub struct SettingsPlugin;
+
+impl super::plugin::Plugin for SettingsPlugin {
+    fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
+        search(query, 8)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

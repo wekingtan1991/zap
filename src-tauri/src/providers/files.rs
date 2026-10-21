@@ -133,3 +133,13 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
         .collect();
     items
 }
+
+/// 全盘文件源插件适配（Everything HTTP）。搜索热路径上含 250ms 超时的网络请求，
+/// 保持 needs_conn = false：不得在 clip 锁内执行
+pub struct FilesPlugin;
+
+impl super::plugin::Plugin for FilesPlugin {
+    fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
+        search(query, 8)
+    }
+}
