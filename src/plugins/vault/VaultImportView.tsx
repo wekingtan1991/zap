@@ -1,7 +1,7 @@
 /// 智能导入视图（从 App.tsx 迁出的自包含视图）：
 /// 粘贴文本 → vault_parse 解析 → 逐条校对 → vault_import 入库。
 /// 解析/导入状态全部内部持有，导入成功经 onDone 交还父级（关视图 + 刷新列表）
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, Inbox, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -49,6 +49,19 @@ export function VaultImportView({
     setImportMsg(null);
     onClose();
   };
+
+  // 窗口捕获兜 Esc（走 closeAndReset 顺带清内部态）：焦点掉 body 后
+  // 面板 onKeyDown 收不到（与 VaultFormView 同因）。不传依赖数组保闭包新鲜。
+  useEffect(() => {
+    const onWinKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeAndReset();
+    };
+    window.addEventListener("keydown", onWinKey, true);
+    return () => window.removeEventListener("keydown", onWinKey, true);
+  });
 
   return (
     <div

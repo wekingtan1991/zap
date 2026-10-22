@@ -76,6 +76,21 @@ export function JsonWorkbench({
 
   const active = textMode ? (text ?? "") : (srcText ?? "");
 
+  // full 模式（识别条目进入的独立面板）窗口捕获兜 Esc：焦点掉 body 后
+  // 面板 onKeyDown 收不到（与 VaultFormView 同因）。嵌入模式（前缀域）不挂——
+  // 那里的 Esc 清词归主面板导航管。
+  useEffect(() => {
+    if (!full) return;
+    const onWinKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      onBack();
+    };
+    window.addEventListener("keydown", onWinKey, true);
+    return () => window.removeEventListener("keydown", onWinKey, true);
+  }, [full, onBack]);
+
   // 分析防抖：前缀域每击键触发；行号源加载后只触发一次
   useEffect(() => {
     const timer = setTimeout(async () => {
