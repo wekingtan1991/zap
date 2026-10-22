@@ -1,5 +1,6 @@
 /// 查看密码浮层（Alt+4 快瞄，从 App.tsx 迁出）：
 /// 原生复制入口全部拦截，强制走 Rust 受保护通道（排除剪贴板历史 + 焚除）
+import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, Eye, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -26,6 +27,18 @@ export function VaultRevealOverlay({
   onKeyDown,
   focusRef,
 }: Props) {
+  // 窗口捕获兜 Esc：焦点掉 body（点击非焦点区）后面板 onKeyDown 收不到（与 VaultFormView 同因）
+  useEffect(() => {
+    const onWinKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onWinKey, true);
+    return () => window.removeEventListener("keydown", onWinKey, true);
+  }, [onClose]);
+
   return (
     <div
       className="zap-panel vault outline-none"

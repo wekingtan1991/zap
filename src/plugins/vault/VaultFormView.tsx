@@ -1,5 +1,6 @@
 /// 新增/编辑账号表单（从 App.tsx 迁出）：字段渲染 + 密码生成 + 保存。
 /// 表单状态仍在 AppView（多处入口写入：列表伪条目 / 详情编辑），此处受控渲染
+import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -48,16 +49,24 @@ export function VaultFormView({
   onCancel,
   focusRef,
 }: Props) {
-  // 表单域键盘自持：Ctrl+Enter 保存，Esc 取消（其余按键不进入全局导航）
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      onCancel();
-    } else if (e.key === "Enter" && e.ctrlKey) {
-      e.preventDefault();
-      void saveForm();
-    }
-  };
+  // 表单域键盘自持：Ctrl+Enter 保存，Esc 取消。挂窗口捕获而非面板 onKeyDown：
+  // 点击表单空白处/Label 后焦点掉到 body，面板收不到 keydown，Esc 会失灵——
+  // 编辑态下 Esc 必须无条件可退出。不传依赖数组：每次渲染重挂，闭包永远拿到最新表单。
+  useEffect(() => {
+    const onWinKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        onCancel();
+      } else if (e.key === "Enter" && e.ctrlKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        void saveForm();
+      }
+    };
+    window.addEventListener("keydown", onWinKey, true);
+    return () => window.removeEventListener("keydown", onWinKey, true);
+  });
   const setFormField = (key: keyof AccountForm, value: string | boolean) => {
     setForm((f) => (f ? { ...f, [key]: value } : f));
   };
@@ -110,7 +119,6 @@ export function VaultFormView({
       className="zap-panel vault outline-none"
       tabIndex={-1}
       ref={focusRef}
-      onKeyDown={onKeyDown}
     >
       <div className="zap-input-row">
         <span className="zap-logo">

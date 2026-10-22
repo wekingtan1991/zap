@@ -130,6 +130,8 @@ function AppView() {
   const queryRef = useRef("");
   const busyRef = useRef(false);
   const vaultTermRef = useRef("");
+  const activeItemRef = useRef<HTMLDivElement | null>(null);
+  const kbNavRef = useRef(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   /// JSON 识别条目进入的工作台（剪贴板行号寻址）
   const [jsonItem, setJsonItem] = useState<SearchItem | null>(null);
@@ -144,6 +146,15 @@ function AppView() {
   useEffect(() => {
     queryRef.current = query;
   }, [query]);
+
+  // .zap-results 是滚动容器但不自动跟随：方向键把选中行移出可视区时滚动补位；
+  // nearest 保证已在视口内时不抖动。只在键盘导航时补位——悬停也会改 active，
+  // 若跟随滚动会让内容在光标下漂移。
+  useEffect(() => {
+    if (!kbNavRef.current) return;
+    kbNavRef.current = false;
+    activeItemRef.current?.scrollIntoView({ block: "nearest" });
+  }, [active]);
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
@@ -548,11 +559,30 @@ function AppView() {
     void refreshVault("");
   }, [refreshVault]);
 
-  // 表单取消：关表单 + 焦点回主输入框（Esc 与「取消」按钮共用）
+  // 表单取消：编辑态（有 id）返回该账号详情页（编辑入口在详情页，取消不应退到列表），
+  // 新增态回账号库列表；Esc 与「取消」按钮共用
   const cancelForm = useCallback(() => {
+    const id = form?.id;
     setForm(null);
-    setTimeout(() => inputRef.current?.focus(), 30);
-  }, []);
+    setFormError("");
+    if (id == null) {
+      setTimeout(() => inputRef.current?.focus(), 30);
+      return;
+    }
+    void (async () => {
+      try {
+        const [title, username, password, url, notes, pinned] = await invoke<
+          [string, string, string, string, string, number]
+        >("vault_get", { id });
+        setConfirmDelete(false);
+        setCopiedField(null);
+        setDetail({ id, title, username, password, url, notes, pinned });
+      } catch {
+        // 详情打不开（账号已被删等）退回旧行为：列表 + 焦点回输入框
+        setTimeout(() => inputRef.current?.focus(), 30);
+      }
+    })();
+  }, [form]);
 
   // 导入收尾：关视图 + 刷新列表（成功反馈由导入视图先展示 700ms）
   const importDone = useCallback(() => {
@@ -577,11 +607,16 @@ function AppView() {
       return;
     }
 
-    // 账号详情：Esc 返回列表（行内按钮负责复制/编辑/删除/置顶）
+    // 账号详情：Esc 返回列表（行内按钮负责复制/编辑/删除/置顶）；
+    // 删除确认弹窗存活时 Esc 只取消弹窗，不连详情页一起退
     if (detail) {
       if (e.key === "Escape") {
         e.preventDefault();
-        closeDetail();
+        if (confirmDelete) {
+          setConfirmDelete(false);
+        } else {
+          closeDetail();
+        }
       }
       return;
     }
@@ -645,9 +680,11 @@ function AppView() {
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
+      kbNavRef.current = true;
       setActive((a) => Math.min(a + 1, Math.max(items.length - 1, 0)));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
+      kbNavRef.current = true;
       setActive((a) => Math.max(a - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
@@ -819,6 +856,7 @@ function AppView() {
             return (
             <div
               key={it.id + String(i)}
+              ref={i === active ? activeItemRef : undefined}
               className={"zap-item" + (i === active ? " active" : "")}
               onMouseEnter={() => setActive(i)}
               onClick={() => runItem(it)}

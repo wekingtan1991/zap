@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   ArrowLeft,
   Check,
@@ -75,6 +76,35 @@ export function VaultDetailView({
   if (detail.notes) {
     rows.push({ label: "备注", value: detail.notes, field: "notes" });
   }
+
+  // 删除确认弹窗存活期间，Esc 无条件取消弹窗。挂窗口捕获而非面板 onKeyDown：
+  // 点击非焦点区后焦点掉到 body，面板收不到 keydown（与 VaultFormView 同因）。
+  // Enter 不绑定——删除只能显式点击，或焦点落在按钮上时按 Enter（autoFocus 在「取消」）。
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const onWinKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        onCancelDelete();
+      }
+    };
+    window.addEventListener("keydown", onWinKey, true);
+    return () => window.removeEventListener("keydown", onWinKey, true);
+  }, [confirmDelete, onCancelDelete]);
+
+  // 详情页本体同理：窗口捕获兜 Esc（焦点掉 body 时面板 onKeyDown 收不到）。
+  // 确认弹窗存活时让位给上面的弹窗监听（同 target 注册更晚者后执行，这里直接不动）。
+  useEffect(() => {
+    const onWinKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || confirmDelete) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onWinKey, true);
+    return () => window.removeEventListener("keydown", onWinKey, true);
+  }, [confirmDelete, onClose]);
   return (
     <div
       className="zap-panel vault outline-none"
@@ -174,44 +204,46 @@ export function VaultDetailView({
             </div>
           ))}
         </div>
-        {confirmDelete ? (
-          <div className="zap-confirm-strip">
-            <div className="zap-confirm-text">
-              <TriangleAlert className="size-3.5" />
-              删除后无法恢复，确认删除「{detail.title}」？
+        <div className="zap-form-actions">
+          <Button onClick={onEdit}>
+            <Pencil className="size-3.5" />
+            编辑
+          </Button>
+          <Button variant="outline" onClick={onPin}>
+            {detail.pinned === 1 ? (
+              <PinOff className="size-3.5" />
+            ) : (
+              <Pin className="size-3.5" />
+            )}
+            {detail.pinned === 1 ? "取消置顶" : "置顶"}
+          </Button>
+          <Button variant="destructive" onClick={onAskDelete}>
+            <Trash2 className="size-3.5" />
+            删除
+          </Button>
+        </div>
+        {confirmDelete && (
+          <div className="zap-dialog-backdrop" onClick={onCancelDelete}>
+            <div
+              className="zap-dialog"
+              role="alertdialog"
+              aria-modal="true"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="zap-confirm-text">
+                <TriangleAlert className="size-3.5" />
+                删除后无法恢复，确认删除「{detail.title}」？
+              </div>
+              <div className="zap-confirm-actions">
+                <Button autoFocus onClick={onCancelDelete}>
+                  取消
+                </Button>
+                <Button variant="destructive" onClick={onDelete}>
+                  <Trash2 className="size-3.5" />
+                  确认删除
+                </Button>
+              </div>
             </div>
-            <div className="zap-confirm-actions">
-              <Button variant="ghost" onClick={onCancelDelete}>
-                取消
-              </Button>
-              <Button
-                variant="destructive"
-                className="animate-pulse-ring"
-                onClick={onDelete}
-              >
-                <Trash2 className="size-3.5" />
-                确认删除
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="zap-form-actions">
-            <Button onClick={onEdit}>
-              <Pencil className="size-3.5" />
-              编辑
-            </Button>
-            <Button variant="outline" onClick={onPin}>
-              {detail.pinned === 1 ? (
-                <PinOff className="size-3.5" />
-              ) : (
-                <Pin className="size-3.5" />
-              )}
-              {detail.pinned === 1 ? "取消置顶" : "置顶"}
-            </Button>
-            <Button variant="destructive" onClick={onAskDelete}>
-              <Trash2 className="size-3.5" />
-              删除
-            </Button>
           </div>
         )}
       </div>

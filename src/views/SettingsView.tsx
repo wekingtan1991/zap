@@ -140,6 +140,20 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
     return () => window.removeEventListener("keydown", onWinKey, true);
   }, [hkRecording, stopHkCapture]);
 
+  // 窗口捕获兜 Esc 关设置页：焦点掉 body（点击非焦点区）后面板 onKeyDown 收不到
+  // （与 VaultFormView 同因）。录制态必须让位——上方录制监听注册更晚，
+  // 若这里拦截会抢掉「Esc=取消录制」，故录制时直接放行不碰事件。
+  useEffect(() => {
+    const onWinKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || hkRecording) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onWinKey, true);
+    return () => window.removeEventListener("keydown", onWinKey, true);
+  }, [hkRecording, onClose]);
+
   const saveSettings = async () => {
     if (!st) return;
     try {
