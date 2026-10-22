@@ -1,27 +1,19 @@
 //! 账号库：密码经 DPAPI 加密落盘（绑定当前 Windows 账户 + zap 熵），保护域交互。
 //! 铁律：密码永不出现在搜索结果、日志或剪贴板历史中。
+//! 加解密在 dpapi.rs，智能导入的文本解析在 acctparse.rs
 
 use std::time::Duration;
 
-use base64::Engine as _;
 use rusqlite::{Connection, params};
 
 use super::SearchItem;
+use super::dpapi;
 
 #[cfg(windows)]
 use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 
-/// 应用专属熵：让 DPAPI 密文只有 zap 能解，同账户下其他程序无能为力
-const ENTROPY: &[u8] = b"zap:vault:v1";
-
-/// 智能导入的单条解析结果（可编辑预览后批量入库）
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ParsedAccount {
-    pub title: String,
-    pub username: String,
-    pub password: String,
-    pub url: String,
-}
+// 智能导入的类型与入口经 vault 再导出（lib.rs 命令沿用 vault:: 路径）
+pub use super::acctparse::{ParsedAccount, parse_blob};
 
 pub fn init_table(conn: &Connection) {
     let _ = conn.execute_batch(
@@ -46,95 +38,6 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
-}
-
-// ---------- DPAPI ----------
-
-#[cfg(windows)]
-fn dpapi_encrypt(plain: &str) -> Result<String, String> {
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
-    use windows::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CryptProtectData};
-    use windows::core::PCWSTR;
-
-    let plain_bytes = plain.as_bytes();
-    let blob_in = CRYPT_INTEGER_BLOB {
-        cbData: plain_bytes.len() as u32,
-        pbData: plain_bytes.as_ptr() as *mut u8,
-    };
-    let entropy = CRYPT_INTEGER_BLOB {
-        cbData: ENTROPY.len() as u32,
-        pbData: ENTROPY.as_ptr() as *mut u8,
-    };
-    let out = {
-        let mut blob_out = CRYPT_INTEGER_BLOB {
-            cbData: 0,
-            pbData: std::ptr::null_mut(),
-        };
-        unsafe {
-            CryptProtectData(
-                &blob_in,
-                PCWSTR::null(),
-                Some(&entropy),
-                None,
-                None,
-                0,
-                &mut blob_out,
-            )
-        }
-        .map_err(|e| format!("DPAPI 加密失败: {e}"))?;
-        blob_out
-    };
-    let encoded = base64::engine::general_purpose::STANDARD
-        .encode(unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize) });
-    unsafe {
-        let _ = LocalFree(Some(HLOCAL(out.pbData as *mut _)));
-    }
-    Ok(encoded)
-}
-
-#[cfg(windows)]
-fn dpapi_decrypt(encoded: &str) -> Result<String, String> {
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
-    use windows::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CryptUnprotectData};
-
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|e| e.to_string())?;
-    let blob_in = CRYPT_INTEGER_BLOB {
-        cbData: bytes.len() as u32,
-        pbData: bytes.as_ptr() as *mut u8,
-    };
-    let entropy = CRYPT_INTEGER_BLOB {
-        cbData: ENTROPY.len() as u32,
-        pbData: ENTROPY.as_ptr() as *mut u8,
-    };
-    let out = {
-        let mut blob_out = CRYPT_INTEGER_BLOB {
-            cbData: 0,
-            pbData: std::ptr::null_mut(),
-        };
-        unsafe { CryptUnprotectData(&blob_in, None, Some(&entropy), None, None, 0, &mut blob_out) }
-            .map_err(|e| format!("DPAPI 解密失败: {e}"))?;
-        blob_out
-    };
-    let plain = String::from_utf8_lossy(unsafe {
-        std::slice::from_raw_parts(out.pbData, out.cbData as usize)
-    })
-    .to_string();
-    unsafe {
-        let _ = LocalFree(Some(HLOCAL(out.pbData as *mut _)));
-    }
-    Ok(plain)
-}
-
-#[cfg(not(windows))]
-fn dpapi_encrypt(_: &str) -> Result<String, String> {
-    Err("仅支持 Windows".into())
-}
-
-#[cfg(not(windows))]
-fn dpapi_decrypt(_: &str) -> Result<String, String> {
-    Err("仅支持 Windows".into())
 }
 
 // ---------- 剪贴板 ----------
@@ -243,7 +146,7 @@ pub fn add(
     if title.is_empty() {
         return Err("标题不能为空".into());
     }
-    let enc = dpapi_encrypt(password)?;
+    let enc = dpapi::encrypt(password)?;
     let now = now_ms();
     conn.execute(
         "INSERT INTO accounts(title, username, password_enc, url, notes, created_at, updated_at)
@@ -363,7 +266,7 @@ pub fn action(
                     |r| r.get(0),
                 )
                 .map_err(|e| e.to_string())?;
-            let plain = dpapi_decrypt(&enc)?;
+            let plain = dpapi::decrypt(&enc)?;
             super::clipboard::begin_self_copy();
             copy_text_private(&plain)?;
             bump(conn);
@@ -405,7 +308,7 @@ pub fn action(
                     |r| r.get(0),
                 )
                 .map_err(|e| e.to_string())?;
-            let plain = dpapi_decrypt(&enc)?;
+            let plain = dpapi::decrypt(&enc)?;
             Ok(plain)
         }
         "pin" => {
@@ -458,7 +361,7 @@ pub fn get(
             },
         )
         .map_err(|e| e.to_string())?;
-    let plain = dpapi_decrypt(&row.2)?;
+    let plain = dpapi::decrypt(&row.2)?;
     Ok((row.0, row.1, plain, row.3, row.4, row.5))
 }
 
@@ -482,7 +385,7 @@ pub fn update(
     let new_enc = if password.trim().is_empty() {
         None
     } else {
-        Some(dpapi_encrypt(password)?)
+        Some(dpapi::encrypt(password)?)
     };
     match new_enc {
         Some(enc) => conn
@@ -498,226 +401,6 @@ pub fn update(
     }
     .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-// ---------- 智能导入：文本解析 ----------
-
-const LABEL_USER: &[&str] = &[
-    "账号",
-    "用户名",
-    "用户",
-    "登录名",
-    "账号名",
-    "user",
-    "username",
-    "account",
-    "login",
-];
-const LABEL_PASS: &[&str] = &["密码", "口令", "password", "pwd", "pass"];
-const LABEL_URL: &[&str] = &["接入地址", "地址", "链接", "网址", "url", "site", "link"];
-
-fn label_field(line_lower: &str) -> Option<&'static str> {
-    if LABEL_URL.contains(&line_lower) {
-        return Some("url");
-    }
-    if LABEL_USER.contains(&line_lower) {
-        return Some("user");
-    }
-    if LABEL_PASS.contains(&line_lower) {
-        return Some("pass");
-    }
-    None
-}
-
-/// 同行 key: value（中英文冒号均可）
-fn split_kv(line: &str) -> Option<(&'static str, &str)> {
-    let idx = line.find(['：', ':'])?;
-    let w = line[idx..].chars().next()?.len_utf8();
-    let key = line[..idx].trim().to_lowercase();
-    let val = line[idx + w..].trim();
-    if key.is_empty() || val.is_empty() {
-        return None;
-    }
-    let field = if LABEL_USER.iter().any(|k| key == *k) {
-        "user"
-    } else if LABEL_PASS.iter().any(|k| key == *k) {
-        "pass"
-    } else if LABEL_URL.iter().any(|k| key == *k) {
-        "url"
-    } else {
-        return None;
-    };
-    Some((field, val))
-}
-
-fn ensure_scheme(url: &str) -> String {
-    if url.starts_with("http://") || url.starts_with("https://") {
-        url.to_string()
-    } else {
-        format!("https://{url}")
-    }
-}
-
-/// 域名/IP:端口/带协议，且不含空格
-fn as_url(line: &str) -> Option<String> {
-    if line.contains(' ') || !line.contains('.') {
-        return None;
-    }
-    let has_scheme = line.starts_with("http://") || line.starts_with("https://");
-    let host = line.split(['/', ':']).next().unwrap_or("");
-    let looks_domain = host.contains('.') && host.chars().any(|c| c.is_ascii_alphabetic());
-    let looks_ip = host.split('.').count() == 4
-        && host
-            .split('.')
-            .all(|p| !p.is_empty() && p.parse::<u8>().is_ok());
-    if has_scheme {
-        Some(line.to_string())
-    } else if looks_domain || (looks_ip && line.contains(':')) {
-        Some(ensure_scheme(line))
-    } else {
-        None
-    }
-}
-
-/// user/pass 斜杠对：两侧非空且不含空格
-fn as_slash_pair(line: &str) -> Option<(String, String)> {
-    let (l, r) = line.split_once('/')?;
-    let (l, r) = (l.trim(), r.trim());
-    if l.is_empty() || r.is_empty() || l.contains(' ') || r.contains(' ') {
-        return None;
-    }
-    Some((l.to_string(), r.to_string()))
-}
-
-fn is_phone(line: &str) -> bool {
-    line.len() == 11 && line.starts_with('1') && line.chars().all(|c| c.is_ascii_digit())
-}
-
-fn apply_field(e: &mut ParsedAccount, field: &str, val: &str) {
-    match field {
-        "user" => {
-            if e.username.is_empty() {
-                e.username = val.to_string();
-            } else if e.password.is_empty() {
-                e.password = val.to_string();
-            }
-        }
-        "pass" => {
-            if e.password.is_empty() {
-                e.password = val.to_string();
-            }
-        }
-        "url" if e.url.is_empty() => {
-            e.url = ensure_scheme(val);
-        }
-        _ => {}
-    }
-}
-
-fn has_any_cred(e: &ParsedAccount) -> bool {
-    !e.username.is_empty() || !e.password.is_empty()
-}
-
-/// 多格式启发式解析。识别不了的细节交给可编辑预览修正。
-pub fn parse_blob(text: &str) -> Vec<ParsedAccount> {
-    let lines: Vec<&str> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    let mut out: Vec<ParsedAccount> = Vec::new();
-    let mut cur = ParsedAccount::default();
-
-    // 收尾当前条目：没有任何凭据的条目没有导入价值
-    let push_cur = |cur: &mut ParsedAccount, out: &mut Vec<ParsedAccount>| {
-        if has_any_cred(cur) {
-            out.push(std::mem::take(cur));
-        } else {
-            *cur = ParsedAccount::default();
-        }
-    };
-
-    let mut i = 0usize;
-    while i < lines.len() {
-        let line = lines[i];
-
-        // 1. 同行 key: value
-        if let Some((field, val)) = split_kv(line) {
-            apply_field(&mut cur, field, val);
-            i += 1;
-            continue;
-        }
-
-        // 2. 独立标签行（值在下一行），如"接入地址\nhttps://…"
-        if let Some(field) = label_field(&line.to_lowercase()) {
-            match lines.get(i + 1) {
-                Some(next)
-                    if split_kv(next).is_none() && label_field(&next.to_lowercase()).is_none() =>
-                {
-                    apply_field(&mut cur, field, next);
-                    i += 2;
-                }
-                _ => i += 1,
-            }
-            continue;
-        }
-
-        // 3. URL 行；若当前条目已有网址且带凭据，则视为下一条目的开始
-        if let Some(url) = as_url(line) {
-            if !cur.url.is_empty() && has_any_cred(&cur) {
-                push_cur(&mut cur, &mut out);
-            }
-            apply_field(&mut cur, "url", &url);
-            i += 1;
-            continue;
-        }
-
-        // 4. user/pass 斜杠对
-        if let Some((u, p)) = as_slash_pair(line) {
-            apply_field(&mut cur, "user", &u);
-            apply_field(&mut cur, "pass", &p);
-            i += 1;
-            continue;
-        }
-
-        // 5. 手机号：填入空的用户名/密码
-        if is_phone(line) {
-            apply_field(&mut cur, "user", line);
-            i += 1;
-            continue;
-        }
-
-        // 6. 其余裸行：空标题 → 当标题（去尾随冒号）；已有标题时，
-        //    含中文的行视为新条目标题（密码里几乎不会出现中文），
-        //    纯 ASCII 行补空的用户名/密码
-        if cur.title.is_empty() {
-            cur.title = line.trim_end_matches(['：', ':']).to_string();
-            i += 1;
-            continue;
-        }
-        let has_cjk = !line.is_ascii();
-        if has_cjk {
-            push_cur(&mut cur, &mut out);
-            cur.title = line.trim_end_matches(['：', ':']).to_string();
-            i += 1;
-            continue;
-        }
-        if cur.password.is_empty() {
-            cur.password = line.to_string();
-            i += 1;
-            continue;
-        }
-        if cur.username.is_empty() {
-            cur.username = line.to_string();
-            i += 1;
-            continue;
-        }
-        push_cur(&mut cur, &mut out);
-        cur.title = line.trim_end_matches(['：', ':']).to_string();
-        i += 1;
-    }
-    push_cur(&mut cur, &mut out);
-    out
 }
 
 /// 批量导入，返回成功条数。标题缺省时按 用户名 → 网址 → 固定名 递补
@@ -746,58 +429,6 @@ pub fn import(conn: &Connection, entries: Vec<ParsedAccount>) -> Result<usize, S
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(n)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_blob;
-
-    #[test]
-    fn 标签行换行式() {
-        let text = "接入地址\nhttps://36.112.20.59:52125\n账号\n潘伟锋\n密码\nTechnical@147258369";
-        let r = parse_blob(text);
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0].url, "https://36.112.20.59:52125");
-        assert_eq!(r[0].username, "潘伟锋");
-        assert_eq!(r[0].password, "Technical@147258369");
-    }
-
-    #[test]
-    fn 键值对式() {
-        let text = "gitlab-allindata：\nusername: tanweijing\npassword: b3b#H2pD1pAE";
-        let r = parse_blob(text);
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0].title, "gitlab-allindata");
-        assert_eq!(r[0].username, "tanweijing");
-        assert_eq!(r[0].password, "b3b#H2pD1pAE");
-    }
-
-    #[test]
-    fn 斜杠对与域名() {
-        let text = "sql审核平台：\nsqlauditv2.txffp.com/\ntanweijing / JmPe74Db5jf{";
-        let r = parse_blob(text);
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0].title, "sql审核平台");
-        assert_eq!(r[0].url, "https://sqlauditv2.txffp.com/");
-        assert_eq!(r[0].username, "tanweijing");
-        assert_eq!(r[0].password, "JmPe74Db5jf{");
-    }
-
-    #[test]
-    fn 手机号与多段() {
-        let text = "ruoyi-mos\n18211033965\n\nboms测试账号\n18710905369\n18235356889Yz\n\n测试xxljob\nhttp://172.20.74.14:6060/xxl-job-admin\nxxljob/08uD!3Das1$o";
-        let r = parse_blob(text);
-        assert_eq!(r.len(), 3);
-        assert_eq!(r[0].title, "ruoyi-mos");
-        assert_eq!(r[0].username, "18211033965");
-        assert_eq!(r[1].title, "boms测试账号");
-        assert_eq!(r[1].username, "18710905369");
-        assert_eq!(r[1].password, "18235356889Yz");
-        assert_eq!(r[2].title, "测试xxljob");
-        assert_eq!(r[2].url, "http://172.20.74.14:6060/xxl-job-admin");
-        assert_eq!(r[2].username, "xxljob");
-        assert_eq!(r[2].password, "08uD!3Das1$o");
-    }
 }
 
 #[cfg(test)]

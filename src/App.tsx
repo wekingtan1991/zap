@@ -6,46 +6,19 @@ import React, {
   type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { toast } from "sonner";
-import {
-  ArrowLeft,
-  Clipboard,
-  Download,
-  Eye,
-  Inbox,
-  KeyRound,
-  Loader2,
-  Lock,
-  Pin,
-  Puzzle,
-  RefreshCw,
-  RotateCw,
-  Search,
-  Settings as SettingsIcon,
-  ShieldCheck,
-  TriangleAlert,
-  Zap,
-} from "lucide-react";
+import { CircleHelp, Lock, Pin, Search, TriangleAlert, Zap } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Kbd } from "@/components/ui/kbd";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { kindUi, type ItemActions } from "@/plugins/registry";
 import { isPinned, type SearchItem } from "@/plugins/types";
@@ -56,33 +29,19 @@ import {
   type CommandCtx,
 } from "@/plugins/commands";
 import { VaultDetailView, type VaultDetail } from "@/plugins/vault/VaultDetailView";
+import {
+  EMPTY_FORM,
+  VaultFormView,
+  type AccountForm,
+} from "@/plugins/vault/VaultFormView";
+import {
+  VaultRevealOverlay,
+  type RevealInfo,
+} from "@/plugins/vault/VaultRevealOverlay";
+import { VaultImportView } from "@/plugins/vault/VaultImportView";
 import { JsonWorkbench } from "@/plugins/json/JsonWorkbench";
-
-/// 热键串展示格式化：ctrl+space → Ctrl + Space（键位首字母大写，+ 两侧留空）
-const formatHotkey = (hk: string) =>
-  hk
-    .split("+")
-    .map((p) => (p ? p.charAt(0).toUpperCase() + p.slice(1) : p))
-    .join(" + ");
-
-interface AccountForm {
-  id?: number;
-  title: string;
-  username: string;
-  password: string;
-  url: string;
-  notes: string;
-  pinned: boolean;
-}
-
-const EMPTY_FORM: AccountForm = {
-  title: "",
-  username: "",
-  password: "",
-  url: "",
-  notes: "",
-  pinned: false,
-};
+import { SettingsView } from "@/views/SettingsView";
+import { useUpdater } from "@/views/useUpdater";
 
 const VAULT_ADD_ENTRY: SearchItem = {
   id: "vault:add",
@@ -102,30 +61,15 @@ const VAULT_IMPORT_ENTRY: SearchItem = {
   score: -2,
 };
 
-interface ParsedAccount {
-  title: string;
-  username: string;
-  password: string;
-  url: string;
-}
-
-interface PluginState {
-  id: string;
-  title: string;
-  hint: string;
-  enabled: boolean;
-}
-
-interface AppSettings {
-  hotkey: string;
-  clipEnabled: boolean;
-  clipMax: number;
-  pwdClearSecs: number;
-  autostart: boolean;
-  everythingAutostart: boolean;
-  /// 可开关插件清单（后端 meta 下发，设置页「插件」分区渲染）
-  plugins: PluginState[];
-}
+/// 账号库保护域的 Alt 组合键说明（底栏问号图标的悬停提示内容）
+const ALT_ACTIONS: [string, string][] = [
+  ["1", "打开网址"],
+  ["2", "复制密码（阅后即焚）"],
+  ["3", "删除（弹确认条，不会直接删）"],
+  ["4", "查看密码"],
+  ["5", "置顶 / 取消置顶"],
+  ["6", "编辑"],
+];
 
 /// 渲染兜底：任何视图抛错都不再整页白屏，而是提示可读信息 + 一键复位
 class ErrorBoundary extends React.Component<
@@ -176,27 +120,12 @@ function AppView() {
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<AccountForm | null>(null);
   const [importing, setImporting] = useState(false);
-  const [importText, setImportText] = useState("");
-  const [parsed, setParsed] = useState<ParsedAccount[] | null>(null);
-  const [importBusy, setImportBusy] = useState(false);
-  const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(
-    null
-  );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [st, setSt] = useState<AppSettings | null>(null);
-  const [appVersion, setAppVersion] = useState("");
-  const [hkRecording, setHkRecording] = useState(false);
-  const [hkError, setHkError] = useState("");
-  const [saveMsg, setSaveMsg] = useState("");
   const [formError, setFormError] = useState("");
   const [detail, setDetail] = useState<VaultDetail | null>(null);
   const [showPw, setShowPw] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [revealPw, setRevealPw] = useState<{
-    id: number;
-    title: string;
-    password: string;
-  } | null>(null);
+  const [revealPw, setRevealPw] = useState<RevealInfo | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const queryRef = useRef("");
   const busyRef = useRef(false);
@@ -246,61 +175,10 @@ function AppView() {
     return () => clearTimeout(timer);
   }, [isVault, vaultTerm]);
 
-  // ---------- 热键录制 ----------
-  // 组合由 Rust 低级键盘钩子经 zap://hk-capture 事件送达——连被输入法接管的
-  // Ctrl+Space（中英切换）也能捕获；页面只负责 Esc 取消与钩子启停
+  // 热键钩子启停命令归 SettingsView 持有；这里保留兜底停止（呼出重置时调用）
   const stopHkCapture = useCallback(() => {
     invoke("stop_hotkey_capture").catch(() => {});
   }, []);
-
-  useEffect(() => {
-    const un = listen<string>("zap://hk-capture", (e) => {
-      setSt((s) => (s ? { ...s, hotkey: e.payload } : s));
-      setHkRecording(false);
-      stopHkCapture();
-    });
-    return () => {
-      un.then((f) => f());
-    };
-  }, [stopHkCapture]);
-
-  // 物理按键码 → 热键键名（不受输入法/键盘布局影响；e.key 在中文输入法下常为 "Process"）
-  const codeToKeyName = (code: string): string | null => {
-    if (code.startsWith("Key")) return code.slice(3).toLowerCase(); // KeyJ → j
-    if (code.startsWith("Digit")) return code.slice(5); // Digit5 → 5
-    if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) return code.toLowerCase(); // F2 → f2
-    return code === "Space" ? "space" : null;
-  };
-
-  useEffect(() => {
-    if (!hkRecording) return;
-    // 页面级快速路径：捕获普通组合（焦点在面板内即可）；被输入法接管的组合由
-    // Rust 侧轮询兜底（zap://hk-capture 事件）
-    const onWinKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        setHkRecording(false);
-        stopHkCapture();
-        return;
-      }
-      const key = codeToKeyName(e.code);
-      if (!key) return;
-      const mods: string[] = [];
-      if (e.ctrlKey) mods.push("ctrl");
-      if (e.altKey) mods.push("alt");
-      if (e.shiftKey) mods.push("shift");
-      if (e.metaKey) mods.push("meta");
-      if (mods.length === 0) return; // 必须带修饰键
-      e.preventDefault();
-      e.stopPropagation();
-      setSt((s) => (s ? { ...s, hotkey: [...mods, key].join("+") } : s));
-      setHkRecording(false);
-      stopHkCapture();
-    };
-    window.addEventListener("keydown", onWinKey, true);
-    return () => window.removeEventListener("keydown", onWinKey, true);
-  }, [hkRecording, stopHkCapture]);
 
   // 面板收起时清空搜索词：下次呼出天然是空状态，用户不会看到"旧内容闪一下被擦掉"。
   // 同一会话内（列表 ↔ 详情页之间）不触发此事件，搜索词自然保留。
@@ -322,9 +200,6 @@ function AppView() {
       setDetail(null);
       setRevealPw(null);
       setSettingsOpen(false);
-      setSt(null);
-      setHkRecording(false);
-      setHkError("");
       setJsonItem(null);
       stopHkCapture();
       setActive(0);
@@ -370,35 +245,23 @@ function AppView() {
     invoke("open_item", { item });
   }, []);
 
-  // ---------- 应用设置 ----------
-  const openSettings = useCallback(async () => {
-    try {
-      const s = await invoke<AppSettings>("get_app_settings");
-      setForm(null);
-      setDetail(null);
-      setImporting(false);
-      setJsonItem(null);
-      setSt(s);
-      setHkRecording(false);
-      setHkError("");
-      setSaveMsg("");
-      setSettingsOpen(true);
-      // 版本号异步读取（tauri.conf.json 的 version），失败时留空
-      getVersion()
-        .then((v) => setAppVersion(v))
-        .catch(() => {});
-    } catch {
-      // 忽略
-    }
+  // ---------- 应用设置 / 自动更新 ----------
+  // 设置页视图与更新状态机各自成模块（views/SettingsView、views/useUpdater）；
+  // 这里只持视图开关与动作入口。更新 hook 挂在 AppView：启动静默检查不依赖设置页
+  const updater = useUpdater();
+
+  const openSettings = useCallback(() => {
+    setForm(null);
+    setDetail(null);
+    setImporting(false);
+    setJsonItem(null);
+    setSettingsOpen(true);
   }, []);
 
   const closeSettings = useCallback(() => {
-    setHkRecording(false);
-    stopHkCapture();
     setSettingsOpen(false);
-    setSt(null);
     setTimeout(() => inputRef.current?.focus(), 30);
-  }, [stopHkCapture]);
+  }, []);
 
   useEffect(() => {
     const un = listen("zap://open-settings", () => {
@@ -408,123 +271,6 @@ function AppView() {
       un.then((f) => f());
     };
   }, [openSettings]);
-
-  const saveSettings = async () => {
-    if (!st) return;
-    try {
-      const res = await invoke<{ hotkeyError: string | null }>("save_settings", {
-        hotkey: st.hotkey,
-        clipEnabled: st.clipEnabled,
-        clipMax: st.clipMax,
-        pwdClearSecs: st.pwdClearSecs,
-        everythingAutostart: st.everythingAutostart,
-        plugins: st.plugins.map((p) => ({ id: p.id, enabled: p.enabled })),
-      });
-      if (res.hotkeyError) {
-        setHkError(res.hotkeyError);
-        setSt(await invoke<AppSettings>("get_app_settings")); // 回显实际生效值
-      } else {
-        setHkError("");
-        setSaveMsg("已保存 ✓");
-        setTimeout(() => setSaveMsg(""), 2000);
-      }
-    } catch (e) {
-      setHkError(String(e));
-    }
-  };
-
-  // ---------- 自动更新 ----------
-  const updateRef = useRef<Update | null>(null);
-  const updateNotifiedRef = useRef(false);
-  const [updateStatus, setUpdateStatus] = useState<
-    "idle" | "checking" | "available" | "downloading" | "ready"
-  >("idle");
-  const [updateVersion, setUpdateVersion] = useState("");
-  const [updateProgress, setUpdateProgress] = useState(0);
-  const [updateMsg, setUpdateMsg] = useState<
-    { kind: "ok" | "err"; text: string } | null
-  >(null);
-
-  // 拿到检查结果后的公共收尾：有新版本则记录并置为可下载，否则回到空闲
-  const applyUpdate = useCallback((u: Update | null) => {
-    updateRef.current = u;
-    if (u) {
-      setUpdateVersion(u.version);
-      setUpdateStatus("available");
-    } else {
-      setUpdateStatus("idle");
-    }
-  }, []);
-
-  // 启动静默检查一次：离线/网络失败不打扰；面板隐藏时 toast 不可见，
-  // 命中新版本只记标记，等下次面板呼出再提示
-  useEffect(() => {
-    check()
-      .then((u) => {
-        if (u) {
-          applyUpdate(u);
-          updateNotifiedRef.current = true;
-        }
-      })
-      .catch(() => {});
-  }, [applyUpdate]);
-
-  useEffect(() => {
-    const un = listen("zap://shown", () => {
-      if (updateNotifiedRef.current && updateRef.current) {
-        updateNotifiedRef.current = false;
-        toast.info(`发现新版本 v${updateRef.current.version}，可在设置中更新`);
-      }
-    });
-    return () => {
-      un.then((f) => f());
-    };
-  }, []);
-
-  const checkForUpdate = useCallback(async () => {
-    if (updateStatus === "checking" || updateStatus === "downloading") return;
-    setUpdateStatus("checking");
-    setUpdateMsg(null);
-    try {
-      const u = await check();
-      applyUpdate(u);
-      if (!u) setUpdateMsg({ kind: "ok", text: "已是最新版本 ✓" });
-    } catch (e) {
-      setUpdateStatus("idle");
-      setUpdateMsg({ kind: "err", text: "检查失败：" + String(e) });
-    }
-  }, [updateStatus, applyUpdate]);
-
-  // 下载并静默安装 NSIS 安装包；期间保持面板可见（UAC/安装器抢焦点不触发失焦即隐）
-  const downloadUpdate = useCallback(async () => {
-    const u = updateRef.current;
-    if (!u || updateStatus === "downloading") return;
-    setUpdateStatus("downloading");
-    setUpdateProgress(0);
-    await invoke("set_hold_panel", { hold: true }).catch(() => {});
-    let received = 0;
-    let total = 0;
-    try {
-      await u.downloadAndInstall((event) => {
-        if (event.event === "Started") {
-          total = event.data.contentLength ?? 0;
-        } else if (event.event === "Progress") {
-          received += event.data.chunkLength;
-          if (total > 0)
-            setUpdateProgress(
-              Math.min(99, Math.round((received / total) * 100))
-            );
-        }
-      });
-      setUpdateProgress(100);
-      setUpdateStatus("ready");
-    } catch (e) {
-      setUpdateStatus("available");
-      toast.error("下载更新失败：" + String(e));
-    } finally {
-      await invoke("set_hold_panel", { hold: false }).catch(() => {});
-    }
-  }, [updateStatus]);
 
   const refreshVault = useCallback(async (term: string) => {    try {
       const res = await invoke<SearchItem[]>("vault_search", { query: term });
@@ -629,16 +375,6 @@ function AppView() {
     []
   );
 
-  // 表单密码生成：crypto 随机 16 位（去掉易混淆字符）
-  const genPassword = () => {
-    const chars =
-      "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*";
-    const arr = new Uint32Array(16);
-    crypto.getRandomValues(arr);
-    const pw = Array.from(arr, (n) => chars[n % chars.length]).join("");
-    if (form) setForm({ ...form, password: pw });
-  };
-
   // ---------- 账号详情：点击标题打开，逐行展示，行尾一键复制 ----------
   // 反馈统一走 toast（滑入 + 图标动效）
   const feedback = useCallback((ok: boolean, text: string) => {
@@ -671,6 +407,27 @@ function AppView() {
         setShowPw(false);
         setConfirmDelete(false);
         setCopiedField(null);
+        setDetail({ id, title, username, password, url, notes, pinned });
+      } catch (e) {
+        feedback(false, "打开失败：" + String(e));
+      }
+    },
+    [feedback]
+  );
+
+  /// Alt+3 删除入口：打开详情页并直接亮起确认删除条（复用详情页的二次确认，
+  /// 取消/Esc 回列表），列表里永不直接删除
+  const openDeleteConfirm = useCallback(
+    async (item: SearchItem) => {
+      const id = Number(item.target);
+      if (Number.isNaN(id)) return;
+      try {
+        const [title, username, password, url, notes, pinned] = await invoke<
+          [string, string, string, string, string, number]
+        >("vault_get", { id });
+        setShowPw(false);
+        setCopiedField(null);
+        setConfirmDelete(true);
         setDetail({ id, title, username, password, url, notes, pinned });
       } catch (e) {
         feedback(false, "打开失败：" + String(e));
@@ -784,74 +541,32 @@ function AppView() {
     [activate, openDetail, vaultAction]
   );
 
-  const saveForm = useCallback(async () => {
-    if (!form) return;
-    if (!form.title.trim()) {
-      setFormError("请填写标题——用于记录这是什么账号，如“行云账号”");
-      return;
-    }
-    setFormError("");
-    try {
-      if (form.id != null) {
-        await invoke("vault_update", {
-          id: form.id,
-          title: form.title,
-          username: form.username,
-          password: form.password, // 留空 = 保持原密码
-          url: form.url,
-          notes: form.notes,
-          pinned: form.pinned ? 1 : 0,
-        });
-      } else {
-        await invoke("vault_add", {
-          title: form.title,
-          username: form.username,
-          password: form.password,
-          url: form.url,
-          notes: form.notes,
-        });
-      }
-      setFormError("");
-      setForm(null);
-      setQuery("pw");
-      await refreshVault("");
-    } catch (e) {
-      // 表单视图不渲染结果列表，错误必须显示在表单内
-      setFormError("保存失败：" + String(e));
-    }
-  }, [form, refreshVault]);
+  // 表单保存成功：关表单 + 回账号库列表（空关键词列出全部）
+  const formSaved = useCallback(() => {
+    setForm(null);
+    setQuery("pw");
+    void refreshVault("");
+  }, [refreshVault]);
 
-  const closeImport = useCallback(() => {
-    setImporting(false);
-    setParsed(null);
-    setImportText("");
-    setImportBusy(false);
-    setImportMsg(null);
+  // 表单取消：关表单 + 焦点回主输入框（Esc 与「取消」按钮共用）
+  const cancelForm = useCallback(() => {
+    setForm(null);
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
 
-  const updParsed = useCallback(
-    (i: number, key: keyof ParsedAccount, value: string) => {
-      setParsed((arr) =>
-        arr ? arr.map((x, ix) => (ix === i ? { ...x, [key]: value } : x)) : arr
-      );
-    },
-    []
-  );
+  // 导入收尾：关视图 + 刷新列表（成功反馈由导入视图先展示 700ms）
+  const importDone = useCallback(() => {
+    setImporting(false);
+    void refreshVault(vaultTermRef.current);
+  }, [refreshVault]);
+
+  const closeImport = useCallback(() => {
+    setImporting(false);
+    setTimeout(() => inputRef.current?.focus(), 30);
+  }, []);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    // 表单模式：Ctrl+Enter 保存，Esc 取消
-    if (form) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setForm(null);
-        setTimeout(() => inputRef.current?.focus(), 30);
-      } else if (e.key === "Enter" && e.ctrlKey) {
-        e.preventDefault();
-        saveForm();
-      }
-      return;
-    }
+    // 表单模式的 Esc/Ctrl+Enter 由 VaultFormView 自持，不再经过这里
 
     // 查看密码浮层：Esc 返回
     if (revealPw) {
@@ -913,7 +628,8 @@ function AppView() {
         if (!it || it.kind !== "vault") return;
         if (e.key === "1") vaultAction(it, "url");
         if (e.key === "2") vaultAction(it, "password");
-        if (e.key === "3") vaultAction(it, "delete");
+        // 删除是保护域里唯一的破坏性操作：不直接删，打开详情页的确认删除条
+        if (e.key === "3") void openDeleteConfirm(it);
         if (e.key === "4") vaultAction(it, "reveal");
         if (e.key === "5") vaultAction(it, "pin");
         if (e.key === "6") void startEdit(it);
@@ -948,337 +664,42 @@ function AppView() {
     }
   };
 
-  const setFormField = (key: keyof AccountForm, value: string) => {
-    if (form) setForm({ ...form, [key]: value });
-  };
-
-  // ---------- 表单模式 ----------
+  // ---------- 表单模式（渲染收敛进插件视图） ----------
   if (form) {
     return (
-      <div
-  className="zap-panel vault outline-none"
-  tabIndex={-1}
-  ref={focusPanelRef}
-  onKeyDown={onKeyDown}
->
-        <div className="zap-input-row">
-          <span className="zap-logo">
-            <KeyRound className="size-4 text-primary" />
-          </span>
-          <span className="zap-vault-tag">
-            {form.id != null ? "编辑账号" : "新增账号"}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => setForm(null)}
-          >
-            <ArrowLeft className="size-3" />
-            取消（Esc）
-          </Button>
-        </div>
-        <div className="zap-form">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="f-title">标题 *</Label>
-            <Input
-              id="f-title"
-              autoFocus
-              value={form.title}
-              onChange={(e) => setFormField("title", e.target.value)}
-              placeholder="例如：行云账号"
-            />
-            <span className="zap-form-hint">
-              标题用于记录这是什么账号（如“行云账号”），保存后显示在列表里
-            </span>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="f-user">用户名</Label>
-            <Input
-              id="f-user"
-              value={form.username}
-              onChange={(e) => setFormField("username", e.target.value)}
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="f-pass">
-              密码（DPAPI 加密存储，不入剪贴板历史
-              {form.id != null ? "；留空 = 保持原密码" : ""}）
-            </Label>
-            <div className="zap-pass-row">
-              <Input
-                id="f-pass"
-                type="password"
-                value={form.password}
-                onChange={(e) => setFormField("password", e.target.value)}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={genPassword}
-                title="生成 16 位强密码"
-              >
-                生成
-              </Button>
-            </div>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="f-url">网址</Label>
-            <Input
-              id="f-url"
-              value={form.url}
-              onChange={(e) => setFormField("url", e.target.value)}
-              placeholder="https://…"
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="f-notes">备注</Label>
-            <Textarea
-              id="f-notes"
-              rows={2}
-              value={form.notes}
-              onChange={(e) => setFormField("notes", e.target.value)}
-            />
-          </div>
-          <div className="flex items-center gap-2.5">
-            <Checkbox
-              id="f-pin"
-              checked={form.pinned}
-              onCheckedChange={(v) =>
-                setForm((f) => (f ? { ...f, pinned: v === true } : f))
-              }
-            />
-            <Label htmlFor="f-pin" className="text-[13px] text-foreground">
-              固定置顶（常用账号排在最前）
-            </Label>
-          </div>
-          <div className="zap-form-actions">
-            <Button variant="outline" onClick={() => setForm(null)}>
-              取消（Esc）
-            </Button>
-            <Button onClick={() => saveForm()}>保存（Ctrl+Enter）</Button>
-          </div>
-          {formError && (
-            <div className="zap-hk-err animate-shake">{formError}</div>
-          )}
-        </div>
-      </div>
+      <VaultFormView
+        form={form}
+        formError={formError}
+        setForm={setForm}
+        setFormError={setFormError}
+        onSaved={formSaved}
+        onCancel={cancelForm}
+        focusRef={focusPanelRef}
+      />
     );
   }
 
-  // ---------- 查看密码 ----------
+  // ---------- 查看密码（渲染收敛进插件视图） ----------
   if (revealPw) {
     return (
-      <div
-  className="zap-panel vault outline-none"
-  tabIndex={-1}
-  ref={focusPanelRef}
-  onKeyDown={onKeyDown}
->
-        <div className="zap-input-row">
-          <span className="zap-logo">
-            <Eye className="size-4 text-primary" />
-          </span>
-          <span className="zap-vault-tag">查看密码</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => setRevealPw(null)}
-          >
-            <ArrowLeft className="size-3" />
-            返回（Esc）
-          </Button>
-        </div>
-        <div className="zap-form animate-fade-in">
-          <div className="zap-detail-hero">
-            <div className="zap-detail-hero-row">
-              <span className="zap-detail-title">{revealPw.title}</span>
-            </div>
-            <div className="zap-detail-hero-sub">密码仅本次显示</div>
-          </div>
-          <div className="zap-pw-card">
-            <Input
-              autoFocus
-              readOnly
-              className="zap-pw-reveal h-12 border-0 bg-transparent px-0 font-mono text-[17px] tracking-[0.2em] text-primary shadow-none"
-              value={revealPw.password}
-              onFocus={(e) => e.currentTarget.select()}
-              onContextMenu={(e) => e.preventDefault()}
-              onKeyDown={(e) => {
-                // 拦截一切本机复制入口（Ctrl+C/X/Insert、Shift+F10 与右键菜单）：
-                // 强制走 Rust 受保护通道（排除剪贴板历史 + 焚除），
-                // 浏览器原生复制会绕过全部防护写入 Win+V 历史
-                if (e.shiftKey && e.key === "F10") {
-                  e.preventDefault();
-                  return;
-                }
-                if (e.ctrlKey && ["c", "C", "x", "X", "Insert"].includes(e.key)) {
-                  e.preventDefault();
-                  invoke<string>("vault_action", {
-                    id: revealPw.id,
-                    action: "password",
-                  })
-                    .then((msg) => toast.success(msg))
-                    .catch((err) => toast.error("复制失败：" + String(err)));
-                }
-              }}
-            />
-          </div>
-          <div className="zap-pw-hint">
-            <ShieldCheck className="size-3.5" />
-            <Kbd>Ctrl</Kbd>+<Kbd>C</Kbd> 安全复制（不入剪贴板历史）·
-            关闭请用 <Kbd>Esc</Kbd>
-          </div>
-        </div>
-      </div>
+      <VaultRevealOverlay
+        reveal={revealPw}
+        onClose={() => setRevealPw(null)}
+        onKeyDown={onKeyDown}
+        focusRef={focusPanelRef}
+      />
     );
   }
 
-  // ---------- 智能导入 ----------
+  // ---------- 智能导入（渲染收敛进插件视图） ----------
   if (importing) {
     return (
-      <div
-  className="zap-panel vault outline-none"
-  tabIndex={-1}
-  ref={focusPanelRef}
-  onKeyDown={onKeyDown}
->
-        <div className="zap-input-row">
-          <span className="zap-logo">
-            <Inbox className="size-4 text-primary-foreground" />
-          </span>
-          <span className="zap-vault-tag">智能导入</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-            onClick={closeImport}
-          >
-            <ArrowLeft className="size-3" />
-            返回（Esc）
-          </Button>
-        </div>
-        <div className="zap-form">
-          {parsed === null ? (
-            <>
-              <Textarea
-                autoFocus
-                rows={7}
-                value={importText}
-                onChange={(e) => setImportText(e.target.value)}
-                placeholder={"粘贴记事本 / 聊天记录里的账号文本，例如：\n接入地址\nhttps://…\n账号\n用户名\n密码\n密码"}
-              />
-              <Button
-                disabled={importBusy}
-                onClick={async () => {
-                  if (importBusy) return;
-                  setImportBusy(true);
-                  setImportMsg(null);
-                  try {
-                    const res = await invoke<ParsedAccount[]>("vault_parse", {
-                      text: importText,
-                    });
-                    setParsed(res);
-                  } catch (e) {
-                    setImportMsg({ ok: false, text: "解析失败：" + String(e) });
-                  } finally {
-                    setImportBusy(false);
-                  }
-                }}
-              >
-                {importBusy && <Loader2 className="size-3.5 animate-spin" />}
-                解析
-              </Button>
-            </>
-          ) : (
-            <>
-              {parsed.length === 0 && (
-                <div className="zap-vault-tag animate-fade-in">
-                  未识别到账号，请检查文本后返回重试
-                </div>
-              )}
-              {parsed.map((p, i) => (
-                <div key={i} className="zap-import-row animate-fade-in">
-                  <Input
-                    value={p.title}
-                    placeholder="标题（留空则按用户名/网址命名）"
-                    onChange={(e) => updParsed(i, "title", e.target.value)}
-                  />
-                  <div className="zap-import-grid">
-                    <Input
-                      value={p.username}
-                      placeholder="用户名"
-                      onChange={(e) => updParsed(i, "username", e.target.value)}
-                    />
-                    <Input
-                      value={p.password}
-                      placeholder="密码"
-                      onChange={(e) => updParsed(i, "password", e.target.value)}
-                    />
-                  </div>
-                  <Input
-                    value={p.url}
-                    placeholder="网址"
-                    onChange={(e) => updParsed(i, "url", e.target.value)}
-                  />
-                </div>
-              ))}
-              {parsed.length > 0 && (
-                <Button
-                  disabled={importBusy}
-                  onClick={async () => {
-                    if (importBusy) return;
-                    setImportBusy(true);
-                    setImportMsg(null);
-                    let n: number;
-                    try {
-                      n = await invoke<number>("vault_import", {
-                        entries: parsed.filter(
-                          (p) => p.title.trim() || p.username || p.password
-                        ),
-                      });
-                    } catch (e) {
-                      // 失败时保持面板打开并展示原因，便于修正后重试（不再静默）
-                      setImportMsg({ ok: false, text: "导入失败：" + String(e) });
-                      setImportBusy(false);
-                      return;
-                    }
-                    if (n <= 0) {
-                      setImportMsg({
-                        ok: false,
-                        text: "没有可导入的条目（每条至少需要 标题/用户名/密码 之一）",
-                      });
-                      setImportBusy(false);
-                      return;
-                    }
-                    setImportMsg({ ok: true, text: `✓ 已导入 ${n} 条` });
-                    // 明确反馈后再关闭并刷新列表（空关键词时列出全部账号）
-                    setTimeout(() => {
-                      closeImport();
-                      void refreshVault(vaultTermRef.current);
-                    }, 700);
-                  }}
-                >
-                  {importBusy && <Loader2 className="size-3.5 animate-spin" />}
-                  导入全部（{parsed.length} 条）
-                </Button>
-              )}
-            </>
-          )}
-          {importMsg && (
-            <div
-              className={
-                "animate-fade-in " +
-                (importMsg.ok ? "zap-set-saved" : "zap-hk-err")
-              }
-            >
-              {importMsg.text}
-            </div>
-          )}
-        </div>
-      </div>
+      <VaultImportView
+        onDone={importDone}
+        onClose={closeImport}
+        onKeyDown={onKeyDown}
+        focusRef={focusPanelRef}
+      />
     );
   }
 
@@ -1318,363 +739,15 @@ function AppView() {
     );
   }
 
-  // ---------- 设置页 ----------
-  if (settingsOpen && st) {
+  // ---------- 设置页（渲染收敛进 views/SettingsView） ----------
+  if (settingsOpen) {
     return (
-      <div
-  className="zap-panel vault outline-none"
-  tabIndex={-1}
-  ref={focusPanelRef}
-  onKeyDown={onKeyDown}
->
-        <div className="zap-input-row">
-          <span className="zap-logo">
-            <SettingsIcon className="size-4 text-primary" />
-          </span>
-          <span className="zap-vault-tag">设置</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-            onClick={closeSettings}
-          >
-            <ArrowLeft className="size-3" />
-            返回（Esc）
-          </Button>
-        </div>
-        <div className="flex-1 overflow-y-auto px-[22px] pb-1.5 pt-2.5">
-          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
-            <Zap className="size-3 text-primary/75" />
-            启动
-          </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
-            <span className="text-[13px]">呼出热键</span>
-            <button
-              type="button"
-              className={
-                "flex h-[30px] shrink-0 items-center gap-2 rounded-md border px-2.5 transition-colors " +
-                (hkRecording
-                  ? "animate-pulse-ring border-primary/80 bg-primary/15"
-                  : "cursor-pointer border-primary/45 bg-primary/10 hover:bg-primary/20")
-              }
-              onClick={() => {
-                invoke("start_hotkey_capture")
-                  .then(() => setHkRecording(true))
-                  .catch((e) => setHkError("启动录制失败：" + e));
-              }}
-            >
-              {hkRecording ? (
-                <span className="text-[12.5px]">按下新组合…（Esc 取消）</span>
-              ) : (
-                <>
-                  <b className="font-mono text-[12.5px] font-medium">
-                    {formatHotkey(st.hotkey)}
-                  </b>
-                  <span className="text-[11px] text-muted-foreground">
-                    点击录制
-                  </span>
-                </>
-              )}
-            </button>
-          </div>
-          {hkError && (
-            <div className="animate-shake pb-1 text-[11px] text-destructive">
-              {hkError}
-            </div>
-          )}
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
-            <Label
-              htmlFor="set-autostart"
-              className="text-[13px] font-normal text-foreground"
-            >
-              开机自启
-            </Label>
-            <Checkbox
-              id="set-autostart"
-              checked={st.autostart}
-              onCheckedChange={async (v) => {
-                const on = v === true;
-                setSt((s) => (s ? { ...s, autostart: on } : s));
-                try {
-                  await invoke("autostart_set", { enable: on });
-                } catch {
-                  setSt((s) => (s ? { ...s, autostart: !on } : s));
-                }
-              }}
-            />
-          </div>
-          <div className="mt-3 border-t border-white/5 pt-3">
-            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
-              <Clipboard className="size-3 text-primary/75" />
-              剪贴板
-            </div>
-            <div className="flex min-h-[38px] items-center justify-between gap-3">
-              <Label
-                htmlFor="set-clip"
-                className="text-[13px] font-normal text-foreground"
-              >
-                记录剪贴板历史
-              </Label>
-              <Checkbox
-                id="set-clip"
-                checked={st.clipEnabled}
-                onCheckedChange={(v) =>
-                  setSt((s) => (s ? { ...s, clipEnabled: v === true } : s))
-                }
-              />
-            </div>
-            <div className="flex min-h-[38px] items-center justify-between gap-3">
-              <Label className="text-[13px] font-normal text-foreground">
-                保留条数
-              </Label>
-              <Select
-                value={String(st.clipMax)}
-                disabled={!st.clipEnabled}
-                onValueChange={(v) =>
-                  setSt((s) => (s ? { ...s, clipMax: Number(v) } : s))
-                }
-              >
-                <SelectTrigger className="h-[30px] w-[126px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="100">100</SelectItem>
-                  <SelectItem value="500">500</SelectItem>
-                  <SelectItem value="1000">1000</SelectItem>
-                  <SelectItem value="5000">5000</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="mt-3 border-t border-white/5 pt-3">
-            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
-              <KeyRound className="size-3 text-primary/75" />
-              密码安全
-            </div>
-            <div className="flex min-h-[38px] items-center justify-between gap-3">
-              <Label className="text-[13px] font-normal text-foreground">
-                复制后清空剪贴板
-              </Label>
-              <Select
-                value={String(st.pwdClearSecs)}
-                onValueChange={(v) =>
-                  setSt((s) => (s ? { ...s, pwdClearSecs: Number(v) } : s))
-                }
-              >
-                <SelectTrigger className="h-[30px] w-[126px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="0">关闭</SelectItem>
-                  <SelectItem value="30">30 秒</SelectItem>
-                  <SelectItem value="45">45 秒</SelectItem>
-                  <SelectItem value="60">60 秒</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="mt-3 border-t border-white/5 pt-3">
-            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
-              <Search className="size-3 text-primary/75" />
-              Everything
-            </div>
-            <div className="flex min-h-[38px] items-center justify-between gap-3">
-              <span className="flex min-w-0 flex-col gap-px">
-                <Label
-                  htmlFor="set-ev"
-                  className="text-[13px] font-normal text-foreground"
-                >
-                  自动启动 Everything
-                </Label>
-                <span className="text-[11px] leading-snug text-muted-foreground">
-                  未运行时自动拉起；不会自动下载
-                </span>
-              </span>
-              <Checkbox
-                id="set-ev"
-                checked={st.everythingAutostart}
-                onCheckedChange={(v) =>
-                  setSt((s) =>
-                    s ? { ...s, everythingAutostart: v === true } : s
-                  )
-                }
-              />
-            </div>
-          </div>
-          <div className="mt-3 border-t border-white/5 pt-3">
-            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
-              <Puzzle className="size-3 text-primary/75" />
-              插件
-            </div>
-            {st.plugins.length === 0 ? (
-              <div className="py-2 text-[11px] text-muted-foreground">
-                暂无可开关插件
-              </div>
-            ) : (
-              st.plugins.map((p) => (
-                <div
-                  key={p.id}
-                  className="flex min-h-[38px] items-center justify-between gap-3"
-                >
-                  <span className="flex min-w-0 flex-col gap-px">
-                    <Label
-                      htmlFor={"set-plugin-" + p.id}
-                      className="text-[13px] font-normal text-foreground"
-                    >
-                      {p.title}
-                    </Label>
-                    <span className="text-[11px] leading-snug text-muted-foreground">
-                      {p.hint}
-                    </span>
-                  </span>
-                  <Checkbox
-                    id={"set-plugin-" + p.id}
-                    checked={p.enabled}
-                    onCheckedChange={(v) =>
-                      setSt((s) =>
-                        s
-                          ? {
-                              ...s,
-                              plugins: s.plugins.map((x) =>
-                                x.id === p.id
-                                  ? { ...x, enabled: v === true }
-                                  : x
-                              ),
-                            }
-                          : s
-                      )
-                    }
-                  />
-                </div>
-              ))
-            )}
-          </div>
-          <div className="mt-3 border-t border-white/5 pt-3">
-            <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
-              <RefreshCw className="size-3 text-primary/75" />
-              软件更新
-            </div>
-            <div className="flex min-h-[38px] items-center justify-between gap-3">
-              <span className="flex min-w-0 items-center gap-2.5">
-                <span className="shrink-0 text-[13px]">当前版本</span>
-                <b className="shrink-0 text-[13px] font-medium text-primary/90">
-                  v{appVersion || "…"}
-                </b>
-                <span
-                  className="flex min-w-0 items-center gap-2"
-                  aria-live="polite"
-                >
-                  {updateStatus === "idle" && updateMsg && (
-                    <span
-                      className={
-                        "truncate text-xs " +
-                        (updateMsg.kind === "ok"
-                          ? "text-success"
-                          : "text-destructive")
-                      }
-                    >
-                      {updateMsg.text}
-                    </span>
-                  )}
-                  {updateStatus === "checking" && (
-                    <span className="truncate text-xs text-muted-foreground">
-                      正在检查更新…
-                    </span>
-                  )}
-                  {updateStatus === "available" && (
-                    <span className="truncate text-xs text-muted-foreground">
-                      发现新版本{" "}
-                      <b className="font-medium text-primary/90">
-                        v{updateVersion}
-                      </b>
-                    </span>
-                  )}
-                  {updateStatus === "downloading" && (
-                    <>
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        正在下载更新
-                      </span>
-                      <span className="h-1 w-[90px] shrink-0 overflow-hidden rounded-full bg-muted">
-                        <span
-                          className="block h-full rounded-full bg-primary transition-[width] duration-150"
-                          style={{ width: `${updateProgress}%` }}
-                        />
-                      </span>
-                    </>
-                  )}
-                  {updateStatus === "ready" && (
-                    <span className="truncate text-xs text-muted-foreground">
-                      更新已就绪，重启 zap 完成安装
-                    </span>
-                  )}
-                </span>
-              </span>
-              {updateStatus === "idle" && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0"
-                  onClick={() => void checkForUpdate()}
-                >
-                  检查更新
-                </Button>
-              )}
-              {updateStatus === "checking" && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0"
-                  disabled
-                >
-                  <Loader2 className="size-3.5 animate-spin" />
-                  检查中
-                </Button>
-              )}
-              {updateStatus === "downloading" && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0"
-                  disabled
-                >
-                  {updateProgress}%
-                </Button>
-              )}
-              {updateStatus === "available" && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0 border-primary/50 text-primary hover:text-primary"
-                  onClick={() => void downloadUpdate()}
-                >
-                  <Download className="size-3.5" />
-                  下载并安装
-                </Button>
-              )}
-              {updateStatus === "ready" && (
-                <Button
-                  size="sm"
-                  className="shrink-0"
-                  onClick={() => void relaunch()}
-                >
-                  <RotateCw className="size-3.5" />
-                  重启以完成更新
-                </Button>
-              )}
-            </div>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-[22px] py-1.5">
-          {saveMsg && (
-            <span className="shrink-0 animate-fade-in text-xs text-success">
-              {saveMsg}
-            </span>
-          )}
-          <Button size="sm" className="shrink-0" onClick={saveSettings}>
-            保存
-          </Button>
-        </div>
-      </div>
+      <SettingsView
+        updater={updater}
+        onKeyDown={onKeyDown}
+        focusRef={focusPanelRef}
+        onClose={closeSettings}
+      />
     );
   }
 
@@ -1785,6 +858,31 @@ function AppView() {
               <span>+</span>
               <Kbd>1~6</Kbd>
               <span>行内操作</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className="zap-footer-help"
+                    aria-label="Alt 组合键说明"
+                    tabIndex={-1}
+                  >
+                    <CircleHelp className="size-3.5" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" align="start">
+                  <div className="zap-alt-help">
+                    {ALT_ACTIONS.map(([key, desc]) => (
+                      <div key={key} className="zap-alt-help-row">
+                        <span className="zap-alt-help-keys">
+                          <Kbd>Alt</Kbd>
+                          <span>+</span>
+                          <Kbd>{key}</Kbd>
+                        </span>
+                        <span>{desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
             </>
           ) : (
             <>

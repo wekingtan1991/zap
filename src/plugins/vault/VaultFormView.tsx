@@ -1,0 +1,217 @@
+/// 新增/编辑账号表单（从 App.tsx 迁出）：字段渲染 + 密码生成 + 保存。
+/// 表单状态仍在 AppView（多处入口写入：列表伪条目 / 详情编辑），此处受控渲染
+import { invoke } from "@tauri-apps/api/core";
+import { ArrowLeft, KeyRound } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+
+export interface AccountForm {
+  id?: number;
+  title: string;
+  username: string;
+  password: string;
+  url: string;
+  notes: string;
+  pinned: boolean;
+}
+
+export const EMPTY_FORM: AccountForm = {
+  title: "",
+  username: "",
+  password: "",
+  url: "",
+  notes: "",
+  pinned: false,
+};
+
+interface Props {
+  form: AccountForm;
+  formError: string;
+  setForm: React.Dispatch<React.SetStateAction<AccountForm | null>>;
+  setFormError: (msg: string) => void;
+  /// 保存成功后回调（父级：关表单 + 回账号库 + 刷新列表）
+  onSaved: () => void;
+  /// 取消（Esc 与「取消」按钮共用；父级负责焦点回主输入框）
+  onCancel: () => void;
+  focusRef: (el: HTMLDivElement | null) => void;
+}
+
+export function VaultFormView({
+  form,
+  formError,
+  setForm,
+  setFormError,
+  onSaved,
+  onCancel,
+  focusRef,
+}: Props) {
+  // 表单域键盘自持：Ctrl+Enter 保存，Esc 取消（其余按键不进入全局导航）
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+    } else if (e.key === "Enter" && e.ctrlKey) {
+      e.preventDefault();
+      void saveForm();
+    }
+  };
+  const setFormField = (key: keyof AccountForm, value: string | boolean) => {
+    setForm((f) => (f ? { ...f, [key]: value } : f));
+  };
+
+  // 表单密码生成：crypto 随机 16 位（去掉易混淆字符）
+  const genPassword = () => {
+    const chars =
+      "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*";
+    const arr = new Uint32Array(16);
+    crypto.getRandomValues(arr);
+    const pw = Array.from(arr, (n) => chars[n % chars.length]).join("");
+    setFormField("password", pw);
+  };
+
+  const saveForm = async () => {
+    if (!form.title.trim()) {
+      setFormError("请填写标题——用于记录这是什么账号，如“行云账号”");
+      return;
+    }
+    setFormError("");
+    try {
+      if (form.id != null) {
+        await invoke("vault_update", {
+          id: form.id,
+          title: form.title,
+          username: form.username,
+          password: form.password, // 留空 = 保持原密码
+          url: form.url,
+          notes: form.notes,
+          pinned: form.pinned ? 1 : 0,
+        });
+      } else {
+        await invoke("vault_add", {
+          title: form.title,
+          username: form.username,
+          password: form.password,
+          url: form.url,
+          notes: form.notes,
+        });
+      }
+      onSaved();
+    } catch (e) {
+      // 表单视图不渲染结果列表，错误必须显示在表单内
+      setFormError("保存失败：" + String(e));
+    }
+  };
+
+  return (
+    <div
+      className="zap-panel vault outline-none"
+      tabIndex={-1}
+      ref={focusRef}
+      onKeyDown={onKeyDown}
+    >
+      <div className="zap-input-row">
+        <span className="zap-logo">
+          <KeyRound className="size-4 text-primary" />
+        </span>
+        <span className="zap-vault-tag">
+          {form.id != null ? "编辑账号" : "新增账号"}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+          onClick={onCancel}
+        >
+          <ArrowLeft className="size-3" />
+          取消（Esc）
+        </Button>
+      </div>
+      <div className="zap-form">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="f-title">标题 *</Label>
+          <Input
+            id="f-title"
+            autoFocus
+            value={form.title}
+            onChange={(e) => setFormField("title", e.target.value)}
+            placeholder="例如：行云账号"
+          />
+          <span className="zap-form-hint">
+            标题用于记录这是什么账号（如“行云账号”），保存后显示在列表里
+          </span>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="f-user">用户名</Label>
+          <Input
+            id="f-user"
+            value={form.username}
+            onChange={(e) => setFormField("username", e.target.value)}
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="f-pass">
+            密码（DPAPI 加密存储，不入剪贴板历史
+            {form.id != null ? "；留空 = 保持原密码" : ""}）
+          </Label>
+          <div className="zap-pass-row">
+            <Input
+              id="f-pass"
+              type="password"
+              value={form.password}
+              onChange={(e) => setFormField("password", e.target.value)}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={genPassword}
+              title="生成 16 位强密码"
+            >
+              生成
+            </Button>
+          </div>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="f-url">网址</Label>
+          <Input
+            id="f-url"
+            value={form.url}
+            onChange={(e) => setFormField("url", e.target.value)}
+            placeholder="https://…"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="f-notes">备注</Label>
+          <Textarea
+            id="f-notes"
+            rows={2}
+            value={form.notes}
+            onChange={(e) => setFormField("notes", e.target.value)}
+          />
+        </div>
+        <div className="flex items-center gap-2.5">
+          <Checkbox
+            id="f-pin"
+            checked={form.pinned}
+            onCheckedChange={(v) => setFormField("pinned", v === true)}
+          />
+          <Label htmlFor="f-pin" className="text-[13px] text-foreground">
+            固定置顶（常用账号排在最前）
+          </Label>
+        </div>
+        <div className="zap-form-actions">
+          <Button variant="outline" onClick={onCancel}>
+            取消（Esc）
+          </Button>
+          <Button onClick={() => void saveForm()}>保存（Ctrl+Enter）</Button>
+        </div>
+        {formError && (
+          <div className="zap-hk-err animate-shake">{formError}</div>
+        )}
+      </div>
+    </div>
+  );
+}

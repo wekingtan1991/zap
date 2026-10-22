@@ -1,7 +1,9 @@
+pub mod acctparse;
 pub mod appconfig;
 pub mod apps;
 pub mod clipboard;
 pub mod diag;
+pub mod dpapi;
 pub mod everything;
 pub mod files;
 pub mod jsontools;
