@@ -42,6 +42,8 @@ export interface AppSettings {
   hotkey: string;
   clipEnabled: boolean;
   clipMax: number;
+  /// 剪贴板条目选中后自动粘贴到原窗口
+  clipAutoPaste: boolean;
   pwdClearSecs: number;
   autostart: boolean;
   everythingAutostart: boolean;
@@ -71,8 +73,10 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
   const [saveMsg, setSaveMsg] = useState("");
 
   useEffect(() => {
+    // clipAutoPaste 归一化：半新半旧会话里旧后端不下发该键，undefined 会导致
+    // 保存时 invoke 序列化丢键
     invoke<AppSettings>("get_app_settings")
-      .then(setSt)
+      .then((res) => setSt({ ...res, clipAutoPaste: res.clipAutoPaste ?? true }))
       .catch(() => {});
     // 版本号异步读取（tauri.conf.json 的 version），失败时留空
     getVersion()
@@ -161,6 +165,7 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
         hotkey: st.hotkey,
         clipEnabled: st.clipEnabled,
         clipMax: st.clipMax,
+        clipAutoPaste: st.clipAutoPaste ?? true,
         pwdClearSecs: st.pwdClearSecs,
         everythingAutostart: st.everythingAutostart,
         plugins: st.plugins.map((p) => ({ id: p.id, enabled: p.enabled })),
@@ -321,6 +326,26 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
                 <SelectItem value="5000">5000</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div className="flex min-h-[38px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <Label
+                htmlFor="set-autopaste"
+                className="text-[13px] font-normal text-foreground"
+              >
+                选中后自动粘贴
+              </Label>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                历史条目回填后焦点交还原窗口并发送 Ctrl+V
+              </span>
+            </span>
+            <Checkbox
+              id="set-autopaste"
+              checked={st.clipAutoPaste}
+              onCheckedChange={(v) =>
+                setSt((s) => (s ? { ...s, clipAutoPaste: v === true } : s))
+              }
+            />
           </div>
         </div>
         <div className="mt-3 border-t border-white/5 pt-3">

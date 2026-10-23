@@ -272,21 +272,7 @@ impl SearchEngine {
             let conn = self.clip.lock().expect("clip db poisoned");
             return assemble_opening(&self.plugins, &conn);
         }
-        let mut items = Vec::new();
-        for p in &self.plugins {
-            if plugin_off(p.as_ref()) {
-                continue;
-            }
-            if p.needs_conn() {
-                // clip 锁只在真正查库的插件上短暂持有：files 的 HTTP（超时 250ms）与
-                // winsys 的窗口枚举若在锁内，会拖住共用这把锁的 vault 与设置操作
-                let conn = self.clip.lock().expect("clip db poisoned");
-                items.extend(p.search(q, Some(&conn)));
-            } else {
-                items.extend(p.search(q, None));
-            }
-        }
-        items
+        run_parallel(&self.plugins, q, &self.clip)
     }
 
     /// 设置页插件清单（仅可开关插件；核心源不列）
@@ -324,6 +310,40 @@ impl SearchEngine {
 fn plugin_off(p: &dyn plugin::Plugin) -> bool {
     p.meta()
         .is_some_and(|m| !m.state.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// 插件并行执行：总延迟从"串行求和"变"最慢一路"（files 的 HTTP 超时 250ms 与
+/// winsys 的窗口枚举不再逐个叠加在每次击键上）。输出按注册序回槽，展示顺序与
+/// 串行版完全一致。needs_conn 的插件留在当前线程——rusqlite Connection 非 Sync
+/// 不能跨线程；其余各占一个 scoped 线程，单个插件 panic 只损失该源（空结果）。
+fn run_parallel(
+    plugins: &[std::sync::Arc<dyn plugin::Plugin>],
+    q: &str,
+    clip: &Mutex<Connection>,
+) -> Vec<SearchItem> {
+    let mut slots: Vec<Option<Vec<SearchItem>>> = (0..plugins.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for (i, p) in plugins.iter().enumerate() {
+            if plugin_off(p.as_ref()) || p.needs_conn() {
+                continue;
+            }
+            handles.push((i, scope.spawn(move || p.search(q, None))));
+        }
+        for (i, p) in plugins.iter().enumerate() {
+            if plugin_off(p.as_ref()) || !p.needs_conn() {
+                continue;
+            }
+            // clip 锁只在真正查库的插件上短暂持有：其余源的 HTTP/窗口枚举
+            // 已并行到各自线程，不会拖住共用这把锁的 vault 与设置操作
+            let conn = clip.lock().expect("clip db poisoned");
+            slots[i] = Some(p.search(q, Some(&conn)));
+        }
+        for (i, h) in handles {
+            slots[i] = Some(h.join().unwrap_or_default());
+        }
+    });
+    slots.into_iter().flatten().flatten().collect()
 }
 
 /// 设置页插件状态
@@ -468,5 +488,79 @@ mod plugin_tests {
             "关闭记录时不应出现识别条目：{items:?}"
         );
         assert_eq!(items.len(), 1);
+    }
+
+    /// 带延迟的探针源：并行执行与保序断言用
+    struct TagPlugin {
+        tag: &'static str,
+        delay_ms: u64,
+    }
+    impl plugin::Plugin for TagPlugin {
+        fn search(&self, _q: &str, _c: Option<&Connection>) -> Vec<SearchItem> {
+            if self.delay_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
+            }
+            vec![SearchItem {
+                id: format!("tag:{}", self.tag),
+                title: self.tag.to_string(),
+                subtitle: String::new(),
+                kind: "info".into(),
+                target: String::new(),
+                icon: None,
+                score: 0.0,
+            }]
+        }
+    }
+
+    /// needs_conn 探针：断言引擎真的传入了连接
+    struct ConnTagPlugin {
+        tag: &'static str,
+    }
+    impl plugin::Plugin for ConnTagPlugin {
+        fn needs_conn(&self) -> bool {
+            true
+        }
+        fn search(&self, _q: &str, c: Option<&Connection>) -> Vec<SearchItem> {
+            assert!(c.is_some(), "needs_conn 插件必须拿到连接");
+            vec![SearchItem {
+                id: format!("tag:{}", self.tag),
+                title: self.tag.to_string(),
+                subtitle: String::new(),
+                kind: "info".into(),
+                target: String::new(),
+                icon: None,
+                score: 0.0,
+            }]
+        }
+    }
+
+    #[test]
+    fn 并行插件执行保持注册顺序且真并行() {
+        let conn = Mutex::new(mem_conn());
+        // 普通/需连接/普通交错注册；两个 80ms 延迟源并行 ≈ 80ms，串行则 ≥160ms
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
+            std::sync::Arc::new(TagPlugin {
+                tag: "a",
+                delay_ms: 80,
+            }),
+            std::sync::Arc::new(ConnTagPlugin { tag: "conn" }),
+            std::sync::Arc::new(TagPlugin {
+                tag: "b",
+                delay_ms: 80,
+            }),
+        ];
+        let t0 = std::time::Instant::now();
+        let items = super::run_parallel(&plugins, "x", &conn);
+        let elapsed = t0.elapsed();
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["tag:a", "tag:conn", "tag:b"],
+            "并行执行输出应保持注册顺序"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(135),
+            "两个 80ms 源应并行执行（实际 {elapsed:?}，串行会 ≥160ms）"
+        );
     }
 }

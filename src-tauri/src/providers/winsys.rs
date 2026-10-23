@@ -140,6 +140,67 @@ pub fn activate(hwnd_val: isize) -> bool {
     }
 }
 
+/// 焦点交还呼出前的窗口并注入 Ctrl+V（剪贴板「选中即粘贴」）。
+/// 面板刚隐藏时本进程尚在前台，有权指定下一个前台窗口；重试至多 ~600ms
+/// 等目标窗口真正到前台，超时返回 false（调用方保持仅回填的行为）。
+pub fn paste_to_prev(prev_hwnd: isize) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    };
+    let hwnd = HWND(prev_hwnd as *mut core::ffi::c_void);
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        let deadline = Instant::now() + Duration::from_millis(600);
+        loop {
+            let _ = SetForegroundWindow(hwnd);
+            if GetForegroundWindow() == hwnd {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        send_ctrl_v();
+    }
+    true
+}
+
+/// 扫描码注入 Ctrl+V：虚拟键事件在只认物理键序的应用里会丢，
+/// 按扫描码下发 make/break 对（与真实键盘一致，本机调试经验）
+fn send_ctrl_v() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, SendInput,
+    };
+    let key = |scan: u16, up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: Default::default(),
+                wScan: scan,
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP | KEYEVENTF_SCANCODE
+                } else {
+                    KEYEVENTF_SCANCODE
+                },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs = [
+        key(0x1D, false), // Left Ctrl down
+        key(0x2F, false), // V down
+        key(0x2F, true),  // V up
+        key(0x1D, true),  // Left Ctrl up
+    ];
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
 /// 窗口切换源插件适配。搜索时走窗口快照枚举（Win32 调用），
 /// 保持 needs_conn = false：不得在 clip 锁内执行
 pub struct WinsysPlugin;
