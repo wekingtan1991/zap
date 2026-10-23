@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use super::files;
 
-/// 依次尝试的官方版本地址（新版本发布后旧地址会 404，按新到旧探测）
+/// 内置兜底版本表：官网解析失败（改版/网络抖动）时仍可尝试已知地址。
+/// 主路径是下载页解析——官方发新版后旧地址会 404，纯硬编码会整体失效
 const VERSIONS: [&str; 5] = [
     "1.4.1.1028",
     "1.4.1.1027",
@@ -21,6 +22,80 @@ const VERSIONS: [&str; 5] = [
     "1.4.1.1025",
     "1.4.1.1024",
 ];
+
+/// 从下载页 HTML 提取稳定版版本号（数字段降序）。
+/// 只认纯数字加点（1.4.1.1028），天然排除 1.5 alpha 的 b 后缀等非稳定命名
+fn extract_versions(html: &str) -> Vec<String> {
+    const MARKER: &str = "Everything-";
+    const SUFFIX: &str = ".x64.zip";
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = html;
+    while let Some(i) = rest.find(MARKER) {
+        let tail = &rest[i + MARKER.len()..];
+        rest = tail;
+        let Some(end) = tail.find(SUFFIX) else {
+            continue;
+        };
+        let ver = &tail[..end];
+        if ver.is_empty() || !ver.chars().all(|c| c.is_ascii_digit() || c == '.') {
+            continue;
+        }
+        if !out.iter().any(|v| v == ver) {
+            out.push(ver.to_string());
+        }
+    }
+    fn key(v: &str) -> Vec<u32> {
+        v.split('.').filter_map(|s| s.parse().ok()).collect()
+    }
+    // 页面顺序不保证新在前
+    out.sort_by_key(|v| std::cmp::Reverse(key(v)));
+    out
+}
+
+/// 主路径官网解析 + 内置表兜底（去重合并）
+fn resolve_versions(client: &reqwest::blocking::Client) -> Vec<String> {
+    let mut versions = client
+        .get("https://www.voidtools.com/downloads/")
+        .send()
+        .ok()
+        .and_then(|resp| resp.text().ok())
+        .map(|html| extract_versions(&html))
+        .unwrap_or_default();
+    for v in VERSIONS {
+        if !versions.iter().any(|x| x == v) {
+            versions.push((*v).to_string());
+        }
+    }
+    versions
+}
+
+fn download(dest_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let zip_path = dest_dir.join("everything.zip");
+    let versions = resolve_versions(&client);
+    let mut last_err = String::from("未知错误");
+    for v in &versions {
+        let url = format!("https://www.voidtools.com/Everything-{v}.x64.zip");
+        match client.get(&url).send() {
+            Ok(resp) if resp.status().is_success() => {
+                let bytes = resp.bytes().map_err(|e| e.to_string())?;
+                std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+            Ok(resp) => {
+                last_err = format!("{url} -> HTTP {}", resp.status());
+            }
+            Err(e) => {
+                last_err = format!("{url} -> {e}");
+            }
+        }
+    }
+    Err(format!("全部版本下载失败（最后错误: {last_err}）"))
+}
 
 fn install_dir() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
@@ -43,33 +118,6 @@ pub fn status() -> String {
         return "installed_not_running".into();
     }
     "not_installed".into()
-}
-
-fn download(dest_dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let zip_path = dest_dir.join("everything.zip");
-    let mut last_err = String::from("未知错误");
-    for v in VERSIONS {
-        let url = format!("https://www.voidtools.com/Everything-{v}.x64.zip");
-        match client.get(&url).send() {
-            Ok(resp) if resp.status().is_success() => {
-                let bytes = resp.bytes().map_err(|e| e.to_string())?;
-                std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
-                return Ok(());
-            }
-            Ok(resp) => {
-                last_err = format!("{url} -> HTTP {}", resp.status());
-            }
-            Err(e) => {
-                last_err = format!("{url} -> {e}");
-            }
-        }
-    }
-    Err(format!("全部版本下载失败（最后错误: {last_err}）"))
 }
 
 /// GUI 进程下调用 powershell 不闪控制台黑框
@@ -293,5 +341,28 @@ pub fn ensure() -> String {
             eprintln!("zap: everything 自动启动失败: {e}");
             "error".into()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_versions;
+
+    #[test]
+    fn 官网页面解析版本号() {
+        let html = r#"<a href="https://www.voidtools.com/Everything-1.4.1.1024.x64.zip">old</a>
+            <a href="https://www.voidtools.com/Everything-1.4.1.1028.x64.zip">latest</a>
+            <a href="https://www.voidtools.com/Everything-1.5.0.1392b.x64.zip">alpha</a>"#;
+        let v = extract_versions(html);
+        assert_eq!(
+            v,
+            vec!["1.4.1.1028".to_string(), "1.4.1.1024".to_string()],
+            "b 后缀的 alpha 应被排除，且按版本号新在前"
+        );
+    }
+
+    #[test]
+    fn 无匹配页面返回空表() {
+        assert!(extract_versions("<html>no downloads here</html>").is_empty());
     }
 }

@@ -16,6 +16,8 @@ export interface ItemActions {
   openExternal: (it: SearchItem) => void;
   /// vault 条目的行尾置顶
   vaultPin: (it: SearchItem) => void;
+  /// 剪贴板条目的行尾固定
+  clipPin: (it: SearchItem) => void;
 }
 
 export interface KindUi {
@@ -33,7 +35,13 @@ export interface KindUi {
 
 const REGISTRY: Record<string, KindUi> = {
   app: { label: "应用", badge: "app" },
-  clip: { label: "剪贴板", badge: "clip" },
+  clip: {
+    label: "剪贴板",
+    badge: "clip",
+    rowAction: (it, act) => (
+      <VaultRowPin pinned={isPinned(it)} onPin={() => act.clipPin(it)} />
+    ),
+  },
   file: { label: "文件", badge: "file" },
   win: { label: "窗口", badge: "win" },
   recent: { label: "最近", badge: "recent" },

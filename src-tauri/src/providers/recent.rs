@@ -68,7 +68,7 @@ pub fn search(entries: &[RecentEntry], query: &str, limit: usize) -> Vec<SearchI
         .map(|(score, i)| {
             let e = &entries[i];
             SearchItem {
-                id: format!("recent:{i}"),
+                id: format!("recent:{:016x}", super::stable_key(&e.path)),
                 title: e.name.clone(),
                 subtitle: "最近使用".into(),
                 kind: "recent".into(),
