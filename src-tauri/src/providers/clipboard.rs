@@ -56,6 +56,10 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
              created_at INTEGER NOT NULL
          );",
     )?;
+    // 旧库迁移：补 pinned 列（已存在时报错可忽略）
+    let _ = conn.execute_batch(
+        "ALTER TABLE clipboard_history ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+    );
     Ok(conn)
 }
 
@@ -92,8 +96,9 @@ pub fn spawn_watcher(db_path: PathBuf) {
                              ON CONFLICT(content) DO UPDATE SET created_at=excluded.created_at",
                             params![text, now],
                         );
+                        // 清理让位于固定：置顶条目不参与保留条数淘汰
                         let _ = self.conn.execute(
-                            "DELETE FROM clipboard_history WHERE id NOT IN (
+                            "DELETE FROM clipboard_history WHERE pinned=0 AND id NOT IN (
                                  SELECT id FROM clipboard_history ORDER BY created_at DESC LIMIT ?1
                              )",
                             params![RETENTION_LIMIT.load(Ordering::Relaxed)],
@@ -149,48 +154,74 @@ fn is_from_password_manager() -> bool {
     }
 }
 
-/// 搜索历史：Rust 侧统一打分（含拼音）。空查询返回最近 5 条（打开面板即见最近复制）
+/// 搜索历史：Rust 侧统一打分（含拼音）。空查询返回最近条目（固定置顶，呼出即见常用）。
+/// 评分只吃前 256 字符且由 SQL 侧 substr 截断——长文本（几 MB 的粘贴）不再每击键
+/// 整行拖回内存，命中后再按行号点查全文
 pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
     let now = now_ms();
     let Ok(mut stmt) = conn.prepare(
-        "SELECT content, created_at FROM clipboard_history
-         ORDER BY created_at DESC LIMIT 300",
+        "SELECT id, created_at, pinned, substr(content, 1, 256) FROM clipboard_history
+         ORDER BY pinned DESC, created_at DESC LIMIT 300",
     ) else {
         return Vec::new();
     };
-    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) else {
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    }) else {
         return Vec::new();
     };
-    let rows: Vec<(String, i64)> = rows.flatten().collect();
+    let rows: Vec<(i64, i64, i64, String)> = rows.flatten().collect();
 
     if query.is_empty() {
         return rows
             .iter()
             .take(limit)
             .enumerate()
-            .map(|(i, (c, t))| build_item(c.clone(), *t, now, i))
+            .filter_map(|(i, (id, t, pinned, _))| {
+                let content = get_by_id(conn, *id)?;
+                Some(build_item(*id, content, *t, now, i, *pinned == 1))
+            })
             .collect();
     }
 
     let q = query.trim().to_lowercase();
-    let mut scored: Vec<(f32, String, i64)> = rows
+    let mut scored: Vec<(f32, i64, i64, i64)> = rows
         .iter()
-        .filter_map(|(c, t)| {
-            // 长内容截断参与拼音匹配；直接子串匹配仍覆盖全文
-            let head: String = c.chars().take(256).collect();
-            super::score_lowered(&head, &q).map(|s| (s, c.clone(), *t))
+        .filter_map(|(id, t, pinned, head)| {
+            super::score_lowered(head, &q).map(|s| (s, *id, *pinned, *t))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then_with(|| b.2.cmp(&a.2)));
+    // 同分档内固定优先，其次新的在前（与账号库口径一致）
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap()
+            .then(b.2.cmp(&a.2))
+            .then(b.3.cmp(&a.3))
+    });
     scored.truncate(limit);
     scored
         .into_iter()
         .enumerate()
-        .map(|(i, (_, c, t))| build_item(c, t, now, i))
+        .filter_map(|(i, (_, id, pinned, t))| {
+            let content = get_by_id(conn, id)?;
+            Some(build_item(id, content, t, now, i, pinned == 1))
+        })
         .collect()
 }
 
-fn build_item(content: String, created_at: i64, now: i64, index: usize) -> SearchItem {
+fn build_item(
+    rowid: i64,
+    content: String,
+    created_at: i64,
+    now: i64,
+    index: usize,
+    pinned: bool,
+) -> SearchItem {
     let first_line = content.lines().next().unwrap_or("").trim().to_string();
     let title = if first_line.chars().count() > 60 {
         format!("{}…", first_line.chars().take(60).collect::<String>())
@@ -198,6 +229,11 @@ fn build_item(content: String, created_at: i64, now: i64, index: usize) -> Searc
         "(空白)".into()
     } else {
         first_line
+    };
+    let title = if pinned {
+        format!("📌 {title}")
+    } else {
+        title
     };
     let extra_lines = content.lines().count().saturating_sub(1);
     let subtitle = if extra_lines > 0 {
@@ -210,7 +246,8 @@ fn build_item(content: String, created_at: i64, now: i64, index: usize) -> Searc
         format!("剪贴板 · {}", ago(created_at, now))
     };
     SearchItem {
-        id: format!("clip:{index}"),
+        // rowid 寻址：固定/回查等跨列表操作不怕列表重排（旧位置 id 重扫即漂移）
+        id: format!("clip:{rowid}"),
         title,
         subtitle,
         kind: "clip".into(),
@@ -218,6 +255,23 @@ fn build_item(content: String, created_at: i64, now: i64, index: usize) -> Searc
         icon: None,
         score: 60.0 - index as f32,
     }
+}
+
+/// 固定/取消固定（返回操作后的状态）：固定条目列表置顶，且不参与保留条数淘汰
+pub fn pin_toggle(conn: &Connection, id: i64) -> Result<bool, String> {
+    conn.execute(
+        "UPDATE clipboard_history SET pinned = 1 - pinned WHERE id=?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    let pinned: i64 = conn
+        .query_row(
+            "SELECT pinned FROM clipboard_history WHERE id=?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(pinned == 1)
 }
 
 fn ago(then: i64, now: i64) -> String {
@@ -261,7 +315,7 @@ pub fn get_by_id(conn: &Connection, id: i64) -> Option<String> {
     .ok()
 }
 
-/// 剪贴板历史源插件适配：唯一 needs_conn 的常规源，
+/// 剪贴板历史源插件适配：与 apps 同为 needs_conn 的常规源，
 /// 引擎在 clip 锁短暂持有内调用（与 HTTP/窗口枚举隔离）
 pub struct ClipboardPlugin;
 
@@ -274,5 +328,79 @@ impl super::plugin::Plugin for ClipboardPlugin {
             Some(c) => search(c, query, 6),
             None => Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn mem_db() -> Connection {
+        open_db(Path::new(":memory:")).expect("mem db")
+    }
+
+    fn insert(conn: &Connection, content: &str, created_at: i64) -> i64 {
+        conn.execute(
+            "INSERT INTO clipboard_history(content, created_at) VALUES(?1, ?2)",
+            params![content, created_at],
+        )
+        .expect("insert");
+        conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .expect("rowid")
+    }
+
+    #[test]
+    fn 固定条目空查询置顶且带标记() {
+        let conn = mem_db();
+        let old = insert(&conn, "旧内容", 1000);
+        let new = insert(&conn, "新内容", 2000);
+        pin_toggle(&conn, old).unwrap();
+
+        let items = search(&conn, "", 5);
+        assert_eq!(items[0].id, format!("clip:{old}"), "固定条目应排最前");
+        assert_eq!(items[0].title, "📌 旧内容");
+        assert!(items[1].id.ends_with(&new.to_string()), "其余按时间倒序");
+
+        // 取消固定恢复时间序
+        pin_toggle(&conn, old).unwrap();
+        let items = search(&conn, "", 5);
+        assert_eq!(items[0].id, format!("clip:{new}"));
+    }
+
+    #[test]
+    fn 保留清理不删固定条目() {
+        let conn = mem_db();
+        let pinned = insert(&conn, "常用片段", 1000);
+        insert(&conn, "旧记录", 2000);
+        insert(&conn, "新记录", 3000);
+        pin_toggle(&conn, pinned).unwrap();
+
+        // 与监听线程相同的保留清理（LIMIT 1 只留最新一条）：固定条目应存活
+        conn.execute(
+            "DELETE FROM clipboard_history WHERE pinned=0 AND id NOT IN (
+                 SELECT id FROM clipboard_history ORDER BY created_at DESC LIMIT 1
+             )",
+            [],
+        )
+        .unwrap();
+        assert!(get_by_id(&conn, pinned).is_some(), "固定条目不被清理");
+        assert!(get_by_id(&conn, 2).is_none(), "未固定的旧条目被清理");
+    }
+
+    #[test]
+    fn 评分只看前256字符() {
+        let conn = mem_db();
+        // 关键词完整落在前 256 字符内（241~249 位）
+        let mut long = "x".repeat(300);
+        long.insert_str(240, " needles ");
+        insert(&conn, &long, 1000);
+        assert_eq!(search(&conn, "needle", 5).len(), 1);
+
+        // 关键字落在 256 字符之外：与旧行为一致不参与匹配（全文仍随 target 返回）
+        let mut beyond = "y".repeat(300);
+        beyond.insert_str(280, "needle");
+        insert(&conn, &beyond, 2000);
+        assert_eq!(search(&conn, "needle", 5).len(), 1);
     }
 }

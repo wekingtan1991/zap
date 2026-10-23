@@ -434,12 +434,18 @@ async fn everything_setup() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn open_item(app: AppHandle, item: SearchItem) {
+fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
     // 剪贴板「选中即粘贴」在后台线程完成焦点交还与按键注入：open_item 在主线程，
     // 粘贴前的等待（焦点回落最长 ~600ms）不能压在这里
     let mut paste_started = false;
     let result = match item.kind.as_str() {
         "app" | "recent" | "file" => {
+            // 启动计数（frecency 排序依据）：仅应用类，按 target 路径累计
+            if item.kind == "app" {
+                app.state::<AppState>()
+                    .engine
+                    .record_app_launch(&item.target);
+            }
             if item.target.starts_with("shell:") {
                 // UWP/商店应用：explorer 接管 shell:AppsFolder\<AUMID>
                 let _ = std::process::Command::new("explorer")
@@ -514,12 +520,23 @@ fn open_item(app: AppHandle, item: SearchItem) {
         }
         _ => app.opener().open_url(item.target.clone(), None::<&str>),
     };
+    // 打开失败不收面板：错误回传前端 toast 提示，用户可另选条目
     if let Err(e) = result {
-        eprintln!("zap: 打开失败: {e}");
+        return Err(e.to_string());
     }
     if !paste_started {
         hide_panel_window(&app);
     }
+    Ok(())
+}
+
+/// 剪贴板条目固定/取消固定（返回操作后的状态，前端据此刷新排序与按钮态）
+#[tauri::command]
+async fn clip_pin(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.clip_pin(id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 前台窗口的根窗口是否是本面板（WebView2 子窗口夺焦时 tao 会误报 Focused(false)）
@@ -652,6 +669,7 @@ pub fn run() {
             search,
             hide_panel,
             open_item,
+            clip_pin,
             everything_status,
             everything_ensure,
             everything_setup,

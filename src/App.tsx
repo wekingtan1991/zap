@@ -253,7 +253,10 @@ function AppView() {
   }, [query, isVault]);
 
   const activate = useCallback((item: SearchItem) => {
-    invoke("open_item", { item });
+    // 打开失败后端不收面板：这里 toast 报因，用户可另选条目
+    invoke("open_item", { item }).catch((e) => {
+      toast.error("打开失败：" + String(e));
+    });
   }, []);
 
   // ---------- 应用设置 / 自动更新 ----------
@@ -314,7 +317,7 @@ function AppView() {
                 target: url,
                 score: 0,
               },
-            });
+            }).catch((e) => feedback(false, "打开网址失败：" + String(e)));
           }
           return;
         }
@@ -506,6 +509,22 @@ function AppView() {
     setDetail(null);
   }, [detail]);
 
+  /// 剪贴板固定/取消固定：成功后按当前词重拉列表（固定项置顶/取消复位）
+  const clipPin = useCallback(async (item: SearchItem) => {
+    const id = Number(item.id.replace(/^clip:/, ""));
+    if (Number.isNaN(id)) return;
+    try {
+      await invoke<boolean>("clip_pin", { id });
+      const res = await invoke<SearchItem[]>("search", {
+        query: queryRef.current.trim(),
+      });
+      setItems(res);
+      setActive(0);
+    } catch (e) {
+      toast.error("固定失败：" + String(e));
+    }
+  }, []);
+
   // ---------- 统一条目分发 ----------
   // Enter 与点击共用：伪条目（新增/导入）→ 注册表 activate → 默认 openExternal。
   // kind 行为收敛在 plugins/registry.tsx，这里只接装配，不写 kind 特判
@@ -520,6 +539,7 @@ function AppView() {
       } satisfies CommandCtx),
     openExternal: activate,
     vaultPin: (it) => void vaultAction(it, "pin"),
+    clipPin: (it) => void clipPin(it),
   };
 
   const runItem = useCallback(

@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use rusqlite::{Connection, params};
+
 use super::SearchItem;
 
 /// 旧索引条目的图标按缓存键转内存复用：重扫免掉几百次 PNG 读盘 + base64
@@ -138,15 +140,23 @@ impl AppIndex {
         (es.len(), es.iter().filter(|e| e.icon.is_some()).count())
     }
 
-    pub fn search(&self, query: &str, limit: usize) -> Vec<SearchItem> {
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        launches: &HashMap<String, i64>,
+    ) -> Vec<SearchItem> {
         let entries = self.entries.read().expect("app index poisoned").clone();
         let q = query.trim().to_lowercase();
         let mut scored: Vec<(f32, usize)> = Vec::new();
 
         for (i, e) in entries.iter().enumerate() {
             if let Some(s) = e.forms.score(&q) {
-                // 名字越短权重略高
-                scored.push((s - e.name.chars().count() as f32 * 0.05, i));
+                // 名字越短权重略高；启动次数加权（同档内常用者靠前，+0.5×次数
+                // 上限 15 分，跨得过同档微差、越不过前缀>包含的 20 分档差）
+                let used = launches.get(&e.path).copied().unwrap_or(0);
+                let boost = (used.min(30) as f32) * 0.5;
+                scored.push((s + boost - e.name.chars().count() as f32 * 0.05, i));
             }
         }
 
@@ -158,7 +168,8 @@ impl AppIndex {
             .map(|(score, i)| {
                 let e = &entries[i];
                 SearchItem {
-                    id: format!("app:{i}"),
+                    // id 由路径哈希派生：重扫/重启后同一条目 id 不变（固定/启动计数跨会话寻址）
+                    id: format!("app:{:016x}", super::stable_key(&e.path)),
                     title: e.name.clone(),
                     subtitle: e.path.clone(),
                     kind: "app".into(),
@@ -169,6 +180,45 @@ impl AppIndex {
             })
             .collect()
     }
+}
+
+// ---------- 启动统计（frecency）----------
+
+pub fn init_stats(conn: &Connection) {
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS app_stats (
+             target TEXT PRIMARY KEY,
+             launches INTEGER NOT NULL DEFAULT 0,
+             last_at INTEGER NOT NULL DEFAULT 0
+         );",
+    );
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// open_item 记一次启动：按 target（lnk 路径 / shell:AppsFolder AUMID）计数
+pub fn record_launch(conn: &Connection, target: &str) {
+    let _ = conn.execute(
+        "INSERT INTO app_stats(target, launches, last_at) VALUES(?1, 1, ?2)
+         ON CONFLICT(target) DO UPDATE SET launches=launches+1, last_at=excluded.last_at",
+        params![target, now_ms()],
+    );
+}
+
+/// 全量加载启动计数（表里只有真实启动过的应用，通常几十行）
+fn load_launch_counts(conn: &Connection) -> HashMap<String, i64> {
+    let Ok(mut stmt) = conn.prepare("SELECT target, launches FROM app_stats") else {
+        return HashMap::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) else {
+        return HashMap::new();
+    };
+    rows.flatten().collect()
 }
 
 /// 卸载器快捷方式（"卸载XX" / "Uninstall…"）：误触即启动卸载程序，不作应用收录
@@ -234,8 +284,7 @@ fn cache_key(lnk: &str) -> u64 {
             *h = h.wrapping_mul(0x100000001b3);
         }
     }
-    let mut h: u64 = 0xcbf29ce484222325;
-    feed(&mut h, lnk.as_bytes());
+    let mut h = super::stable_key(lnk);
     if let Ok(d) = fs::metadata(lnk)
         .and_then(|md| md.modified())
         .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default())
@@ -508,8 +557,13 @@ pub struct AppsPlugin {
 }
 
 impl super::plugin::Plugin for AppsPlugin {
-    fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
-        self.index.search(query, 8)
+    /// 启动统计的读取走 clip 连接（表小、全量快），needs_conn = true
+    fn needs_conn(&self) -> bool {
+        true
+    }
+    fn search(&self, query: &str, conn: Option<&Connection>) -> Vec<SearchItem> {
+        let launches = conn.map(load_launch_counts).unwrap_or_default();
+        self.index.search(query, 8, &launches)
     }
 }
 
@@ -588,18 +642,61 @@ mod tests {
         fs::write(dir.join("豆包.lnk"), "").unwrap();
 
         let idx = AppIndex::new(vec![dir.clone()], None, false);
-        assert_eq!(idx.search("豆包", 5).len(), 1);
+        assert_eq!(idx.search("豆包", 5, &HashMap::new()).len(), 1);
 
         // 模拟新装应用：重扫前搜不到，重扫后可见
         fs::write(dir.join("记事本Plus.lnk"), "").unwrap();
-        assert!(idx.search("记事本", 5).is_empty());
+        assert!(idx.search("记事本", 5, &HashMap::new()).is_empty());
         assert!(idx.refresh());
-        assert_eq!(idx.search("记事本", 5).len(), 1);
+        assert_eq!(idx.search("记事本", 5, &HashMap::new()).len(), 1);
 
         // 模拟卸载：重扫后消失
         fs::remove_file(dir.join("豆包.lnk")).unwrap();
         assert!(idx.refresh());
-        assert!(idx.search("豆包", 5).is_empty());
+        assert!(idx.search("豆包", 5, &HashMap::new()).is_empty());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn 条目id跨重扫稳定() {
+        let dir = std::env::temp_dir().join("zap_app_index_id_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("豆包.lnk"), "").unwrap();
+
+        let idx = AppIndex::new(vec![dir.clone()], None, false);
+        let id1 = idx.search("豆包", 5, &HashMap::new())[0].id.clone();
+        fs::write(dir.join("新装.lnk"), "").unwrap();
+        assert!(idx.refresh());
+        let id2 = idx.search("豆包", 5, &HashMap::new())[0].id.clone();
+        assert_eq!(id1, id2, "重扫后同一条目 id 不应漂移");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn 启动次数加权排序() {
+        let dir = std::env::temp_dir().join("zap_app_index_frec_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("AA.lnk"), "").unwrap();
+        fs::write(dir.join("AB.lnk"), "").unwrap();
+
+        let idx = AppIndex::new(vec![dir.clone()], None, false);
+        // 同为前缀命中且等长：无统计时按索引序 AA 在前
+        let plain = idx.search("a", 5, &HashMap::new());
+        assert_eq!(plain[0].title, "AA");
+
+        // 给 AB 记启动后应排前（加分跨得过同档微差）
+        let conn = Connection::open_in_memory().unwrap();
+        init_stats(&conn);
+        let ab = dir.join("AB.lnk").to_string_lossy().to_string();
+        for _ in 0..10 {
+            record_launch(&conn, &ab);
+        }
+        let boosted = idx.search("a", 5, &load_launch_counts(&conn));
+        assert_eq!(boosted[0].title, "AB", "常用应用应靠前");
 
         fs::remove_dir_all(&dir).unwrap();
     }

@@ -90,6 +90,17 @@ pub(crate) fn score_lowered(haystack: &str, q_lower: &str) -> Option<f32> {
     MatchForms::new(haystack).score(q_lower)
 }
 
+/// 路径 → 稳定短键（FNV-1a）：条目 id 用它派生，索引重建/重启后不漂移
+/// （位置 id 会随重扫变号，无法做固定/启动计数这类跨会话寻址）
+pub(crate) fn stable_key(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in s.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
 fn score_plain(hay_lower: &str, q_lower: &str) -> Option<f32> {
     if hay_lower.starts_with(q_lower) {
         return Some(100.0);
@@ -151,6 +162,7 @@ impl SearchEngine {
         let conn = clipboard::open_db(db_path).expect("打开剪贴板数据库失败");
         vault::init_table(&conn);
         appconfig::init_table(&conn);
+        apps::init_stats(&conn);
         // 图标缓存随库存放，键 = lnk 路径+mtime 哈希
         let icon_cache = db_path.parent().map(|p| p.join("icons"));
         let apps = std::sync::Arc::new(apps::AppsPlugin {
@@ -213,6 +225,18 @@ impl SearchEngine {
     /// 避免连续呼出反复走目录树 + UWP 枚举；false = 本次跳过或上次未完成
     pub fn refresh_apps(&self) -> bool {
         self.apps.index.refresh_if_stale(apps::REFRESH_MIN_INTERVAL)
+    }
+
+    /// open_item 记一次应用启动（frecency 排序依据，按 target 路径计数）
+    pub fn record_app_launch(&self, target: &str) {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        apps::record_launch(&conn, target);
+    }
+
+    /// 剪贴板条目固定/取消固定（返回操作后的状态）
+    pub fn clip_pin(&self, id: i64) -> Result<bool, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipboard::pin_toggle(&conn, id)
     }
 
     pub fn vault_add(
