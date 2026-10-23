@@ -72,6 +72,17 @@ fn download(dest_dir: &Path) -> Result<(), String> {
     Err(format!("全部版本下载失败（最后错误: {last_err}）"))
 }
 
+/// GUI 进程下调用 powershell 不闪控制台黑框
+fn quiet(mut command: std::process::Command) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 fn extract(dest_dir: &Path) -> Result<(), String> {
     let zip = dest_dir.join("everything.zip");
     let script = format!(
@@ -79,7 +90,7 @@ fn extract(dest_dir: &Path) -> Result<(), String> {
         zip.display(),
         dest_dir.display()
     );
-    let out = std::process::Command::new("powershell")
+    let out = quiet(std::process::Command::new("powershell"))
         .args(["-NoProfile", "-Command", &script])
         .output()
         .map_err(|e| e.to_string())?;
@@ -198,7 +209,7 @@ fn launch_elevated() -> Result<(), String> {
         "Start-Process -FilePath '{}' -Verb RunAs -Wait",
         bat.display()
     );
-    let out = std::process::Command::new("powershell")
+    let out = quiet(std::process::Command::new("powershell"))
         .args(["-NoProfile", "-Command", &script])
         .output()
         .map_err(|e| e.to_string())?;

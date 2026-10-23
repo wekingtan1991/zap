@@ -31,6 +31,19 @@ struct AppState {
     shown_at: Mutex<Option<Instant>>,
     /// 安装流程期间保持面板可见（UAC 等弹窗会抢焦点）
     hold_panel: std::sync::atomic::AtomicBool,
+    /// 呼出面板时的前台窗口：剪贴板条目「选中即粘贴」要交还焦点的目标
+    prev_foreground: Mutex<Option<isize>>,
+}
+
+/// spawn 控制台子进程（cmd/powershell）：GUI 进程下不闪黑框
+fn spawn_hidden(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command.spawn()
 }
 
 #[tauri::command]
@@ -66,9 +79,15 @@ fn set_hold_panel(state: tauri::State<AppState>, hold: bool) {
     state.hold_panel.store(hold, Ordering::Relaxed);
 }
 
+// 除面板开关类轻量命令外，涉及 DB/DPAPI/剪贴板/HTTP 的命令一律 async +
+// spawn_blocking：Tauri 同步命令跑在主线程，SQLite 与剪贴板重试窗口会卡住
+// 窗口消息泵（everything_status 的端口探测最坏可达数百毫秒）
+
 #[tauri::command]
-fn everything_status() -> String {
-    providers::everything::status()
+async fn everything_status() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(providers::everything::status)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 自动检测并在需要时启动 Everything。按设置开关放行；已安装才启动，
@@ -89,48 +108,68 @@ async fn everything_ensure(state: tauri::State<'_, AppState>) -> Result<String, 
 }
 
 #[tauri::command]
-fn vault_search(state: tauri::State<AppState>, query: String) -> Vec<SearchItem> {
-    state.engine.vault_search(&query)
+async fn vault_search(
+    state: tauri::State<'_, AppState>,
+    query: String,
+) -> Result<Vec<SearchItem>, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.vault_search(&query))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn vault_add(
-    state: tauri::State<AppState>,
+async fn vault_add(
+    state: tauri::State<'_, AppState>,
     title: String,
     username: String,
     password: String,
     url: String,
     notes: String,
 ) -> Result<(), String> {
-    state
-        .engine
-        .vault_add(&title, &username, &password, &url, &notes)
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine.vault_add(&title, &username, &password, &url, &notes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn vault_action(state: tauri::State<AppState>, id: i64, action: String) -> Result<String, String> {
-    let secs: i64 = state
-        .engine
-        .get_setting(providers::appconfig::KEY_PWD_CLEAR_SECS)
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(providers::appconfig::DEFAULT_PWD_CLEAR_SECS);
-    state.engine.vault_action(id, &action, secs)
+async fn vault_action(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    action: String,
+) -> Result<String, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let secs: i64 = engine
+            .get_setting(providers::appconfig::KEY_PWD_CLEAR_SECS)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(providers::appconfig::DEFAULT_PWD_CLEAR_SECS);
+        engine.vault_action(id, &action, secs)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 取单条账号完整记录（编辑预填；含解密后的密码明文）
 #[tauri::command]
-fn vault_get(
-    state: tauri::State<AppState>,
+async fn vault_get(
+    state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<(String, String, String, String, String, i64), String> {
-    state.engine.vault_get(id)
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.vault_get(id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 // Tauri 命令按字段平铺（前端 invoke 传同名参数），显式放行参数个数提示
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-fn vault_update(
-    state: tauri::State<AppState>,
+async fn vault_update(
+    state: tauri::State<'_, AppState>,
     id: i64,
     title: String,
     username: String,
@@ -139,9 +178,12 @@ fn vault_update(
     notes: String,
     pinned: i64,
 ) -> Result<(), String> {
-    state
-        .engine
-        .vault_update(id, &title, &username, &password, &url, &notes, pinned)
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine.vault_update(id, &title, &username, &password, &url, &notes, pinned)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ---------- 应用设置 ----------
@@ -152,6 +194,8 @@ struct AppSettingsDto {
     hotkey: String,
     clip_enabled: bool,
     clip_max: i64,
+    /// 剪贴板条目选中后自动粘贴到原窗口
+    clip_autopaste: bool,
     pwd_clear_secs: i64,
     autostart: bool,
     everything_autostart: bool,
@@ -165,6 +209,7 @@ fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSetting
         hotkey: state.hotkey.lock().expect("hotkey poisoned").clone(),
         clip_enabled: providers::clipboard::CLIP_ENABLED.load(Ordering::Relaxed),
         clip_max: providers::clipboard::RETENTION_LIMIT.load(Ordering::Relaxed),
+        clip_autopaste: providers::clipboard::PASTE_TO_PREV.load(Ordering::Relaxed),
         pwd_clear_secs: state
             .engine
             .get_setting(providers::appconfig::KEY_PWD_CLEAR_SECS)
@@ -204,6 +249,8 @@ fn save_settings(
     hotkey: String,
     clip_enabled: bool,
     clip_max: i64,
+    // Option 容错：半新半旧的会话（前端未带上新键）保存时不再整单被拒
+    clip_autopaste: Option<bool>,
     pwd_clear_secs: i64,
     everything_autostart: bool,
     plugins: Vec<PluginSwitchDto>,
@@ -253,6 +300,13 @@ fn save_settings(
     state
         .engine
         .set_setting(providers::appconfig::KEY_CLIP_MAX, &clip_max.to_string())?;
+    if let Some(on) = clip_autopaste {
+        providers::clipboard::PASTE_TO_PREV.store(on, Ordering::Relaxed);
+        state.engine.set_setting(
+            providers::appconfig::KEY_CLIP_AUTOPASTE,
+            if on { "1" } else { "0" },
+        )?;
+    }
     state.engine.set_setting(
         providers::appconfig::KEY_PWD_CLEAR_SECS,
         &pwd_clear_secs.to_string(),
@@ -294,59 +348,80 @@ fn stop_hotkey_capture() {
 }
 
 #[tauri::command]
-fn vault_parse(text: String) -> Vec<providers::vault::ParsedAccount> {
-    providers::vault::parse_blob(&text)
+async fn vault_parse(text: String) -> Result<Vec<providers::vault::ParsedAccount>, String> {
+    tauri::async_runtime::spawn_blocking(move || providers::vault::parse_blob(&text))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ---------- JSON 工具插件 ----------
 
 #[tauri::command]
-fn json_analyze(text: String) -> Result<providers::jsontools::JsonReport, String> {
-    providers::jsontools::analyze(&text)
+async fn json_analyze(text: String) -> Result<providers::jsontools::JsonReport, String> {
+    tauri::async_runtime::spawn_blocking(move || providers::jsontools::analyze(&text))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn json_format(text: String, pretty: bool) -> Result<String, String> {
-    providers::jsontools::format_text(&text, pretty)
+async fn json_format(text: String, pretty: bool) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || providers::jsontools::format_text(&text, pretty))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn json_to_yaml(text: String) -> Result<String, String> {
-    providers::jsontools::to_yaml(&text)
+async fn json_to_yaml(text: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || providers::jsontools::to_yaml(&text))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn json_to_ts(text: String) -> Result<String, String> {
-    providers::jsontools::to_ts(&text)
+async fn json_to_ts(text: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || providers::jsontools::to_ts(&text))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 识别条目回查原文：按行号读剪贴板历史（进入工作台时以识别时刻的内容为准）
 #[tauri::command]
-fn clip_row(state: tauri::State<AppState>, id: i64) -> Result<String, String> {
-    state
-        .engine
-        .clip_row(id)
-        .ok_or_else(|| "该条剪贴板已被清理".into())
+async fn clip_row(state: tauri::State<'_, AppState>, id: i64) -> Result<String, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .clip_row(id)
+            .ok_or_else(|| "该条剪贴板已被清理".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 通用文本复制（JSON 美化/压缩结果回填等）：
 /// 走自身复制抑制窗，派生结果不重复进入剪贴板历史
 #[tauri::command]
-fn copy_text(text: String) -> Result<String, String> {
-    providers::clipboard::begin_self_copy();
-    arboard::Clipboard::new()
-        .map_err(|e| e.to_string())?
-        .set_text(text)
-        .map_err(|e| e.to_string())?;
-    Ok("已复制".into())
+async fn copy_text(text: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        providers::clipboard::begin_self_copy();
+        arboard::Clipboard::new()
+            .map_err(|e| e.to_string())?
+            .set_text(text)
+            .map_err(|e| e.to_string())?;
+        Ok("已复制".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn vault_import(
-    state: tauri::State<AppState>,
+async fn vault_import(
+    state: tauri::State<'_, AppState>,
     entries: Vec<providers::vault::ParsedAccount>,
 ) -> Result<usize, String> {
-    state.engine.vault_import(entries)
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.vault_import(entries))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -360,6 +435,9 @@ async fn everything_setup() -> Result<String, String> {
 
 #[tauri::command]
 fn open_item(app: AppHandle, item: SearchItem) {
+    // 剪贴板「选中即粘贴」在后台线程完成焦点交还与按键注入：open_item 在主线程，
+    // 粘贴前的等待（焦点回落最长 ~600ms）不能压在这里
+    let mut paste_started = false;
     let result = match item.kind.as_str() {
         "app" | "recent" | "file" => {
             if item.target.starts_with("shell:") {
@@ -377,20 +455,27 @@ fn open_item(app: AppHandle, item: SearchItem) {
             // 带协议的交给 opener（ShellExecute 认 ms-settings:），裸文件名一律走
             // `cmd /C start "" <target>`：这是资源管理器"运行"同样的解析路径，
             // 能可靠启动系统可执行名与控制面板项，避免 ShellExecute 对裸名解析失败。
+            // cmd 是控制台程序，spawn 走 spawn_hidden 防黑框闪现
             if item.target.contains(':') {
                 if app
                     .opener()
                     .open_url(item.target.clone(), None::<&str>)
                     .is_err()
                 {
-                    let _ = std::process::Command::new("cmd")
-                        .args(["/C", "start", "", &item.target])
-                        .spawn();
+                    let _ = spawn_hidden(std::process::Command::new("cmd").args([
+                        "/C",
+                        "start",
+                        "",
+                        &item.target,
+                    ]));
                 }
             } else {
-                let _ = std::process::Command::new("cmd")
-                    .args(["/C", "start", "", &item.target])
-                    .spawn();
+                let _ = spawn_hidden(std::process::Command::new("cmd").args([
+                    "/C",
+                    "start",
+                    "",
+                    &item.target,
+                ]));
             }
             Ok(())
         }
@@ -398,6 +483,26 @@ fn open_item(app: AppHandle, item: SearchItem) {
             // 回填剪贴板；我们的监听会把它移动到历史顶部（重复内容自动去重）
             if let Ok(mut cb) = arboard::Clipboard::new() {
                 let _ = cb.set_text(item.target.clone());
+            }
+            // 选中即粘贴：焦点交还呼出前的窗口并注入 Ctrl+V，省掉手动一步；
+            // 设置关闭或无记录（呼出时前台就是面板/捕获失败）则退化为仅回填
+            let prev = if providers::clipboard::PASTE_TO_PREV.load(Ordering::Relaxed) {
+                let state = app.state::<AppState>();
+                state
+                    .prev_foreground
+                    .lock()
+                    .expect("prev_foreground poisoned")
+                    .take()
+            } else {
+                None
+            };
+            if let Some(hwnd) = prev {
+                hide_panel_window(&app);
+                paste_started = true;
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(80));
+                    providers::winsys::paste_to_prev(hwnd);
+                });
             }
             Ok(())
         }
@@ -412,7 +517,9 @@ fn open_item(app: AppHandle, item: SearchItem) {
     if let Err(e) = result {
         eprintln!("zap: 打开失败: {e}");
     }
-    hide_panel_window(&app);
+    if !paste_started {
+        hide_panel_window(&app);
+    }
 }
 
 /// 前台窗口的根窗口是否是本面板（WebView2 子窗口夺焦时 tao 会误报 Focused(false)）
@@ -431,6 +538,27 @@ fn foreground_belongs_to_panel(window: &tauri::Window) -> bool {
     }
 }
 
+/// 呼出前的前台窗口（剪贴板「选中即粘贴」的焦点交还目标）。前台已是面板则不记
+#[cfg(windows)]
+fn capture_prev_foreground(window: &tauri::WebviewWindow) -> Option<isize> {
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, GetForegroundWindow};
+    let Ok(ours) = window.hwnd() else {
+        return None;
+    };
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.is_invalid() || GetAncestor(fg, GA_ROOT) == ours {
+            return None;
+        }
+        Some(fg.0 as isize)
+    }
+}
+
+#[cfg(not(windows))]
+fn capture_prev_foreground(_window: &tauri::WebviewWindow) -> Option<isize> {
+    None
+}
+
 /// 呼出/隐藏面板：显示时定位到鼠标附近（多显示器内夹紧），并通知前端清空状态
 fn toggle_panel(app: &AppHandle) {
     let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
@@ -440,6 +568,12 @@ fn toggle_panel(app: &AppHandle) {
         hide_panel_window(app);
         return;
     }
+    let state = app.state::<AppState>();
+    // 前台窗口必须在 show 之前记：show+set_focus 后前台就换成面板了
+    *state
+        .prev_foreground
+        .lock()
+        .expect("prev_foreground poisoned") = capture_prev_foreground(&win);
     // 显示时定位到光标所在显示器的正中央（窗口隐藏状态下移动不触发焦点事件）
     if let Ok(pos) = app.cursor_position()
         && let Ok(Some(monitor)) = app.monitor_from_point(pos.x, pos.y)
@@ -456,7 +590,6 @@ fn toggle_panel(app: &AppHandle) {
     }
     let _ = win.show();
     let _ = win.set_focus();
-    let state = app.state::<AppState>();
     *state.shown_at.lock().expect("shown_at poisoned") = Some(Instant::now());
     let _ = win.emit("zap://shown", ());
     // 面板呼出后台重建应用索引（10 秒节流）：新装/卸载的软件无需重启即可搜到
@@ -562,6 +695,11 @@ pub fn run() {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(providers::appconfig::DEFAULT_CLIP_MAX);
             providers::clipboard::RETENTION_LIMIT.store(clip_max, Ordering::Relaxed);
+            let clip_autopaste = engine
+                .get_setting(providers::appconfig::KEY_CLIP_AUTOPASTE)
+                .map(|v| v != "0")
+                .unwrap_or(providers::appconfig::DEFAULT_CLIP_AUTOPASTE);
+            providers::clipboard::PASTE_TO_PREV.store(clip_autopaste, Ordering::Relaxed);
 
             let saved_hotkey = engine
                 .get_setting(providers::appconfig::KEY_HOTKEY)
@@ -607,6 +745,7 @@ pub fn run() {
                 clip_item: Mutex::new(None),
                 shown_at: Mutex::new(None),
                 hold_panel: AtomicBool::new(false),
+                prev_foreground: Mutex::new(None),
             });
 
             // 托盘：左键单击 = 呼出面板（满足"桌面点击一下"）

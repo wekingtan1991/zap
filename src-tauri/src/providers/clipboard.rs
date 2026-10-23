@@ -27,6 +27,10 @@ pub fn begin_self_copy() {
 /// 剪贴板历史总开关（设置页/托盘切换），关闭时监听仍运行但不入库
 pub static CLIP_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// 「选中即粘贴」开关：剪贴板条目选中后焦点交还原窗口并发送 Ctrl+V。
+/// 关闭时退化为仅回填剪贴板
+pub static PASTE_TO_PREV: AtomicBool = AtomicBool::new(true);
+
 /// 历史保留条数（设置可调）
 pub static RETENTION_LIMIT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(500);
 
