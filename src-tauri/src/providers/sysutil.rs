@@ -63,3 +63,49 @@ pub fn process_stem_of_pid(pid: u32) -> Option<String> {
     }
     stem
 }
+
+/// 以管理员身份运行（ShellExecuteW "runas"，弹一次 UAC；取消/失败返回 Err）
+pub fn run_as_admin(path: &str) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::PCWSTR;
+
+    let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+    let file: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let h = unsafe {
+        ShellExecuteW(
+            Some(HWND::default()),
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    // 返回值 > 32 为成功（<=32 是 SE_ERR 错误码）
+    if h.0 as isize > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "管理员启动失败（ShellExecute 代码 {}）",
+            h.0 as isize
+        ))
+    }
+}
+
+/// 资源管理器中定位并选中文件（explorer /select）。路径不存在时报错而非静默打开别处
+pub fn reveal_in_explorer(path: &str) -> Result<(), String> {
+    if !Path::new(path).exists() {
+        return Err("文件已不存在或被移动".into());
+    }
+    let mut cmd = std::process::Command::new("explorer");
+    #[cfg(windows)]
+    {
+        // /select 与带空格路径必须同参（explorer 的古怪解析），raw_arg 控制引号原样下发
+        use std::os::windows::process::CommandExt;
+        cmd.raw_arg(format!("/select,\"{}\"", path));
+    }
+    cmd.spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}

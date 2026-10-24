@@ -424,6 +424,88 @@ async fn vault_import(
         .map_err(|e| e.to_string())?
 }
 
+// ---------- 账号库备份（加密导出/恢复） ----------
+
+/// 加密导出全部账号到用户选定路径，返回条目数
+#[tauri::command]
+async fn vault_backup_export(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    passphrase: String,
+) -> Result<usize, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.vault_backup_export(&path, &passphrase))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 解密备份文件为预览（条目 + 疑似重复标记，恢复前交前端确认）
+#[tauri::command]
+async fn vault_backup_decrypt(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    passphrase: String,
+) -> Result<providers::backup::BackupPreview, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.vault_backup_decrypt(&path, &passphrase))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 备份恢复：skip_duplicates 时跳过疑似重复，返回 (写入数, 跳过数)
+#[tauri::command]
+async fn vault_backup_restore(
+    state: tauri::State<'_, AppState>,
+    entries: Vec<providers::backup::BackupEntry>,
+    skip_duplicates: bool,
+) -> Result<(usize, usize), String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine.vault_backup_restore(entries, skip_duplicates)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 条目次级操作：admin=管理员运行 / reveal=所在文件夹定位 / copy_path=复制路径。
+/// .lnk 先解析为真实目标（要的是 exe 而不是开始菜单快捷方式）；商店应用（shell:）不支持
+#[tauri::command]
+async fn secondary_action(
+    state: tauri::State<'_, AppState>,
+    action: String,
+    target: String,
+) -> Result<(), String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if target.starts_with("shell:") {
+            return Err("商店应用不支持该操作".to_string());
+        }
+        let resolved =
+            providers::apps::resolve_lnk_target(&target).unwrap_or_else(|| target.clone());
+        match action.as_str() {
+            "admin" => {
+                engine.record_app_launch(&target);
+                // 解析目标不存在时回退 lnk 本体：ShellExecute 由 shell 自行解析快捷方式，
+                // 能兜住自解析拿不到有效路径的情形
+                let exe = if std::path::Path::new(&resolved).exists() {
+                    resolved.clone()
+                } else {
+                    target.clone()
+                };
+                providers::sysutil::run_as_admin(&exe)
+            }
+            "reveal" => providers::sysutil::reveal_in_explorer(&resolved),
+            "copy_path" => arboard::Clipboard::new()
+                .map_err(|e| e.to_string())?
+                .set_text(resolved)
+                .map_err(|e| e.to_string()),
+            _ => Err("未知操作".into()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn everything_setup() -> Result<String, String> {
     // 整个流程（下载/解压/提权启动/等待）都在阻塞线程池
@@ -643,6 +725,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .on_window_event(|window, event| {
@@ -681,6 +764,10 @@ pub fn run() {
             vault_update,
             vault_parse,
             vault_import,
+            vault_backup_export,
+            vault_backup_decrypt,
+            vault_backup_restore,
+            secondary_action,
             json_analyze,
             json_format,
             json_to_yaml,

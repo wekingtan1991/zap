@@ -41,6 +41,7 @@ Tauri 2 + React 19 + shadcn/ui + Rust，仅支持 Windows 10/11。
 - 表单内置**密码生成器**（16 位强密码）；编辑时密码留空 = 保持不变
 - 搜索覆盖标题/用户名/网址/备注；空关键词时列出全部账号
 - 支持**智能导入**：把记事本/聊天记录里的账号文本整段粘贴，自动解析字段后逐条校对入库；标题缺省的条目按 用户名 → 网址 → 「未命名账号」自动命名，整批一个事务，不会出现"导入一半失败还没提示"
+- **加密备份**：设置 → 账号库 → 导出/导入。导出为口令加密文件（PBKDF2 600k 轮派生密钥 + AES-256-GCM，口令自定），全字段还原（含置顶），换机重装有出路
 
 ### Everything 自动检测与启动
 
@@ -78,6 +79,9 @@ Tauri 2 + React 19 + shadcn/ui + Rust，仅支持 Windows 10/11。
 | --- | --- |
 | `Ctrl+Alt+Space` | 呼出 / 隐藏面板 |
 | `↑` `↓` / `Enter` | 选择 / 打开（账号库中为打开详情页） |
+| `Ctrl+Enter` | 应用/文件条目：打开所在文件夹并定位 |
+| `Ctrl+Shift+Enter` | 应用条目：以管理员身份运行 |
+| `Ctrl+Shift+C` | 应用/文件条目：复制完整路径 |
 | `Esc` | 关闭面板（表单/导入/详情页返回上级） |
 | `pw` | 进入账号库 |
 | `Ctrl+,` | 打开设置 |
@@ -105,7 +109,7 @@ pnpm build            # 仅前端类型检查 + 构建（tsc && vite build）
 测试与规范（在 `src-tauri/` 下）：
 
 ```bash
-cargo test --lib                                    # 单元测试（45 个）
+cargo test --lib                                    # 单元测试（49 个）
 cargo test --lib -- --ignored --nocapture           # 真实开始菜单图标提取冒烟（机器相关）
 cargo fmt --check                                   # 格式检查（CI 同款）
 cargo clippy --all-targets -- -D warnings           # lint（CI 同款，零警告）

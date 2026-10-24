@@ -71,6 +71,13 @@ const ALT_ACTIONS: [string, string][] = [
   ["6", "编辑"],
 ];
 
+/// 普通域条目的次级操作说明（底栏问号图标悬停提示）
+const SECONDARY_ACTIONS: [string, string][] = [
+  ["Ctrl+Shift+Enter", "管理员运行"],
+  ["Ctrl+Enter", "打开所在文件夹"],
+  ["Ctrl+Shift+C", "复制路径"],
+];
+
 /// 渲染兜底：任何视图抛错都不再整页白屏，而是提示可读信息 + 一键复位
 class ErrorBoundary extends React.Component<
   { children: ReactNode },
@@ -135,6 +142,12 @@ function AppView() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   /// JSON 识别条目进入的工作台（剪贴板行号寻址）
   const [jsonItem, setJsonItem] = useState<SearchItem | null>(null);
+  /// 条目右键菜单（次级操作）：光标位置 + 目标条目
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    item: SearchItem;
+  } | null>(null);
 
   // 子页面（设置/详情/表单/导入/查看密码）挂载时接管焦点：主面板卸载后焦点会掉到
   // body（React 根节点之外），面板上的 onKeyDown 收不到任何按键，Esc 将失效。
@@ -259,6 +272,27 @@ function AppView() {
     });
   }, []);
 
+  /// 条目次级操作（键盘触发）：admin=管理员运行 / reveal=所在文件夹 / copy_path=复制路径。
+  /// 按 kind 限权：窗口/剪贴板/账号库等没有路径语义，按键不响应
+  const secondaryAction = useCallback(
+    async (action: "admin" | "reveal" | "copy_path", it: SearchItem | undefined) => {
+      if (!it) return;
+      const allow: Record<typeof action, string[]> = {
+        admin: ["app"],
+        reveal: ["app", "file"],
+        copy_path: ["app", "file"],
+      };
+      if (!allow[action].includes(it.kind)) return;
+      try {
+        await invoke("secondary_action", { action, target: it.target });
+        if (action === "copy_path") toast.success("路径已复制");
+      } catch (e) {
+        toast.error(String(e));
+      }
+    },
+    []
+  );
+
   // ---------- 应用设置 / 自动更新 ----------
   // 设置页视图与更新状态机各自成模块（views/SettingsView、views/useUpdater）；
   // 这里只持视图开关与动作入口。更新 hook 挂在 AppView：启动静默检查不依赖设置页
@@ -348,16 +382,8 @@ function AppView() {
         ]);
         setTimeout(() => invoke("hide_panel"), 900);
       } catch (e) {
-        setItems([
-          {
-            id: "vault-error",
-            title: "操作失败",
-            subtitle: String(e),
-            kind: "info",
-            target: "",
-            score: 0,
-          },
-        ]);
+        // 失败统一 toast（面板保持可见）；复制类成功反馈保留行内 ✓（随后面板收起，toast 会随之消失）
+        toast.error("操作失败：" + String(e));
       }
     },
     [refreshVault]
@@ -618,6 +644,15 @@ function AppView() {
   const onKeyDown = (e: React.KeyboardEvent) => {
     // 表单模式的 Esc/Ctrl+Enter 由 VaultFormView 自持，不再经过这里
 
+  // 右键菜单存活时只响应 Esc 关闭
+  if (ctxMenu) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setCtxMenu(null);
+    }
+    return;
+  }
+
     // 查看密码浮层：Esc 返回
     if (revealPw) {
       if (e.key === "Escape") {
@@ -672,6 +707,26 @@ function AppView() {
     if (e.ctrlKey && e.key === ",") {
       e.preventDefault();
       openSettings();
+      return;
+    }
+
+    // 条目次级操作（普通域）：Ctrl+Shift+Enter 管理员 / Ctrl+Enter 所在文件夹 /
+    // Ctrl+Shift+C 复制路径。域内按键（isVault/isJson）不响应，次级动作按 kind 限权
+    if (!isVault && !isJson && e.ctrlKey && e.key === "Enter") {
+      e.preventDefault();
+      if (e.shiftKey) void secondaryAction("admin", items[active]);
+      else void secondaryAction("reveal", items[active]);
+      return;
+    }
+    if (
+      !isVault &&
+      !isJson &&
+      e.ctrlKey &&
+      e.shiftKey &&
+      (e.key === "c" || e.key === "C")
+    ) {
+      e.preventDefault();
+      void secondaryAction("copy_path", items[active]);
       return;
     }
 
@@ -880,6 +935,13 @@ function AppView() {
               className={"zap-item" + (i === active ? " active" : "")}
               onMouseEnter={() => setActive(i)}
               onClick={() => runItem(it)}
+              onContextMenu={(e) => {
+                // 应用/文件条目弹次级操作菜单；其余 kind 只压掉 WebView 默认菜单
+                e.preventDefault();
+                if (it.kind === "app" || it.kind === "file") {
+                  setCtxMenu({ x: e.clientX, y: e.clientY, item: it });
+                }
+              }}
             >
               {it.icon ? (
                 <img className="zap-ico" src={it.icon} alt="" draggable={false} />
@@ -901,6 +963,49 @@ function AppView() {
           })
           )}
       </div>
+      {ctxMenu && (
+        <>
+          <div
+            className="zap-ctx-backdrop"
+            onClick={() => setCtxMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setCtxMenu(null);
+            }}
+          />
+          <div
+            className="zap-ctx-menu"
+            style={{
+              left: Math.min(ctxMenu.x, 720 - 176),
+              top: Math.min(ctxMenu.y, 480 - 132),
+            }}
+          >
+            {(ctxMenu.item.kind === "app"
+              ? ([
+                  ["reveal", "打开所在文件夹"],
+                  ["admin", "管理员运行"],
+                  ["copy_path", "复制路径"],
+                ] as const)
+              : ([
+                  ["reveal", "打开所在文件夹"],
+                  ["copy_path", "复制路径"],
+                ] as const)
+            ).map(([act, label]) => (
+              <button
+                key={act}
+                type="button"
+                className="zap-ctx-item"
+                onClick={() => {
+                  setCtxMenu(null);
+                  void secondaryAction(act, ctxMenu.item);
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
       <div className="zap-footer">
         <span className="zap-footer-hints">
           <Kbd>↑</Kbd>
@@ -950,6 +1055,37 @@ function AppView() {
               <span className="zap-footer-sep" />
               <Kbd>json</Kbd>
               <span>JSON 工具</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className="zap-footer-help"
+                    aria-label="次级操作说明"
+                    tabIndex={-1}
+                  >
+                    <CircleHelp className="size-3.5" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" align="start">
+                  <div className="zap-alt-help">
+                    {SECONDARY_ACTIONS.map(([keys, desc]) => (
+                      <div key={keys} className="zap-alt-help-row">
+                        <span className="zap-alt-help-keys">
+                          {keys.split("+").map((k, i) => (
+                            <span
+                              key={k}
+                              className="flex items-center gap-0.5"
+                            >
+                              {i > 0 && <span>+</span>}
+                              <Kbd>{k}</Kbd>
+                            </span>
+                          ))}
+                        </span>
+                        <span>{desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
             </>
           )}
         </span>
