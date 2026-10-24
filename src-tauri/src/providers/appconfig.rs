@@ -17,6 +17,8 @@ pub const KEY_CLIP_MAX: &str = "clip_max";
 pub const KEY_CLIP_AUTOPASTE: &str = "clip_autopaste";
 pub const KEY_PWD_CLEAR_SECS: &str = "pwd_clear_secs";
 pub const KEY_EVERYTHING_AUTOSTART: &str = "everything_autostart";
+/// 外观模式（dark/light/system），非法值前端按 dark 回退
+pub const KEY_APPEARANCE: &str = "appearance";
 
 pub fn init_table(conn: &Connection) {
     let _ = conn.execute_batch(

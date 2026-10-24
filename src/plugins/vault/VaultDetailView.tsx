@@ -20,6 +20,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useEscCapture } from "@/hooks/useEscCapture";
 
 /// 账号详情页数据（vault_get 的完整记录，密码为解密后明文，默认掩码展示）
 export interface VaultDetail {
@@ -42,40 +43,35 @@ export type CopyableField =
 
 interface Props {
   detail: VaultDetail;
-  showPw: boolean;
-  confirmDelete: boolean;
-  /// 最近一次复制成功的字段（行尾图标点亮 ✓）
-  copiedField: string | null;
+  /// Alt+3 删除入口直接亮起确认弹窗（视图状态机传入，此后弹窗态本地自持）
+  initialConfirmDelete?: boolean;
   /// 子页面焦点接管（防 React 根外失焦导致 Esc 失效，见 AppView 同名约定）
   focusRef: (el: HTMLDivElement | null) => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
   onClose: () => void;
-  onTogglePw: () => void;
-  onAskDelete: () => void;
-  onCancelDelete: () => void;
-  onDelete: () => void;
-  onCopyField: (field: CopyableField) => void;
+  /// 删除当前账号：成功 true（父级关详情 + 刷新列表）；失败 false（收回弹窗重试）
+  onDelete: () => Promise<boolean>;
+  /// 行尾复制（父级走受保护通道），返回成功与否供 ✓ 点亮
+  onCopyField: (id: number, field: CopyableField) => Promise<boolean>;
   onEdit: () => void;
   onPin: () => void;
 }
 
-/// 账号详情：逐行展示，行尾一键复制（密码带掩码切换与阅后即焚，均不入剪贴板历史）
+/// 账号详情：逐行展示，行尾一键复制（密码带掩码切换与阅后即焚，均不入剪贴板历史）。
+/// showPw/确认删除弹窗/复制 ✓ 全部本地自持——它们只在本页有意义，随挂载复位
 export function VaultDetailView({
   detail,
-  showPw,
-  confirmDelete,
-  copiedField,
+  initialConfirmDelete = false,
   focusRef,
-  onKeyDown,
   onClose,
-  onTogglePw,
-  onAskDelete,
-  onCancelDelete,
   onDelete,
   onCopyField,
   onEdit,
   onPin,
 }: Props) {
+  const [showPw, setShowPw] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(initialConfirmDelete);
+  const [copiedField, setCopiedField] = useState<CopyableField | null>(null);
+
   const rows: { label: string; value: string; field: CopyableField }[] = [
     { label: "用户名", value: detail.username, field: "username" },
     { label: "密码", value: detail.password, field: "password" },
@@ -111,40 +107,33 @@ export function VaultDetailView({
     };
   }, [detail.id, detail.totp]);
 
-  // 删除确认弹窗存活期间，Esc 无条件取消弹窗。挂窗口捕获而非面板 onKeyDown：
-  // 点击非焦点区后焦点掉到 body，面板收不到 keydown（与 VaultFormView 同因）。
-  // Enter 不绑定——删除只能显式点击，或焦点落在按钮上时按 Enter（autoFocus 在「取消」）。
-  useEffect(() => {
-    if (!confirmDelete) return;
-    const onWinKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancelDelete();
-      }
-    };
-    window.addEventListener("keydown", onWinKey, true);
-    return () => window.removeEventListener("keydown", onWinKey, true);
-  }, [confirmDelete, onCancelDelete]);
+  // 删除确认弹窗存活时，Esc 无条件取消弹窗（Enter 不绑定——删除只能显式点击）
+  useEscCapture(() => setConfirmDelete(false), confirmDelete);
+  // 弹窗存活时本页让位（enabled 互斥），否则 Esc 关详情页
+  useEscCapture(onClose, !confirmDelete);
 
-  // 详情页本体同理：窗口捕获兜 Esc（焦点掉 body 时面板 onKeyDown 收不到）。
-  // 确认弹窗存活时让位给上面的弹窗监听（同 target 注册更晚者后执行，这里直接不动）。
-  useEffect(() => {
-    const onWinKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || confirmDelete) return;
-      e.preventDefault();
-      e.stopPropagation();
-      onClose();
-    };
-    window.addEventListener("keydown", onWinKey, true);
-    return () => window.removeEventListener("keydown", onWinKey, true);
-  }, [confirmDelete, onClose]);
+  const doCopy = (field: CopyableField) => {
+    void (async () => {
+      const ok = await onCopyField(detail.id, field);
+      if (ok) {
+        setCopiedField(field);
+        setTimeout(() => setCopiedField((c) => (c === field ? null : c)), 1600);
+      }
+    })();
+  };
+
+  const doDelete = () => {
+    void (async () => {
+      const ok = await onDelete();
+      if (!ok) setConfirmDelete(false);
+    })();
+  };
+
   return (
     <div
       className="zap-panel vault outline-none"
       tabIndex={-1}
       ref={focusRef}
-      onKeyDown={onKeyDown}
     >
       <div className="zap-input-row">
         <span className="zap-logo">
@@ -203,7 +192,7 @@ export function VaultDetailView({
                     variant="secondary"
                     size="sm"
                     className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-                    onClick={onTogglePw}
+                    onClick={() => setShowPw((v) => !v)}
                   >
                     {showPw ? (
                       <EyeOff className="size-3" />
@@ -220,7 +209,7 @@ export function VaultDetailView({
                       size="icon-sm"
                       className="text-muted-foreground hover:text-foreground"
                       disabled={!r.value}
-                      onClick={() => onCopyField(r.field)}
+                      onClick={() => doCopy(r.field)}
                       aria-label={"复制" + r.label}
                     >
                       {copiedField === r.field ? (
@@ -237,44 +226,44 @@ export function VaultDetailView({
               </span>
             </div>
           ))}
-        </div>
-        {detail.totp && (
-          <div className="zap-detail-row animate-fade-in">
-            <span className="zap-detail-label">验证码</span>
-            <span className="zap-detail-value zap-totp-code">
-              {totpCode
-                ? `${totpCode.slice(0, 3)} ${totpCode.slice(3)}`
-                : "··· ···"}
-              <span className="zap-totp-left">
-                <Timer className="size-3" />
-                {totpLeft}s
+          {detail.totp && (
+            <div className="zap-detail-row animate-fade-in">
+              <span className="zap-detail-label">验证码</span>
+              <span className="zap-detail-value zap-totp-code">
+                {totpCode
+                  ? `${totpCode.slice(0, 3)} ${totpCode.slice(3)}`
+                  : "··· ···"}
+                <span className="zap-totp-left">
+                  <Timer className="size-3" />
+                  {totpLeft}s
+                </span>
               </span>
-            </span>
-            <span className="zap-detail-ops">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="secondary"
-                    size="icon-sm"
-                    className="text-muted-foreground hover:text-foreground"
-                    disabled={!totpCode}
-                    onClick={() => onCopyField("totp")}
-                    aria-label="复制验证码"
-                  >
-                    {copiedField === "totp" ? (
-                      <Check className="size-3.5 text-success animate-pop" />
-                    ) : (
-                      <Copy className="size-3.5" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {copiedField === "totp" ? "已复制 ✓" : "复制验证码"}
-                </TooltipContent>
-              </Tooltip>
-            </span>
-          </div>
-        )}
+              <span className="zap-detail-ops">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="secondary"
+                      size="icon-sm"
+                      className="text-muted-foreground hover:text-foreground"
+                      disabled={!totpCode}
+                      onClick={() => doCopy("totp")}
+                      aria-label="复制验证码"
+                    >
+                      {copiedField === "totp" ? (
+                        <Check className="size-3.5 text-success animate-pop" />
+                      ) : (
+                        <Copy className="size-3.5" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {copiedField === "totp" ? "已复制 ✓" : "复制验证码"}
+                  </TooltipContent>
+                </Tooltip>
+              </span>
+            </div>
+          )}
+        </div>
         <div className="zap-form-actions">
           <Button onClick={onEdit}>
             <Pencil className="size-3.5" />
@@ -288,13 +277,16 @@ export function VaultDetailView({
             )}
             {detail.pinned === 1 ? "取消置顶" : "置顶"}
           </Button>
-          <Button variant="destructive" onClick={onAskDelete}>
+          <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
             <Trash2 className="size-3.5" />
             删除
           </Button>
         </div>
         {confirmDelete && (
-          <div className="zap-dialog-backdrop" onClick={onCancelDelete}>
+          <div
+            className="zap-dialog-backdrop"
+            onClick={() => setConfirmDelete(false)}
+          >
             <div
               className="zap-dialog"
               role="alertdialog"
@@ -306,10 +298,10 @@ export function VaultDetailView({
                 删除后无法恢复，确认删除「{detail.title}」？
               </div>
               <div className="zap-confirm-actions">
-                <Button autoFocus onClick={onCancelDelete}>
+                <Button autoFocus onClick={() => setConfirmDelete(false)}>
                   取消
                 </Button>
-                <Button variant="destructive" onClick={onDelete}>
+                <Button variant="destructive" onClick={doDelete}>
                   <Trash2 className="size-3.5" />
                   确认删除
                 </Button>

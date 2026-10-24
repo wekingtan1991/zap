@@ -1,12 +1,12 @@
 /// 查看密码浮层（Alt+4 快瞄，从 App.tsx 迁出）：
 /// 原生复制入口全部拦截，强制走 Rust 受保护通道（排除剪贴板历史 + 焚除）
-import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, Eye, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
+import { useEscCapture } from "@/hooks/useEscCapture";
 
 export interface RevealInfo {
   id: number;
@@ -17,34 +17,18 @@ export interface RevealInfo {
 interface Props {
   reveal: RevealInfo;
   onClose: () => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
   focusRef: (el: HTMLDivElement | null) => void;
 }
 
-export function VaultRevealOverlay({
-  reveal,
-  onClose,
-  onKeyDown,
-  focusRef,
-}: Props) {
-  // 窗口捕获兜 Esc：焦点掉 body（点击非焦点区）后面板 onKeyDown 收不到（与 VaultFormView 同因）
-  useEffect(() => {
-    const onWinKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopPropagation();
-      onClose();
-    };
-    window.addEventListener("keydown", onWinKey, true);
-    return () => window.removeEventListener("keydown", onWinKey, true);
-  }, [onClose]);
+export function VaultRevealOverlay({ reveal, onClose, focusRef }: Props) {
+  // Esc 关浮层（窗口捕获兜焦点掉 body）
+  useEscCapture(onClose);
 
   return (
     <div
       className="zap-panel vault outline-none"
       tabIndex={-1}
       ref={focusRef}
-      onKeyDown={onKeyDown}
     >
       <div className="zap-input-row">
         <span className="zap-logo">

@@ -43,6 +43,19 @@ import { JsonWorkbench } from "@/plugins/json/JsonWorkbench";
 import { ToolWorkbench } from "@/plugins/text/ToolWorkbench";
 import { SettingsView } from "@/views/SettingsView";
 import { useUpdater } from "@/views/useUpdater";
+import { applyAppearance, type Appearance } from "@/lib/appearance";
+
+/// 面板视图状态机：同一时刻恰有一个子页面，取代原先 8 个并列的布尔/对象状态。
+/// 新增子页面 = 加一个 kind + 渲染分支，zap://shown 复位与互斥天然成立
+type View =
+  | { kind: "main" }
+  | { kind: "settings" }
+  | { kind: "detail"; data: VaultDetail; askDelete?: boolean }
+  | { kind: "form"; data: AccountForm }
+  | { kind: "reveal"; data: RevealInfo }
+  | { kind: "import" }
+  | { kind: "json"; data: SearchItem }
+  | { kind: "tool"; data: SearchItem };
 
 const VAULT_ADD_ENTRY: SearchItem = {
   id: "vault:add",
@@ -126,25 +139,13 @@ function AppView() {
   const [items, setItems] = useState<SearchItem[]>([]);
   const [active, setActive] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState<AccountForm | null>(null);
-  const [importing, setImporting] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [formError, setFormError] = useState("");
-  const [detail, setDetail] = useState<VaultDetail | null>(null);
-  const [showPw, setShowPw] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [revealPw, setRevealPw] = useState<RevealInfo | null>(null);
+  const [view, setView] = useState<View>({ kind: "main" });
   const inputRef = useRef<HTMLInputElement>(null);
   const queryRef = useRef("");
   const busyRef = useRef(false);
   const vaultTermRef = useRef("");
   const activeItemRef = useRef<HTMLDivElement | null>(null);
   const kbNavRef = useRef(false);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
-  /// JSON 识别条目进入的工作台（剪贴板行号寻址）
-  const [jsonItem, setJsonItem] = useState<SearchItem | null>(null);
-  /// 文本工具识别条目进入的工作台（剪贴板行号寻址）
-  const [toolItem, setToolItem] = useState<SearchItem | null>(null);
   /// 可开关插件状态缓存（json/tool 前缀域的门控依据）：
   /// 挂载与设置页关闭后刷新，停用的插件前缀词落回普通搜索
   const [pluginOn, setPluginOn] = useState<Record<string, boolean>>({});
@@ -201,22 +202,31 @@ function AppView() {
       : query.trim().slice(5)
     : "";
 
-  // 插件开关缓存刷新：挂载 + 设置页关闭（保存与否都重新拉取，保证门控即时）
+  // 插件开关缓存刷新：挂载 + 设置页关闭（保存与否都重新拉取，保证门控即时）。
+  // 同一趟顺带取外观模式并应用（设置页改主题时它自己也会即时预览）
   const refreshPluginOn = useCallback(() => {
-    invoke<{ plugins: { id: string; enabled: boolean }[] }>("get_app_settings")
-      .then((s) =>
+    invoke<{ plugins: { id: string; enabled: boolean }[]; appearance: string }>(
+      "get_app_settings"
+    )
+      .then((s) => {
         setPluginOn(
           Object.fromEntries(s.plugins.map((p) => [p.id, p.enabled]))
+        );
+        const mode = (["dark", "light", "system"] as const).includes(
+          s.appearance as Appearance
         )
-      )
+          ? (s.appearance as Appearance)
+          : "dark";
+        applyAppearance(mode);
+      })
       .catch(() => {});
   }, []);
   useEffect(() => {
     refreshPluginOn();
   }, [refreshPluginOn]);
   useEffect(() => {
-    if (!settingsOpen) refreshPluginOn();
-  }, [settingsOpen, refreshPluginOn]);
+    if (view.kind !== "settings") refreshPluginOn();
+  }, [view.kind, refreshPluginOn]);
   useEffect(() => {
     vaultTermRef.current = vaultTerm;
   }, [vaultTerm]);
@@ -259,12 +269,7 @@ function AppView() {
   useEffect(() => {
     const unlisten = listen("zap://shown", () => {
       setQuery(""); // 兜底：正常已在 zap://hidden 清空，这里不会产生可见变化
-      setForm(null);
-      setDetail(null);
-      setRevealPw(null);
-      setSettingsOpen(false);
-      setJsonItem(null);
-      setToolItem(null);
+      setView({ kind: "main" });
       stopHkCapture();
       setActive(0);
       setTimeout(() => inputRef.current?.focus(), 30);
@@ -339,16 +344,11 @@ function AppView() {
   const updater = useUpdater();
 
   const openSettings = useCallback(() => {
-    setForm(null);
-    setDetail(null);
-    setImporting(false);
-    setJsonItem(null);
-    setToolItem(null);
-    setSettingsOpen(true);
+    setView({ kind: "settings" });
   }, []);
 
   const closeSettings = useCallback(() => {
-    setSettingsOpen(false);
+    setView({ kind: "main" });
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
 
@@ -398,10 +398,13 @@ function AppView() {
         }
         if (action === "reveal") {
           const pw = await invoke<string>("vault_action", { id, action });
-          setRevealPw({
-            id,
-            title: item.title.replace(/^📌 /, ""),
-            password: pw,
+          setView({
+            kind: "reveal",
+            data: {
+              id,
+              title: item.title.replace(/^📌 /, ""),
+              password: pw,
+            },
           });
           return;
         }
@@ -439,16 +442,18 @@ function AppView() {
         const [title, username, password, url, notes, pinned, totp] = await invoke<
           [string, string, string, string, string, number, string]
         >("vault_get", { id });
-        setFormError("");
-        setForm({
-          id,
-          title,
-          username,
-          password,
-          url,
-          notes,
-          pinned: pinned === 1,
-          totp,
+        setView({
+          kind: "form",
+          data: {
+            id,
+            title,
+            username,
+            password,
+            url,
+            notes,
+            pinned: pinned === 1,
+            totp,
+          },
         });
       } catch {
         // 忽略
@@ -465,16 +470,7 @@ function AppView() {
   }, []);
 
   const closeDetail = useCallback(() => {
-    setDetail(null);
-    setShowPw(false);
-    setConfirmDelete(false);
-    setCopiedField(null);
-    setTimeout(() => inputRef.current?.focus(), 30);
-  }, []);
-
-  // JSON 工作台（识别条目进入）：Esc 返回列表
-  const closeJson = useCallback(() => {
-    setJsonItem(null);
+    setView({ kind: "main" });
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
 
@@ -486,10 +482,10 @@ function AppView() {
         const [title, username, password, url, notes, pinned, totp] = await invoke<
           [string, string, string, string, string, number, string]
         >("vault_get", { id });
-        setShowPw(false);
-        setConfirmDelete(false);
-        setCopiedField(null);
-        setDetail({ id, title, username, password, url, notes, pinned, totp });
+        setView({
+          kind: "detail",
+          data: { id, title, username, password, url, notes, pinned, totp },
+        });
       } catch (e) {
         feedback(false, "打开失败：" + String(e));
       }
@@ -507,10 +503,11 @@ function AppView() {
         const [title, username, password, url, notes, pinned, totp] = await invoke<
           [string, string, string, string, string, number, string]
         >("vault_get", { id });
-        setShowPw(false);
-        setCopiedField(null);
-        setConfirmDelete(true);
-        setDetail({ id, title, username, password, url, notes, pinned, totp });
+        setView({
+          kind: "detail",
+          data: { id, title, username, password, url, notes, pinned, totp },
+          askDelete: true,
+        });
       } catch (e) {
         feedback(false, "打开失败：" + String(e));
       }
@@ -519,65 +516,79 @@ function AppView() {
   );
 
   /// 详情页行尾复制：username / password / url / notes / totp
-  /// （密码带阅后即焚、验证码排除剪贴板历史，均不入历史）
+  /// （密码带阅后即焚、验证码排除剪贴板历史，均不入历史）。
+  /// 返回成功与否，✓ 点亮状态由详情页本地持有
   const copyField = useCallback(
-    async (field: "username" | "password" | "url" | "notes" | "totp") => {
-      if (!detail) return;
+    async (
+      id: number,
+      field: "username" | "password" | "url" | "notes" | "totp"
+    ): Promise<boolean> => {
       try {
         const msg = await invoke<string>("vault_action", {
-          id: detail.id,
+          id,
           action: field === "totp" ? "totp_copy" : field,
         });
-        // 行尾图标点亮为 ✓（1.6s 后还原），同时弹 toast 说明
-        setCopiedField(field);
-        setTimeout(() => setCopiedField((c) => (c === field ? null : c)), 1600);
         feedback(true, msg);
+        return true;
       } catch (e) {
         feedback(false, "复制失败：" + String(e));
+        return false;
       }
     },
-    [detail, feedback]
+    [feedback]
   );
 
   const pinCurrent = useCallback(async () => {
-    if (!detail) return;
-    try {
-      await invoke<string>("vault_action", { id: detail.id, action: "pin" });
-      setDetail((d) => (d ? { ...d, pinned: d.pinned === 1 ? 0 : 1 } : d));
-      await refreshVault(vaultTermRef.current);
-    } catch (e) {
-      feedback(false, "操作失败：" + String(e));
-    }
-  }, [detail, feedback, refreshVault]);
+    setView((v) => {
+      if (v.kind !== "detail") return v;
+      void invoke("vault_action", { id: v.data.id, action: "pin" }).catch(
+        (e) => feedback(false, "操作失败：" + String(e))
+      );
+      return {
+        ...v,
+        data: { ...v.data, pinned: v.data.pinned === 1 ? 0 : 1 },
+      };
+    });
+    await refreshVault(vaultTermRef.current);
+  }, [feedback, refreshVault]);
 
-  const deleteCurrent = useCallback(async () => {
-    if (!detail) return;
+  /// 删除当前账号（详情页确认弹窗触发）：成功关详情 + 刷新列表，失败由详情页收回弹窗
+  const deleteCurrent = useCallback(async (): Promise<boolean> => {
+    if (view.kind !== "detail") return false;
     try {
-      await invoke<string>("vault_action", { id: detail.id, action: "delete" });
-      closeDetail();
+      await invoke<string>("vault_action", {
+        id: view.data.id,
+        action: "delete",
+      });
+      setView({ kind: "main" });
       await refreshVault(vaultTermRef.current);
+      return true;
     } catch (e) {
       feedback(false, "删除失败：" + String(e));
-      setConfirmDelete(false);
+      return false;
     }
-  }, [detail, feedback, refreshVault, closeDetail]);
+  }, [view, feedback, refreshVault]);
 
   /// 详情页编辑：记录已在手上，直接预填表单（无需再取一次）
   const editCurrent = useCallback(() => {
-    if (!detail) return;
-    setFormError("");
-    setForm({
-      id: detail.id,
-      title: detail.title,
-      username: detail.username,
-      password: detail.password,
-      url: detail.url,
-      notes: detail.notes,
-      pinned: detail.pinned === 1,
-      totp: detail.totp,
-    });
-    setDetail(null);
-  }, [detail]);
+    setView((v) =>
+      v.kind === "detail"
+        ? {
+            kind: "form",
+            data: {
+              id: v.data.id,
+              title: v.data.title,
+              username: v.data.username,
+              password: v.data.password,
+              url: v.data.url,
+              notes: v.data.notes,
+              pinned: v.data.pinned === 1,
+              totp: v.data.totp,
+            },
+          }
+        : v
+    );
+  }, []);
 
   /// 剪贴板固定/取消固定：成功后按当前词重拉列表（固定项置顶/取消复位）
   const clipPin = useCallback(async (item: SearchItem) => {
@@ -600,8 +611,8 @@ function AppView() {
   // kind 行为收敛在 plugins/registry.tsx，这里只接装配，不写 kind 特判
   const actions: ItemActions = {
     openVaultDetail: (it) => void openDetail(it),
-    openJson: (it) => setJsonItem(it),
-    openTool: (it) => setToolItem(it),
+    openJson: (it) => setView({ kind: "json", data: it }),
+    openTool: (it) => setView({ kind: "tool", data: it }),
     runCommand: (target) =>
       void runCommand(target, {
         busyRef,
@@ -618,12 +629,11 @@ function AppView() {
       if (!it || busyRef.current) return;
       // 保护域伪条目：id 寻址（列表展示与普通条目无异，动作单独接）
       if (it.id === "vault:add") {
-        setFormError("");
-        setForm({ ...EMPTY_FORM });
+        setView({ kind: "form", data: { ...EMPTY_FORM } });
         return;
       }
       if (it.id === "vault:import") {
-        setImporting(true);
+        setView({ kind: "import" });
         return;
       }
       const ui = kindUi(it.kind);
@@ -643,9 +653,25 @@ function AppView() {
     [activate, openDetail, vaultAction]
   );
 
+  // 表单数据更新器：与旧 setForm 同签名（Dispatch<SetStateAction<AccountForm|null>>），
+  // VaultFormView 的受控接口不变；置 null 视为关表单回主面板
+  const updateFormData = useCallback(
+    (action: React.SetStateAction<AccountForm | null>) => {
+      setView((v) => {
+        if (v.kind !== "form") return v;
+        const next =
+          typeof action === "function"
+            ? (action as (prev: AccountForm) => AccountForm | null)(v.data)
+            : action;
+        return next === null ? { kind: "main" } : { ...v, data: next };
+      });
+    },
+    []
+  );
+
   // 表单保存成功：关表单 + 回账号库列表（空关键词列出全部）
   const formSaved = useCallback(() => {
-    setForm(null);
+    setView({ kind: "main" });
     setQuery("pw");
     void refreshVault("");
   }, [refreshVault]);
@@ -653,9 +679,9 @@ function AppView() {
   // 表单取消：编辑态（有 id）返回该账号详情页（编辑入口在详情页，取消不应退到列表），
   // 新增态回账号库列表；Esc 与「取消」按钮共用
   const cancelForm = useCallback(() => {
-    const id = form?.id;
-    setForm(null);
-    setFormError("");
+    if (view.kind !== "form") return;
+    const id = view.data.id;
+    setView({ kind: "main" });
     if (id == null) {
       setTimeout(() => inputRef.current?.focus(), 30);
       return;
@@ -665,88 +691,39 @@ function AppView() {
         const [title, username, password, url, notes, pinned, totp] = await invoke<
           [string, string, string, string, string, number, string]
         >("vault_get", { id });
-        setConfirmDelete(false);
-        setCopiedField(null);
-        setDetail({ id, title, username, password, url, notes, pinned, totp });
+        setView({
+          kind: "detail",
+          data: { id, title, username, password, url, notes, pinned, totp },
+        });
       } catch {
         // 详情打不开（账号已被删等）退回旧行为：列表 + 焦点回输入框
         setTimeout(() => inputRef.current?.focus(), 30);
       }
     })();
-  }, [form]);
+  }, [view]);
 
   // 导入收尾：关视图 + 刷新列表（成功反馈由导入视图先展示 700ms）
   const importDone = useCallback(() => {
-    setImporting(false);
+    setView({ kind: "main" });
     void refreshVault(vaultTermRef.current);
   }, [refreshVault]);
 
   const closeImport = useCallback(() => {
-    setImporting(false);
+    setView({ kind: "main" });
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    // 表单模式的 Esc/Ctrl+Enter 由 VaultFormView 自持，不再经过这里
-
-  // 右键菜单存活时只响应 Esc 关闭
-  if (ctxMenu) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      setCtxMenu(null);
-    }
-    return;
-  }
-
-    // 查看密码浮层：Esc 返回
-    if (revealPw) {
+    // 各子页面的 Esc 已由其自身 useEscCapture（窗口捕获）处理；这里只剩
+    // 右键菜单与主面板自身的导航键——view 非 main 时子页面自持，直接放行
+    if (ctxMenu) {
       if (e.key === "Escape") {
         e.preventDefault();
-        setRevealPw(null);
+        setCtxMenu(null);
       }
       return;
     }
-
-    // 账号详情：Esc 返回列表（行内按钮负责复制/编辑/删除/置顶）；
-    // 删除确认弹窗存活时 Esc 只取消弹窗，不连详情页一起退
-    if (detail) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        if (confirmDelete) {
-          setConfirmDelete(false);
-        } else {
-          closeDetail();
-        }
-      }
-      return;
-    }
-
-    // 导入模式：Esc 返回
-    if (importing) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeImport();
-      }
-      return;
-    }
-
-    // 设置页：Esc 返回
-    if (settingsOpen) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeSettings();
-      }
-      return;
-    }
-
-    // JSON 工作台（识别条目进入）：Esc 返回列表
-    if (jsonItem) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeJson();
-      }
-      return;
-    }
+    if (view.kind !== "main") return;
 
     // Ctrl+, 打开设置
     if (e.ctrlKey && e.key === ",") {
@@ -821,14 +798,13 @@ function AppView() {
     }
   };
 
-  // ---------- 表单模式（渲染收敛进插件视图） ----------
-  if (form) {
+  // ---------- 子页面渲染（view 状态机分发） ----------
+
+  if (view.kind === "form") {
     return (
       <VaultFormView
-        form={form}
-        formError={formError}
-        setForm={setForm}
-        setFormError={setFormError}
+        form={view.data}
+        setForm={updateFormData}
         onSaved={formSaved}
         onCancel={cancelForm}
         focusRef={focusPanelRef}
@@ -836,89 +812,75 @@ function AppView() {
     );
   }
 
-  // ---------- 查看密码（渲染收敛进插件视图） ----------
-  if (revealPw) {
+  if (view.kind === "reveal") {
     return (
       <VaultRevealOverlay
-        reveal={revealPw}
-        onClose={() => setRevealPw(null)}
-        onKeyDown={onKeyDown}
+        reveal={view.data}
+        onClose={() => setView({ kind: "main" })}
         focusRef={focusPanelRef}
       />
     );
   }
 
-  // ---------- 智能导入（渲染收敛进插件视图） ----------
-  if (importing) {
+  if (view.kind === "import") {
     return (
       <VaultImportView
         onDone={importDone}
         onClose={closeImport}
-        onKeyDown={onKeyDown}
         focusRef={focusPanelRef}
       />
     );
   }
 
-  // ---------- 账号详情：点击标题打开，逐行展示，行尾一键复制（渲染收敛进插件视图） ----------
-  if (detail) {
+  if (view.kind === "detail") {
     return (
       <VaultDetailView
-        detail={detail}
-        showPw={showPw}
-        confirmDelete={confirmDelete}
-        copiedField={copiedField}
+        detail={view.data}
+        initialConfirmDelete={view.askDelete === true}
         focusRef={focusPanelRef}
-        onKeyDown={onKeyDown}
         onClose={closeDetail}
-        onTogglePw={() => setShowPw((v) => !v)}
-        onAskDelete={() => setConfirmDelete(true)}
-        onCancelDelete={() => setConfirmDelete(false)}
-        onDelete={() => void deleteCurrent()}
-        onCopyField={(f) => void copyField(f)}
+        onDelete={deleteCurrent}
+        onCopyField={copyField}
         onEdit={editCurrent}
         onPin={() => void pinCurrent()}
       />
     );
   }
 
-  // ---------- JSON 工作台：识别条目进入（完整面板） ----------
-  if (jsonItem) {
-    const rowid = Number(jsonItem.target);
+  if (view.kind === "json") {
+    const rowid = Number(view.data.target);
     return (
       <JsonWorkbench
         clipRow={Number.isNaN(rowid) ? undefined : rowid}
         full
-        onBack={closeJson}
+        onBack={() => {
+          setView({ kind: "main" });
+          setTimeout(() => inputRef.current?.focus(), 30);
+        }}
         focusRef={focusPanelRef}
-        onKeyDown={onKeyDown}
       />
     );
   }
 
-  // ---------- 文本工具工作台：识别条目进入（完整面板） ----------
-  if (toolItem) {
-    const rowid = Number(toolItem.target);
+  if (view.kind === "tool") {
+    const rowid = Number(view.data.target);
     return (
       <ToolWorkbench
         clipRow={Number.isNaN(rowid) ? undefined : rowid}
         full
         onBack={() => {
-          setToolItem(null);
+          setView({ kind: "main" });
           setTimeout(() => inputRef.current?.focus(), 30);
         }}
         focusRef={focusPanelRef}
-        onKeyDown={onKeyDown}
       />
     );
   }
 
-  // ---------- 设置页（渲染收敛进 views/SettingsView） ----------
-  if (settingsOpen) {
+  if (view.kind === "settings") {
     return (
       <SettingsView
         updater={updater}
-        onKeyDown={onKeyDown}
         focusRef={focusPanelRef}
         onClose={closeSettings}
       />

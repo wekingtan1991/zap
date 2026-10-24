@@ -1,12 +1,13 @@
 /// 智能导入视图（从 App.tsx 迁出的自包含视图）：
 /// 粘贴文本 → vault_parse 解析 → 逐条校对 → vault_import 入库。
 /// 解析/导入状态全部内部持有，导入成功经 onDone 交还父级（关视图 + 刷新列表）
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, Inbox, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useEscCapture } from "@/hooks/useEscCapture";
 
 export interface ParsedAccount {
   title: string;
@@ -19,16 +20,10 @@ interface Props {
   /// 导入成功后的收尾（父级：关视图 + 按当前账号库关键词刷新列表）
   onDone: () => void;
   onClose: () => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
   focusRef: (el: HTMLDivElement | null) => void;
 }
 
-export function VaultImportView({
-  onDone,
-  onClose,
-  onKeyDown,
-  focusRef,
-}: Props) {
+export function VaultImportView({ onDone, onClose, focusRef }: Props) {
   const [importText, setImportText] = useState("");
   const [parsed, setParsed] = useState<ParsedAccount[] | null>(null);
   const [importBusy, setImportBusy] = useState(false);
@@ -50,25 +45,14 @@ export function VaultImportView({
     onClose();
   };
 
-  // 窗口捕获兜 Esc（走 closeAndReset 顺带清内部态）：焦点掉 body 后
-  // 面板 onKeyDown 收不到（与 VaultFormView 同因）。不传依赖数组保闭包新鲜。
-  useEffect(() => {
-    const onWinKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopPropagation();
-      closeAndReset();
-    };
-    window.addEventListener("keydown", onWinKey, true);
-    return () => window.removeEventListener("keydown", onWinKey, true);
-  });
+  // Esc 关导入（窗口捕获兜焦点掉 body，顺带清内部态）
+  useEscCapture(closeAndReset);
 
   return (
     <div
       className="zap-panel vault outline-none"
       tabIndex={-1}
       ref={focusRef}
-      onKeyDown={onKeyDown}
     >
       <div className="zap-input-row">
         <span className="zap-logo">
