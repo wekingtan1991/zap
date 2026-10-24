@@ -457,7 +457,7 @@
 }
 
 .zap-set-saved {
-  color: #7ed957;
+  color: var(--zap-green);
   font-size: 12px;
   text-align: right;
 }
@@ -726,7 +726,7 @@
 }
 
 .zap-json-key {
-  color: #7dd3fc;
+  color: var(--zap-json-key);
 }
 
 /* 键 + 冒号紧贴为一个词元：行内 gap 只作用于词元之间，冒号前不留空 */
@@ -789,7 +789,7 @@ button.zap-json-toggle:hover .zap-json-key {
 }
 
 .zap-json-bool {
-  color: #c084fc;
+  color: var(--zap-json-str);
 }
 
 .zap-json-null {

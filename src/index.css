@@ -3,6 +3,9 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* 浅色变体：documentElement 挂 zap-light 时生效（badge 等固定色组件的浅色覆盖） */
+@custom-variant light (&:is(.zap-light *));
+
 /* ---------- 设计令牌（暗色琥珀主题为默认，浅色经 :root.zap-light 覆盖） ---------- */
 :root {
   --radius: 0.5rem;
@@ -70,69 +73,76 @@
   --zap-warn: #fbbf24;
   --zap-warn-2: #fcd34d;
   --zap-green-soft: #a5d6a7;
+  --zap-green: #7ed957;
+  --zap-json-key: #7dd3fc;
+  --zap-json-str: #c084fc;
 }
 
-/* ---------- 浅色主题（documentElement 挂 zap-light 类，src/lib/appearance.ts） ---------- */
+/* ---------- 浅色主题（documentElement 挂 zap-light 类，src/lib/appearance.ts） ----------
+   对比度按浅底标准整体上调：发丝线/表面用更重的黑 alpha，文本灰阶更深 */
 :root.zap-light {
   --background: #f4f5f7;
-  --foreground: #1f2937;
-  --card: rgba(17, 24, 39, 0.05);
-  --card-foreground: #1f2937;
+  --foreground: #111827;
+  --card: rgba(17, 24, 39, 0.06);
+  --card-foreground: #111827;
   --popover: #ffffff;
-  --popover-foreground: #1f2937;
+  --popover-foreground: #111827;
   --primary: #d97706;
   --primary-foreground: #fffaf0;
-  --secondary: rgba(17, 24, 39, 0.08);
+  --secondary: rgba(17, 24, 39, 0.1);
   --secondary-foreground: #1f2937;
-  --muted: rgba(17, 24, 39, 0.06);
-  --muted-foreground: #6b7280;
-  --accent: rgba(17, 24, 39, 0.09);
-  --accent-foreground: #111827;
+  --muted: rgba(17, 24, 39, 0.07);
+  --muted-foreground: #4b5563;
+  --accent: rgba(17, 24, 39, 0.12);
+  --accent-foreground: #030712;
   --destructive: #dc2626;
   --destructive-foreground: #fee2e2;
   --success: #16a34a;
-  --border: rgba(17, 24, 39, 0.13);
-  --input: rgba(17, 24, 39, 0.15);
+  --border: rgba(17, 24, 39, 0.18);
+  --input: rgba(17, 24, 39, 0.2);
   --ring: #d97706;
 
   color-scheme: light;
 
-  --zap-panel-grad: linear-gradient(180deg, #ffffff 0%, #f2f3f6 100%);
-  --zap-dialog-grad: linear-gradient(180deg, #ffffff 0%, #f2f3f6 100%);
-  --zap-backdrop: rgba(15, 23, 42, 0.35);
-  --zap-shadow: rgba(0, 0, 0, 0.14);
-  --zap-body-bg: #eef0f3;
-  --zap-fg-strong: #111827;
-  --zap-fg: #1f2937;
-  --zap-fg-mid: #374151;
-  --zap-fg-mute: #6b7280;
-  --zap-fg-mute2: #6b7280;
-  --zap-fg-dim: #9ca3af;
-  --zap-fg-faint: #b0b7c3;
-  --zap-fg-soft: #6b7280;
-  --zap-fg-soft2: #9ca3af;
+  --zap-panel-grad: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
+  --zap-dialog-grad: linear-gradient(180deg, #ffffff 0%, #f8f9fb 100%);
+  --zap-backdrop: rgba(15, 23, 42, 0.4);
+  --zap-shadow: rgba(0, 0, 0, 0.18);
+  --zap-body-bg: #e7e9ee;
+  --zap-fg-strong: #030712;
+  --zap-fg: #111827;
+  --zap-fg-mid: #1f2937;
+  --zap-fg-mute: #4b5563;
+  --zap-fg-mute2: #4b5563;
+  --zap-fg-dim: #6b7280;
+  --zap-fg-faint: #9ca3af;
+  --zap-fg-soft: #4b5563;
+  --zap-fg-soft2: #6b7280;
   --zap-fg-ph: #9ca3af;
-  --zap-w-025: rgba(17, 24, 39, 0.025);
-  --zap-w-03: rgba(17, 24, 39, 0.03);
-  --zap-w-04: rgba(17, 24, 39, 0.04);
-  --zap-w-05: rgba(17, 24, 39, 0.05);
-  --zap-w-055: rgba(17, 24, 39, 0.055);
-  --zap-w-06: rgba(17, 24, 39, 0.06);
-  --zap-w-07: rgba(17, 24, 39, 0.09);
-  --zap-w-08: rgba(17, 24, 39, 0.1);
-  --zap-w-09: rgba(17, 24, 39, 0.11);
-  --zap-w-10: rgba(17, 24, 39, 0.12);
-  --zap-w-12: rgba(17, 24, 39, 0.15);
-  --zap-w-14: rgba(17, 24, 39, 0.17);
-  --zap-w-35: rgba(17, 24, 39, 0.35);
-  --zap-w-85: rgba(17, 24, 39, 0.75);
+  --zap-w-025: rgba(17, 24, 39, 0.045);
+  --zap-w-03: rgba(17, 24, 39, 0.05);
+  --zap-w-04: rgba(17, 24, 39, 0.06);
+  --zap-w-05: rgba(17, 24, 39, 0.075);
+  --zap-w-055: rgba(17, 24, 39, 0.085);
+  --zap-w-06: rgba(17, 24, 39, 0.09);
+  --zap-w-07: rgba(17, 24, 39, 0.12);
+  --zap-w-08: rgba(17, 24, 39, 0.14);
+  --zap-w-09: rgba(17, 24, 39, 0.15);
+  --zap-w-10: rgba(17, 24, 39, 0.16);
+  --zap-w-12: rgba(17, 24, 39, 0.2);
+  --zap-w-14: rgba(17, 24, 39, 0.22);
+  --zap-w-35: rgba(17, 24, 39, 0.45);
+  --zap-w-85: rgba(17, 24, 39, 0.8);
   --zap-err: #dc2626;
   --zap-err-soft: rgba(220, 38, 38, 0.3);
-  --zap-err-bg: rgba(220, 38, 38, 0.06);
-  --zap-err-fg: #b91c1c;
-  --zap-warn: #b45309;
-  --zap-warn-2: #b45309;
+  --zap-err-bg: rgba(220, 38, 38, 0.07);
+  --zap-err-fg: #991b1b;
+  --zap-warn: #92400e;
+  --zap-warn-2: #92400e;
   --zap-green-soft: #15803d;
+  --zap-green: #16a34a;
+  --zap-json-key: #0369a1;
+  --zap-json-str: #7e22ce;
 }
 
 @theme inline {
