@@ -431,6 +431,120 @@ pub fn import(conn: &Connection, entries: Vec<ParsedAccount>) -> Result<usize, S
     Ok(n)
 }
 
+// ---------- 备份（加密导出/恢复）----------
+
+/// 读全部账号为备份条目（密码解密为明文——密文由 backup 模块整体加密保护）
+pub fn backup_read_all(conn: &Connection) -> Result<Vec<super::backup::BackupEntry>, String> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT title, username, password_enc, url, notes, pinned FROM accounts ORDER BY id",
+    ) else {
+        return Err("读取账号失败".into());
+    };
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, i64>(5)?,
+        ))
+    }) else {
+        return Err("读取账号失败".into());
+    };
+    let mut out = Vec::new();
+    for row in rows.flatten() {
+        out.push(super::backup::BackupEntry {
+            title: row.0,
+            username: row.1,
+            password: dpapi::decrypt(&row.2)?,
+            url: row.3,
+            notes: row.4,
+            pinned: row.5,
+        });
+    }
+    Ok(out)
+}
+
+/// 备份条目的有效标题（与 backup_restore 的入库标题同一套兜底规则）：
+/// 标题缺省按 用户名 → 网址 → 固定名 递补。重复检测必须用同一口径
+fn backup_effective_title(username: &str, url: &str, title: &str) -> String {
+    let title = title.trim();
+    if !title.is_empty() {
+        title.to_string()
+    } else if !username.trim().is_empty() {
+        username.trim().to_string()
+    } else if !url.trim().is_empty() {
+        url.trim().to_string()
+    } else {
+        "未命名账号".to_string()
+    }
+}
+
+/// 疑似重复检测：有效标题 + 用户名 与现有账号比对（忽略大小写与首尾空白）。
+/// 只提示不决策——恢复时跳过与否由用户选
+pub fn backup_duplicates(conn: &Connection, entries: &[super::backup::BackupEntry]) -> Vec<bool> {
+    entries
+        .iter()
+        .map(|e| {
+            let title = backup_effective_title(&e.username, &e.url, &e.title);
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM accounts
+                     WHERE lower(trim(title)) = lower(?1)
+                       AND lower(trim(username)) = lower(?2)",
+                    params![title, e.username.trim()],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            exists > 0
+        })
+        .collect()
+}
+
+/// 备份恢复：全字段写入（含 pinned），整批一个事务。
+/// skip_duplicates 时逐条比对活库（同有效标题+用户名，忽略大小写）跳过疑似重复——
+/// 在事务内活查而非快照，备份内部的重复条目也只会写入第一条。
+/// 返回 (写入数, 跳过数)
+pub fn backup_restore(
+    conn: &Connection,
+    entries: Vec<super::backup::BackupEntry>,
+    skip_duplicates: bool,
+) -> Result<(usize, usize), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let mut n = 0usize;
+    let mut skipped = 0usize;
+    for e in entries {
+        let title = backup_effective_title(&e.username, &e.url, &e.title);
+        if skip_duplicates {
+            let exists: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM accounts
+                     WHERE lower(trim(title)) = lower(?1)
+                       AND lower(trim(username)) = lower(?2)",
+                    params![title, e.username.trim()],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if exists > 0 {
+                skipped += 1;
+                continue;
+            }
+        }
+        let enc = dpapi::encrypt(&e.password)?;
+        let now = now_ms();
+        tx.execute(
+            "INSERT INTO accounts(title, username, password_enc, url, notes, created_at, updated_at, pinned)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
+            params![title, e.username.trim(), enc, e.url.trim(), e.notes, now, e.pinned],
+        )
+        .map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok((n, skipped))
+}
+
 #[cfg(test)]
 mod crud_tests {
     use super::*;
@@ -570,5 +684,72 @@ mod crud_tests {
             })
             .unwrap();
         assert!(after >= before, "复制后应刷新 updated_at");
+    }
+
+    #[test]
+    fn 备份读全量与恢复往返() {
+        let conn = mem_db();
+        add(&conn, "甲", "u1", "p1", "https://a.com", "备注甲").unwrap();
+        std::thread::sleep(Duration::from_millis(3));
+        add(&conn, "乙", "u2", "p2", "", "").unwrap();
+        action(&conn, 1, "pin", 0).unwrap();
+
+        // 导出读全量：密码明文、pinned 保留
+        let entries = backup_read_all(&conn).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].password, "p1");
+        assert_eq!(entries[0].pinned, 1);
+
+        // 恢复到另一个库：全字段还原（含 pinned）
+        let conn2 = mem_db();
+        let (n, skipped) = backup_restore(&conn2, entries, false).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(skipped, 0, "空库恢复无重复可跳");
+        let (t, u, p, url, notes, pinned) = get(&conn2, 1).unwrap();
+        assert_eq!((t.as_str(), u.as_str(), p.as_str()), ("甲", "u1", "p1"));
+        assert_eq!(url, "https://a.com");
+        assert_eq!(notes, "备注甲");
+        assert_eq!(pinned, 1, "置顶状态应随备份还原");
+        let items = search(&conn2, "");
+        assert_eq!(items.len(), 2);
+        assert!(items[0].title.starts_with("📌"), "恢复后置顶仍排最前");
+    }
+
+    #[test]
+    fn 重复检测与跳过恢复() {
+        let conn = mem_db();
+        add(&conn, "甲", "u1", "p1", "", "").unwrap();
+        add(&conn, "gitlab", "U2", "p2", "", "").unwrap();
+
+        let mk = |title: &str, username: &str| crate::providers::backup::BackupEntry {
+            title: title.into(),
+            username: username.into(),
+            password: "pw".into(),
+            url: String::new(),
+            notes: String::new(),
+            pinned: 0,
+        };
+        // 同标题（大小写不同）+ 同用户名（大小写不同）= 疑似重复；批内两条同键
+        let entries = vec![
+            mk("甲", "u1"),
+            mk("GitLab", "u2"),
+            mk("新站", "u9"),
+            mk("批内", "ub"),
+            mk("批内", "ub"),
+        ];
+        let dups = backup_duplicates(&conn, &entries);
+        assert_eq!(dups, vec![true, true, false, false, false]);
+
+        // 跳过模式：命中现有库的 2 条跳过；批内第二条被活库检查拦下（只写第一条）
+        let (written, skipped) = backup_restore(&conn, entries.clone(), true).unwrap();
+        assert_eq!((written, skipped), (2, 3), "新站+批内第一条入库");
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 4, "原 2 + 写入 2，批内重复未翻倍");
+
+        // 不跳过模式：全量追加（原测试口径）
+        let (n, skipped) = backup_restore(&conn, entries, false).unwrap();
+        assert_eq!((n, skipped), (5, 0));
     }
 }

@@ -1,6 +1,7 @@
 pub mod acctparse;
 pub mod appconfig;
 pub mod apps;
+pub mod backup;
 pub mod clipboard;
 pub mod diag;
 pub mod dpapi;
@@ -288,6 +289,43 @@ impl SearchEngine {
     pub fn vault_import(&self, entries: Vec<vault::ParsedAccount>) -> Result<usize, String> {
         let conn = self.clip.lock().expect("clip db poisoned");
         vault::import(&conn, entries)
+    }
+
+    /// 加密导出全部账号到备份文件，返回条目数
+    pub fn vault_backup_export(&self, path: &str, passphrase: &str) -> Result<usize, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let entries = vault::backup_read_all(&conn)?;
+        let content = backup::encrypt_backup(&entries, passphrase)?;
+        std::fs::write(path, content).map_err(|e| e.to_string())?;
+        Ok(entries.len())
+    }
+
+    /// 解密备份文件为预览：条目 + 每条是否与现有账号疑似重复（恢复前交前端确认）
+    pub fn vault_backup_decrypt(
+        &self,
+        path: &str,
+        passphrase: &str,
+    ) -> Result<backup::BackupPreview, String> {
+        let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let entries = backup::decrypt_backup(&content, passphrase)?;
+        let duplicates = {
+            let conn = self.clip.lock().expect("clip db poisoned");
+            vault::backup_duplicates(&conn, &entries)
+        };
+        Ok(backup::BackupPreview {
+            entries,
+            duplicates,
+        })
+    }
+
+    /// 备份恢复：skip_duplicates 时跳过疑似重复，返回 (写入数, 跳过数)
+    pub fn vault_backup_restore(
+        &self,
+        entries: Vec<backup::BackupEntry>,
+        skip_duplicates: bool,
+    ) -> Result<(usize, usize), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        vault::backup_restore(&conn, entries, skip_duplicates)
     }
 
     pub fn search(&self, query: &str) -> Vec<SearchItem> {
