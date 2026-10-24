@@ -17,6 +17,7 @@ export interface AccountForm {
   url: string;
   notes: string;
   pinned: boolean;
+  totp: string;
 }
 
 export const EMPTY_FORM: AccountForm = {
@@ -26,6 +27,7 @@ export const EMPTY_FORM: AccountForm = {
   url: "",
   notes: "",
   pinned: false,
+  totp: "",
 };
 
 interface Props {
@@ -97,6 +99,7 @@ export function VaultFormView({
           url: form.url,
           notes: form.notes,
           pinned: form.pinned ? 1 : 0,
+          totp: form.totp, // 空串 = 移除 TOTP
         });
       } else {
         await invoke("vault_add", {
@@ -105,6 +108,7 @@ export function VaultFormView({
           password: form.password,
           url: form.url,
           notes: form.notes,
+          totp: form.totp,
         });
       }
       onSaved();
@@ -190,6 +194,19 @@ export function VaultFormView({
             onChange={(e) => setFormField("url", e.target.value)}
             placeholder="https://…"
           />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="f-totp">TOTP 密钥（可选）</Label>
+          <Input
+            id="f-totp"
+            value={form.totp}
+            onChange={(e) => setFormField("totp", e.target.value)}
+            placeholder="Base32 密钥或 otpauth:// 链接"
+            spellCheck={false}
+          />
+          <span className="zap-form-hint">
+            动态验证码（2FA）显示在详情页；编辑时清空 = 移除
+          </span>
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="f-notes">备注</Label>

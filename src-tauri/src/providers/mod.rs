@@ -12,6 +12,7 @@ pub mod plugin;
 pub mod recent;
 pub mod settings;
 pub mod sysutil;
+pub mod totp;
 pub mod vault;
 pub mod web;
 pub mod winsys;
@@ -247,9 +248,10 @@ impl SearchEngine {
         password: &str,
         url: &str,
         notes: &str,
+        totp: &str,
     ) -> Result<(), String> {
         let conn = self.clip.lock().expect("clip db poisoned");
-        vault::add(&conn, title, username, password, url, notes)
+        vault::add(&conn, title, username, password, url, notes, totp)
     }
 
     pub fn vault_action(
@@ -262,10 +264,7 @@ impl SearchEngine {
         vault::action(&conn, id, action, pwd_clear_secs)
     }
 
-    pub fn vault_get(
-        &self,
-        id: i64,
-    ) -> Result<(String, String, String, String, String, i64), String> {
+    pub fn vault_get(&self, id: i64) -> Result<vault::VaultRecord, String> {
         let conn = self.clip.lock().expect("clip db poisoned");
         vault::get(&conn, id)
     }
@@ -281,9 +280,12 @@ impl SearchEngine {
         url: &str,
         notes: &str,
         pinned: i64,
+        totp: &str,
     ) -> Result<(), String> {
         let conn = self.clip.lock().expect("clip db poisoned");
-        vault::update(&conn, id, title, username, password, url, notes, pinned)
+        vault::update(
+            &conn, id, title, username, password, url, notes, pinned, totp,
+        )
     }
 
     pub fn vault_import(&self, entries: Vec<vault::ParsedAccount>) -> Result<usize, String> {

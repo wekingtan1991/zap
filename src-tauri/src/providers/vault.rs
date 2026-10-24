@@ -31,6 +31,8 @@ pub fn init_table(conn: &Connection) {
     );
     // 旧库迁移：补 pinned 列（已存在时报错可忽略）
     let _ = conn.execute_batch("ALTER TABLE accounts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    // 旧库迁移：补 totp_secret 列（DPAPI 密文，与密码同待遇）
+    let _ = conn.execute_batch("ALTER TABLE accounts ADD COLUMN totp_enc TEXT NOT NULL DEFAULT ''");
 }
 
 fn now_ms() -> i64 {
@@ -141,20 +143,41 @@ pub fn add(
     password: &str,
     url: &str,
     notes: &str,
+    totp: &str,
 ) -> Result<(), String> {
     let title = title.trim();
     if title.is_empty() {
         return Err("标题不能为空".into());
     }
     let enc = dpapi::encrypt(password)?;
+    let totp_enc = normalize_totp(totp)?;
     let now = now_ms();
     conn.execute(
-        "INSERT INTO accounts(title, username, password_enc, url, notes, created_at, updated_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-        params![title, username, enc, url, notes, now],
+        "INSERT INTO accounts(title, username, password_enc, url, notes, totp_enc, created_at, updated_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+        params![title, username, enc, url, notes, totp_enc, now],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// TOTP 入库归一：空串 = 不启用；非空须是可解析的 Base32 / otpauth 链接，
+/// 归一为标准大写 Base32 后 DPAPI 加密。无效输入在此报错（保存即校验）
+fn normalize_totp(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    let secret = super::totp::extract_secret(trimmed)?;
+    dpapi::encrypt(&secret)
+}
+
+/// 读 TOTP 密钥明文（未配置返回空串）
+fn totp_plain(totp_enc: &str) -> Result<String, String> {
+    if totp_enc.is_empty() {
+        return Ok(String::new());
+    }
+    dpapi::decrypt(totp_enc)
 }
 
 /// 行 → 展示条目（置顶带 📌 标记）。列表只呈现标题，详情页才展开各行内容
@@ -311,6 +334,40 @@ pub fn action(
             let plain = dpapi::decrypt(&enc)?;
             Ok(plain)
         }
+        "totp" => {
+            // 当前验证码（仅展示，不复制）
+            let enc: String = conn
+                .query_row(
+                    "SELECT totp_enc FROM accounts WHERE id=?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let secret = totp_plain(&enc)?;
+            if secret.is_empty() {
+                return Err("该账号未配置 TOTP".into());
+            }
+            super::totp::current_code(&secret)
+        }
+        "totp_copy" => {
+            // 复制当前验证码：排除剪贴板历史与云同步；验证码 ≤30s 自过期，不做焚除
+            let enc: String = conn
+                .query_row(
+                    "SELECT totp_enc FROM accounts WHERE id=?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let secret = totp_plain(&enc)?;
+            if secret.is_empty() {
+                return Err("该账号未配置 TOTP".into());
+            }
+            let code = super::totp::current_code(&secret)?;
+            super::clipboard::begin_self_copy();
+            copy_text_private(&code)?;
+            bump(conn);
+            Ok("验证码已复制".into())
+        }
         "pin" => {
             let pinned: i64 = conn
                 .query_row(
@@ -340,14 +397,14 @@ pub fn action(
     }
 }
 
-/// 取单条完整记录（编辑预填用，含解密后的密码明文）
-pub fn get(
-    conn: &Connection,
-    id: i64,
-) -> Result<(String, String, String, String, String, i64), String> {
+/// 账号完整记录（get 的返回）：title, username, password明文, url, notes, pinned, totp密钥
+pub type VaultRecord = (String, String, String, String, String, i64, String);
+
+/// 取单条完整记录（编辑预填用，含解密后的密码明文与 TOTP 密钥）
+pub fn get(conn: &Connection, id: i64) -> Result<VaultRecord, String> {
     let row = conn
         .query_row(
-            "SELECT title, username, password_enc, url, notes, pinned FROM accounts WHERE id=?1",
+            "SELECT title, username, password_enc, url, notes, pinned, totp_enc FROM accounts WHERE id=?1",
             params![id],
             |r| {
                 Ok((
@@ -357,15 +414,17 @@ pub fn get(
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
                     r.get::<_, i64>(5)?,
+                    r.get::<_, String>(6)?,
                 ))
             },
         )
         .map_err(|e| e.to_string())?;
     let plain = dpapi::decrypt(&row.2)?;
-    Ok((row.0, row.1, plain, row.3, row.4, row.5))
+    let totp = totp_plain(&row.6)?;
+    Ok((row.0, row.1, plain, row.3, row.4, row.5, totp))
 }
 
-/// 更新条目：密码字段留空 = 保持不变（其余字段照常覆盖）
+/// 更新条目：密码字段留空 = 保持不变（其余字段照常覆盖，TOTP 空串 = 清除）
 // 账号字段一字排开：调用处按名传参比塞结构体更直观，故显式放行参数个数提示
 #[allow(clippy::too_many_arguments)]
 pub fn update(
@@ -377,11 +436,13 @@ pub fn update(
     url: &str,
     notes: &str,
     pinned: i64,
+    totp: &str,
 ) -> Result<(), String> {
     let title = title.trim();
     if title.is_empty() {
         return Err("标题不能为空".into());
     }
+    let totp_enc = normalize_totp(totp)?;
     let new_enc = if password.trim().is_empty() {
         None
     } else {
@@ -390,13 +451,13 @@ pub fn update(
     match new_enc {
         Some(enc) => conn
             .execute(
-                "UPDATE accounts SET title=?1, username=?2, password_enc=?3, url=?4, notes=?5, pinned=?6, updated_at=?7 WHERE id=?8",
-                params![title, username.trim(), enc, url.trim(), notes, pinned, now_ms(), id],
+                "UPDATE accounts SET title=?1, username=?2, password_enc=?3, url=?4, notes=?5, pinned=?6, totp_enc=?7, updated_at=?8 WHERE id=?9",
+                params![title, username.trim(), enc, url.trim(), notes, pinned, totp_enc, now_ms(), id],
             ),
         None => conn
             .execute(
-                "UPDATE accounts SET title=?1, username=?2, url=?3, notes=?4, pinned=?5, updated_at=?6 WHERE id=?7",
-                params![title, username.trim(), url.trim(), notes, pinned, now_ms(), id],
+                "UPDATE accounts SET title=?1, username=?2, url=?3, notes=?4, pinned=?5, totp_enc=?6, updated_at=?7 WHERE id=?8",
+                params![title, username.trim(), url.trim(), notes, pinned, totp_enc, now_ms(), id],
             ),
     }
     .map_err(|e| e.to_string())?;
@@ -424,7 +485,7 @@ pub fn import(conn: &Connection, entries: Vec<ParsedAccount>) -> Result<usize, S
         } else {
             "未命名账号".to_string()
         };
-        add(&tx, &title, username, &e.password, url, "")?;
+        add(&tx, &title, username, &e.password, url, "", "")?;
         n += 1;
     }
     tx.commit().map_err(|e| e.to_string())?;
@@ -436,7 +497,7 @@ pub fn import(conn: &Connection, entries: Vec<ParsedAccount>) -> Result<usize, S
 /// 读全部账号为备份条目（密码解密为明文——密文由 backup 模块整体加密保护）
 pub fn backup_read_all(conn: &Connection) -> Result<Vec<super::backup::BackupEntry>, String> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT title, username, password_enc, url, notes, pinned FROM accounts ORDER BY id",
+        "SELECT title, username, password_enc, url, notes, pinned, totp_enc FROM accounts ORDER BY id",
     ) else {
         return Err("读取账号失败".into());
     };
@@ -448,6 +509,7 @@ pub fn backup_read_all(conn: &Connection) -> Result<Vec<super::backup::BackupEnt
             r.get::<_, String>(3)?,
             r.get::<_, String>(4)?,
             r.get::<_, i64>(5)?,
+            r.get::<_, String>(6)?,
         ))
     }) else {
         return Err("读取账号失败".into());
@@ -461,6 +523,7 @@ pub fn backup_read_all(conn: &Connection) -> Result<Vec<super::backup::BackupEnt
             url: row.3,
             notes: row.4,
             pinned: row.5,
+            totp: totp_plain(&row.6)?,
         });
     }
     Ok(out)
@@ -532,11 +595,16 @@ pub fn backup_restore(
             }
         }
         let enc = dpapi::encrypt(&e.password)?;
+        let totp_enc = if e.totp.is_empty() {
+            String::new()
+        } else {
+            dpapi::encrypt(&e.totp)?
+        };
         let now = now_ms();
         tx.execute(
-            "INSERT INTO accounts(title, username, password_enc, url, notes, created_at, updated_at, pinned)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
-            params![title, e.username.trim(), enc, e.url.trim(), e.notes, now, e.pinned],
+            "INSERT INTO accounts(title, username, password_enc, url, notes, created_at, updated_at, pinned, totp_enc)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8)",
+            params![title, e.username.trim(), enc, e.url.trim(), e.notes, now, e.pinned, totp_enc],
         )
         .map_err(|e| e.to_string())?;
         n += 1;
@@ -559,10 +627,10 @@ mod crud_tests {
     #[test]
     fn 空查询列出全部账号() {
         let conn = mem_db();
-        add(&conn, "甲账号", "u1", "p", "", "").unwrap();
+        add(&conn, "甲账号", "u1", "p", "", "", "").unwrap();
         // updated_at 精度为毫秒：错开时间保证"新的在前"可判定
         std::thread::sleep(Duration::from_millis(3));
-        add(&conn, "乙账号", "u2", "p", "", "").unwrap();
+        add(&conn, "乙账号", "u2", "p", "", "", "").unwrap();
         let items = search(&conn, "");
         assert_eq!(items.len(), 2, "空查询应列出全部账号");
         assert_eq!(items[0].title, "乙账号", "新入库的排在前");
@@ -608,6 +676,7 @@ mod crud_tests {
             "pw",
             "https://a.com",
             "内部 systems",
+            "",
         )
         .unwrap();
         assert_eq!(action(&conn, 1, "notes", 0).unwrap(), "备注已复制");
@@ -624,29 +693,41 @@ mod crud_tests {
     #[test]
     fn 更新留空密码保持原值() {
         let conn = mem_db();
-        add(&conn, "站点", "user", "old-pass", "https://a.com", "").unwrap();
-        let (_, _, plain, _, _, _) = get(&conn, 1).unwrap();
+        add(&conn, "站点", "user", "old-pass", "https://a.com", "", "").unwrap();
+        let (_, _, plain, _, _, _, _) = get(&conn, 1).unwrap();
         assert_eq!(plain, "old-pass");
 
-        update(&conn, 1, "站点2", "user2", "", "https://b.com", "备注", 0).unwrap();
-        let (t, u, p, url, notes, _) = get(&conn, 1).unwrap();
+        update(
+            &conn,
+            1,
+            "站点2",
+            "user2",
+            "",
+            "https://b.com",
+            "备注",
+            0,
+            "",
+        )
+        .unwrap();
+        let (t, u, p, url, notes, _, totp) = get(&conn, 1).unwrap();
         assert_eq!(t, "站点2");
         assert_eq!(u, "user2");
         assert_eq!(p, "old-pass", "留空密码应保持原值");
         assert_eq!(url, "https://b.com");
         assert_eq!(notes, "备注");
+        assert_eq!(totp, "", "未配置 TOTP 应为空");
 
         // 传入新密码则覆盖
-        update(&conn, 1, "站点2", "user2", "new-pass", "", "", 0).unwrap();
-        let (_, _, p, _, _, _) = get(&conn, 1).unwrap();
+        update(&conn, 1, "站点2", "user2", "new-pass", "", "", 0, "").unwrap();
+        let (_, _, p, _, _, _, _) = get(&conn, 1).unwrap();
         assert_eq!(p, "new-pass");
     }
 
     #[test]
     fn 置顶条目排最前且带标记() {
         let conn = mem_db();
-        add(&conn, "甲账号", "", "", "", "").unwrap();
-        add(&conn, "乙账号", "", "", "", "").unwrap();
+        add(&conn, "甲账号", "", "", "", "", "").unwrap();
+        add(&conn, "乙账号", "", "", "", "", "").unwrap();
         action(&conn, 1, "pin", 0).unwrap();
 
         let items = search(&conn, "账号");
@@ -663,7 +744,7 @@ mod crud_tests {
     #[test]
     fn 备注参与搜索匹配() {
         let conn = mem_db();
-        add(&conn, "公司邮箱", "me", "pw", "", "公司内部 systems").unwrap();
+        add(&conn, "公司邮箱", "me", "pw", "", "公司内部 systems", "").unwrap();
         assert_eq!(search(&conn, "systems").len(), 1);
         assert_eq!(search(&conn, "notes不存在词").len(), 0);
     }
@@ -671,7 +752,7 @@ mod crud_tests {
     #[test]
     fn 复制操作更新最近使用() {
         let conn = mem_db();
-        add(&conn, "A", "u1", "p1", "", "").unwrap();
+        add(&conn, "A", "u1", "p1", "", "", "").unwrap();
         let before: i64 = conn
             .query_row("SELECT updated_at FROM accounts WHERE id=1", [], |r| {
                 r.get(0)
@@ -689,9 +770,9 @@ mod crud_tests {
     #[test]
     fn 备份读全量与恢复往返() {
         let conn = mem_db();
-        add(&conn, "甲", "u1", "p1", "https://a.com", "备注甲").unwrap();
+        add(&conn, "甲", "u1", "p1", "https://a.com", "备注甲", "").unwrap();
         std::thread::sleep(Duration::from_millis(3));
-        add(&conn, "乙", "u2", "p2", "", "").unwrap();
+        add(&conn, "乙", "u2", "p2", "", "", "").unwrap();
         action(&conn, 1, "pin", 0).unwrap();
 
         // 导出读全量：密码明文、pinned 保留
@@ -705,21 +786,56 @@ mod crud_tests {
         let (n, skipped) = backup_restore(&conn2, entries, false).unwrap();
         assert_eq!(n, 2);
         assert_eq!(skipped, 0, "空库恢复无重复可跳");
-        let (t, u, p, url, notes, pinned) = get(&conn2, 1).unwrap();
+        let (t, u, p, url, notes, pinned, totp) = get(&conn2, 1).unwrap();
         assert_eq!((t.as_str(), u.as_str(), p.as_str()), ("甲", "u1", "p1"));
         assert_eq!(url, "https://a.com");
         assert_eq!(notes, "备注甲");
         assert_eq!(pinned, 1, "置顶状态应随备份还原");
+        assert_eq!(totp, "", "未配置 TOTP 恢复为空");
         let items = search(&conn2, "");
         assert_eq!(items.len(), 2);
         assert!(items[0].title.starts_with("📌"), "恢复后置顶仍排最前");
     }
 
     #[test]
+    fn totp配置出码与受保护复制() {
+        let conn = mem_db();
+        // otpauth 链接保存即归一为标准 Base32
+        add(
+            &conn,
+            "有OTP",
+            "u",
+            "p",
+            "",
+            "",
+            "otpauth://totp/x?secret=gezd gnbv gy3t qojq",
+        )
+        .unwrap();
+        let (_, _, _, _, _, _, totp) = get(&conn, 1).unwrap();
+        assert_eq!(totp, "GEZDGNBVGY3TQOJQ", "应去空白并大写化归一存储");
+        // 当前码为合法 6 位且可受保护复制
+        let code = action(&conn, 1, "totp", 0).unwrap();
+        assert_eq!(code.len(), 6, "应为 6 位验证码");
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(
+            action(&conn, 1, "totp_copy", 0).unwrap(),
+            "验证码已复制",
+            "验证码复制应抑制剪贴板历史"
+        );
+        // 非法密钥保存即报错；未配置账号取码报错
+        assert!(add(&conn, "坏OTP", "u", "p", "", "", "not-a-key!!").is_err());
+        add(&conn, "无OTP", "u", "p", "", "", "").unwrap();
+        assert_eq!(
+            action(&conn, 2, "totp", 0).unwrap_err(),
+            "该账号未配置 TOTP"
+        );
+    }
+
+    #[test]
     fn 重复检测与跳过恢复() {
         let conn = mem_db();
-        add(&conn, "甲", "u1", "p1", "", "").unwrap();
-        add(&conn, "gitlab", "U2", "p2", "", "").unwrap();
+        add(&conn, "甲", "u1", "p1", "", "", "").unwrap();
+        add(&conn, "gitlab", "U2", "p2", "", "", "").unwrap();
 
         let mk = |title: &str, username: &str| crate::providers::backup::BackupEntry {
             title: title.into(),
@@ -728,6 +844,7 @@ mod crud_tests {
             url: String::new(),
             notes: String::new(),
             pinned: 0,
+            totp: String::new(),
         };
         // 同标题（大小写不同）+ 同用户名（大小写不同）= 疑似重复；批内两条同键
         let entries = vec![

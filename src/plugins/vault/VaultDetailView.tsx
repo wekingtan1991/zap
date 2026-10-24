@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
   Check,
@@ -9,6 +10,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  Timer,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
@@ -28,9 +30,15 @@ export interface VaultDetail {
   url: string;
   notes: string;
   pinned: number;
+  totp: string;
 }
 
-export type CopyableField = "username" | "password" | "url" | "notes";
+export type CopyableField =
+  | "username"
+  | "password"
+  | "url"
+  | "notes"
+  | "totp";
 
 interface Props {
   detail: VaultDetail;
@@ -76,6 +84,32 @@ export function VaultDetailView({
   if (detail.notes) {
     rows.push({ label: "备注", value: detail.notes, field: "notes" });
   }
+
+  // TOTP 实时验证码：250ms 采样本地倒计时（与服务端同为 T0=0 的 30s 全局对齐窗口），
+  // 窗口翻新时重新取码。仅展示不落任何历史，复制走受保护通道（totp_copy）
+  const [totpCode, setTotpCode] = useState("");
+  const [totpLeft, setTotpLeft] = useState(0);
+  useEffect(() => {
+    if (!detail.totp) return;
+    let alive = true;
+    const fetchCode = () =>
+      invoke<string>("vault_action", { id: detail.id, action: "totp" })
+        .then((c) => {
+          if (alive) setTotpCode(c);
+        })
+        .catch(() => {});
+    fetchCode();
+    setTotpLeft(30 - (Math.floor(Date.now() / 1000) % 30));
+    const timer = setInterval(() => {
+      const left = 30 - (Math.floor(Date.now() / 1000) % 30);
+      setTotpLeft(left);
+      if (left === 30) fetchCode(); // 窗口翻新
+    }, 250);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [detail.id, detail.totp]);
 
   // 删除确认弹窗存活期间，Esc 无条件取消弹窗。挂窗口捕获而非面板 onKeyDown：
   // 点击非焦点区后焦点掉到 body，面板收不到 keydown（与 VaultFormView 同因）。
@@ -204,6 +238,43 @@ export function VaultDetailView({
             </div>
           ))}
         </div>
+        {detail.totp && (
+          <div className="zap-detail-row animate-fade-in">
+            <span className="zap-detail-label">验证码</span>
+            <span className="zap-detail-value zap-totp-code">
+              {totpCode
+                ? `${totpCode.slice(0, 3)} ${totpCode.slice(3)}`
+                : "··· ···"}
+              <span className="zap-totp-left">
+                <Timer className="size-3" />
+                {totpLeft}s
+              </span>
+            </span>
+            <span className="zap-detail-ops">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="secondary"
+                    size="icon-sm"
+                    className="text-muted-foreground hover:text-foreground"
+                    disabled={!totpCode}
+                    onClick={() => onCopyField("totp")}
+                    aria-label="复制验证码"
+                  >
+                    {copiedField === "totp" ? (
+                      <Check className="size-3.5 text-success animate-pop" />
+                    ) : (
+                      <Copy className="size-3.5" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {copiedField === "totp" ? "已复制 ✓" : "复制验证码"}
+                </TooltipContent>
+              </Tooltip>
+            </span>
+          </div>
+        )}
         <div className="zap-form-actions">
           <Button onClick={onEdit}>
             <Pencil className="size-3.5" />
