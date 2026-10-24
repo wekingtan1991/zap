@@ -43,6 +43,9 @@ getrandom = "0.3"
 hmac = "0.12"
 sha1 = "0.10"
 base32 = "0.5"
+# 文本工具域：MD5 哈希（SHA1/SHA256 复用上方）+ 时间戳换算（本地时区）
+md-5 = "0.10"
+chrono = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Com", "Win32_System_DataExchange", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Environment"] }

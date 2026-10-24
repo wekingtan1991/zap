@@ -24,6 +24,7 @@ Tauri 2 + React 19 + shadcn/ui + Rust，仅支持 Windows 10/11。
 | 最近 | 系统「最近使用」里的文件 |
 | 设置 | 40+ 个 Windows 设置页直达（`ms-settings:`），支持中文/英文/缩写 |
 | 网页 | 网址直达；其余兜底为百度 / 必应 / 谷歌搜索 |
+| 文本工具 | 输入 `tool` 进入：时间戳↔日期 / Base64 / URL 编解码 / UUID v4 / MD5·SHA1·SHA256；剪贴板里出现时间戳、UUID、Base64、URL 编码时呼出面板自动识别，Enter 直接进工具 |
 
 匹配支持拼音：中文应用名可用全拼（`weixin`）或首字母（`wx`）命中。
 
@@ -110,7 +111,7 @@ pnpm build            # 仅前端类型检查 + 构建（tsc && vite build）
 测试与规范（在 `src-tauri/` 下）：
 
 ```bash
-cargo test --lib                                    # 单元测试（55 个）
+cargo test --lib                                    # 单元测试（61 个）
 cargo test --lib -- --ignored --nocapture           # 真实开始菜单图标提取冒烟（机器相关）
 cargo fmt --check                                   # 格式检查（CI 同款）
 cargo clippy --all-targets -- -D warnings           # lint（CI 同款，零警告）

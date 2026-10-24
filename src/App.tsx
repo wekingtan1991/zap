@@ -40,6 +40,7 @@ import {
 } from "@/plugins/vault/VaultRevealOverlay";
 import { VaultImportView } from "@/plugins/vault/VaultImportView";
 import { JsonWorkbench } from "@/plugins/json/JsonWorkbench";
+import { ToolWorkbench } from "@/plugins/text/ToolWorkbench";
 import { SettingsView } from "@/views/SettingsView";
 import { useUpdater } from "@/views/useUpdater";
 
@@ -142,6 +143,11 @@ function AppView() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   /// JSON 识别条目进入的工作台（剪贴板行号寻址）
   const [jsonItem, setJsonItem] = useState<SearchItem | null>(null);
+  /// 文本工具识别条目进入的工作台（剪贴板行号寻址）
+  const [toolItem, setToolItem] = useState<SearchItem | null>(null);
+  /// 可开关插件状态缓存（json/tool 前缀域的门控依据）：
+  /// 挂载与设置页关闭后刷新，停用的插件前缀词落回普通搜索
+  const [pluginOn, setPluginOn] = useState<Record<string, boolean>>({});
   /// 条目右键菜单（次级操作）：光标位置 + 目标条目
   const [ctxMenu, setCtxMenu] = useState<{
     x: number;
@@ -175,9 +181,42 @@ function AppView() {
   // 保护域：pw 前缀进入账号库
   const isVault = query.trim().toLowerCase().startsWith("pw");
   const vaultTerm = isVault ? query.trim().slice(2).trim() : "";
-  // 工具域：json 前缀进入 JSON 工作台，其后文本即待分析内容
-  const isJson = !isVault && query.trim().toLowerCase().startsWith("json");
+  // 工具域：json 前缀进入 JSON 工作台，其后文本即待分析内容。
+  // 前缀域按插件开关门控：停用的插件前缀词落回普通搜索（与命令层守卫双保险）
+  const isJson =
+    !isVault &&
+    (pluginOn["json-tools"] ?? true) &&
+    query.trim().toLowerCase().startsWith("json");
   const jsonText = isJson ? query.trim().slice(4).trim() : "";
+  // 文本工具域：tool 前缀（后接空格或为空才进域，避免误伤含 tool 的搜索词）
+  const isTool =
+    !isVault &&
+    !isJson &&
+    (pluginOn["text-tools"] ?? true) &&
+    (query.trim().toLowerCase() === "tool" ||
+      query.trim().toLowerCase().startsWith("tool "));
+  const toolText = isTool
+    ? query.trim().toLowerCase() === "tool"
+      ? ""
+      : query.trim().slice(5)
+    : "";
+
+  // 插件开关缓存刷新：挂载 + 设置页关闭（保存与否都重新拉取，保证门控即时）
+  const refreshPluginOn = useCallback(() => {
+    invoke<{ plugins: { id: string; enabled: boolean }[] }>("get_app_settings")
+      .then((s) =>
+        setPluginOn(
+          Object.fromEntries(s.plugins.map((p) => [p.id, p.enabled]))
+        )
+      )
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    refreshPluginOn();
+  }, [refreshPluginOn]);
+  useEffect(() => {
+    if (!settingsOpen) refreshPluginOn();
+  }, [settingsOpen, refreshPluginOn]);
   useEffect(() => {
     vaultTermRef.current = vaultTerm;
   }, [vaultTerm]);
@@ -225,6 +264,7 @@ function AppView() {
       setRevealPw(null);
       setSettingsOpen(false);
       setJsonItem(null);
+      setToolItem(null);
       stopHkCapture();
       setActive(0);
       setTimeout(() => inputRef.current?.focus(), 30);
@@ -252,7 +292,7 @@ function AppView() {
 
   // 普通域搜索（保护域/工具域下不生效）
   useEffect(() => {
-    if (isVault || isJson) return;
+    if (isVault || isJson || isTool) return;
     const timer = setTimeout(async () => {
       try {
         const res = await invoke<SearchItem[]>("search", { query: query.trim() });
@@ -303,6 +343,7 @@ function AppView() {
     setDetail(null);
     setImporting(false);
     setJsonItem(null);
+    setToolItem(null);
     setSettingsOpen(true);
   }, []);
 
@@ -560,6 +601,7 @@ function AppView() {
   const actions: ItemActions = {
     openVaultDetail: (it) => void openDetail(it),
     openJson: (it) => setJsonItem(it),
+    openTool: (it) => setToolItem(it),
     runCommand: (target) =>
       void runCommand(target, {
         busyRef,
@@ -767,7 +809,7 @@ function AppView() {
     } else if (e.key === "Enter") {
       e.preventDefault();
       // 工具域无列表（items 是进入前的陈旧结果），Enter 不动作
-      if (!isJson) runItem(items[active]);
+      if (!isJson && !isTool) runItem(items[active]);
     } else if (e.key === "Escape") {
       // 渐进式退出：有词清词（账号库下即退回主面板），空了才收起面板
       e.preventDefault();
@@ -854,6 +896,23 @@ function AppView() {
     );
   }
 
+  // ---------- 文本工具工作台：识别条目进入（完整面板） ----------
+  if (toolItem) {
+    const rowid = Number(toolItem.target);
+    return (
+      <ToolWorkbench
+        clipRow={Number.isNaN(rowid) ? undefined : rowid}
+        full
+        onBack={() => {
+          setToolItem(null);
+          setTimeout(() => inputRef.current?.focus(), 30);
+        }}
+        focusRef={focusPanelRef}
+        onKeyDown={onKeyDown}
+      />
+    );
+  }
+
   // ---------- 设置页（渲染收敛进 views/SettingsView） ----------
   if (settingsOpen) {
     return (
@@ -891,7 +950,9 @@ function AppView() {
               ? "搜索账号…"
               : isJson
                 ? "在 json 后粘贴或输入 JSON，实时校验美化"
-                : "搜索应用、文件、窗口、剪贴板…"
+                : isTool
+                  ? "在 tool 后粘贴文本，换算时间戳/编解码/哈希"
+                  : "搜索应用、文件、窗口、剪贴板…"
           }
           spellCheck={false}
         />
@@ -910,6 +971,8 @@ function AppView() {
       <div className="zap-results">
         {isJson ? (
           <JsonWorkbench text={jsonText} onBack={() => setQuery("")} />
+        ) : isTool ? (
+          <ToolWorkbench text={toolText} onBack={() => setQuery("")} />
         ) : items.length === 0 ? (
           <div className="zap-empty">
             <span className="zap-empty-ico">
@@ -1058,6 +1121,9 @@ function AppView() {
               <span className="zap-footer-sep" />
               <Kbd>json</Kbd>
               <span>JSON 工具</span>
+              <span className="zap-footer-sep" />
+              <Kbd>tool</Kbd>
+              <span>文本工具</span>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span
