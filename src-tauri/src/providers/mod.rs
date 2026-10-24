@@ -12,6 +12,7 @@ pub mod plugin;
 pub mod recent;
 pub mod settings;
 pub mod sysutil;
+pub mod texttools;
 pub mod totp;
 pub mod vault;
 pub mod web;
@@ -176,6 +177,7 @@ impl SearchEngine {
         // 顺序一致，保持前端展示不变
         let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
             std::sync::Arc::new(jsontools::JsonToolsPlugin),
+            std::sync::Arc::new(texttools::TextToolsPlugin),
             apps.clone(),
             std::sync::Arc::new(files::FilesPlugin),
             std::sync::Arc::new(winsys::WinsysPlugin),

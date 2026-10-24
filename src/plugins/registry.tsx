@@ -11,6 +11,8 @@ export interface ItemActions {
   openVaultDetail: (it: SearchItem) => void;
   /// 打开 JSON 工作台（识别条目按行号回查剪贴板原文）
   openJson: (it: SearchItem) => void;
+  /// 打开文本工具工作台（识别条目按行号回查剪贴板原文）
+  openTool: (it: SearchItem) => void;
   runCommand: (target: string) => void;
   /// 默认动作：交给后端 open_item（启动应用 / 打开文件 / 激活窗口等）
   openExternal: (it: SearchItem) => void;
@@ -60,6 +62,11 @@ const REGISTRY: Record<string, KindUi> = {
     label: "JSON",
     badge: "json",
     activate: (it, act) => act.openJson(it),
+  },
+  tool: {
+    label: "工具",
+    badge: "tool",
+    activate: (it, act) => act.openTool(it),
   },
   cmd: {
     label: "功能",

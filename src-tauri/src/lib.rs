@@ -388,6 +388,24 @@ async fn json_to_ts(text: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?
 }
 
+// ---------- 文本工具域 ----------
+
+/// 一次返回全部转换（时间戳/Base64/URL/哈希），前端按卡片渲染
+#[tauri::command]
+async fn tool_convert_all(text: String) -> Result<providers::texttools::ToolBundle, String> {
+    tauri::async_runtime::spawn_blocking(move || providers::texttools::convert_all(&text))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 生成一枚 UUID v4（按需点击生成，不随输入刷新）
+#[tauri::command]
+async fn tool_uuid() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(providers::texttools::uuid_v4)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// 识别条目回查原文：按行号读剪贴板历史（进入工作台时以识别时刻的内容为准）
 #[tauri::command]
 async fn clip_row(state: tauri::State<'_, AppState>, id: i64) -> Result<String, String> {
@@ -776,6 +794,8 @@ pub fn run() {
             json_format,
             json_to_yaml,
             json_to_ts,
+            tool_convert_all,
+            tool_uuid,
             clip_row,
             copy_text,
             get_app_settings,

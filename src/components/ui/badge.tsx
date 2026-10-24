@@ -28,6 +28,7 @@ const badgeVariants = cva(
         web: "border-transparent bg-[rgba(59,130,246,0.16)] text-[#7ab3ff]",
         url: "border-transparent bg-[rgba(250,204,21,0.16)] text-[#ffd84d]",
         json: "border-transparent bg-[rgba(56,189,248,0.16)] text-[#7dd3fc]",
+        tool: "border-transparent bg-[rgba(163,230,53,0.16)] text-[#bef264]",
       },
     },
     defaultVariants: {
