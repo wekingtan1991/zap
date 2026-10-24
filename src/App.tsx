@@ -395,8 +395,8 @@ function AppView() {
       const id = Number(item.target);
       if (Number.isNaN(id)) return;
       try {
-        const [title, username, password, url, notes, pinned] = await invoke<
-          [string, string, string, string, string, number]
+        const [title, username, password, url, notes, pinned, totp] = await invoke<
+          [string, string, string, string, string, number, string]
         >("vault_get", { id });
         setFormError("");
         setForm({
@@ -407,6 +407,7 @@ function AppView() {
           url,
           notes,
           pinned: pinned === 1,
+          totp,
         });
       } catch {
         // 忽略
@@ -441,13 +442,13 @@ function AppView() {
       const id = Number(item.target);
       if (Number.isNaN(id)) return;
       try {
-        const [title, username, password, url, notes, pinned] = await invoke<
-          [string, string, string, string, string, number]
+        const [title, username, password, url, notes, pinned, totp] = await invoke<
+          [string, string, string, string, string, number, string]
         >("vault_get", { id });
         setShowPw(false);
         setConfirmDelete(false);
         setCopiedField(null);
-        setDetail({ id, title, username, password, url, notes, pinned });
+        setDetail({ id, title, username, password, url, notes, pinned, totp });
       } catch (e) {
         feedback(false, "打开失败：" + String(e));
       }
@@ -462,13 +463,13 @@ function AppView() {
       const id = Number(item.target);
       if (Number.isNaN(id)) return;
       try {
-        const [title, username, password, url, notes, pinned] = await invoke<
-          [string, string, string, string, string, number]
+        const [title, username, password, url, notes, pinned, totp] = await invoke<
+          [string, string, string, string, string, number, string]
         >("vault_get", { id });
         setShowPw(false);
         setCopiedField(null);
         setConfirmDelete(true);
-        setDetail({ id, title, username, password, url, notes, pinned });
+        setDetail({ id, title, username, password, url, notes, pinned, totp });
       } catch (e) {
         feedback(false, "打开失败：" + String(e));
       }
@@ -476,14 +477,15 @@ function AppView() {
     [feedback]
   );
 
-  /// 详情页行尾复制：username / password / url / notes（密码带阅后即焚，均不入剪贴板历史）
+  /// 详情页行尾复制：username / password / url / notes / totp
+  /// （密码带阅后即焚、验证码排除剪贴板历史，均不入历史）
   const copyField = useCallback(
-    async (field: "username" | "password" | "url" | "notes") => {
+    async (field: "username" | "password" | "url" | "notes" | "totp") => {
       if (!detail) return;
       try {
         const msg = await invoke<string>("vault_action", {
           id: detail.id,
-          action: field,
+          action: field === "totp" ? "totp_copy" : field,
         });
         // 行尾图标点亮为 ✓（1.6s 后还原），同时弹 toast 说明
         setCopiedField(field);
@@ -531,6 +533,7 @@ function AppView() {
       url: detail.url,
       notes: detail.notes,
       pinned: detail.pinned === 1,
+      totp: detail.totp,
     });
     setDetail(null);
   }, [detail]);
@@ -617,12 +620,12 @@ function AppView() {
     }
     void (async () => {
       try {
-        const [title, username, password, url, notes, pinned] = await invoke<
-          [string, string, string, string, string, number]
+        const [title, username, password, url, notes, pinned, totp] = await invoke<
+          [string, string, string, string, string, number, string]
         >("vault_get", { id });
         setConfirmDelete(false);
         setCopiedField(null);
-        setDetail({ id, title, username, password, url, notes, pinned });
+        setDetail({ id, title, username, password, url, notes, pinned, totp });
       } catch {
         // 详情打不开（账号已被删等）退回旧行为：列表 + 焦点回输入框
         setTimeout(() => inputRef.current?.focus(), 30);

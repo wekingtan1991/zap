@@ -126,10 +126,11 @@ async fn vault_add(
     password: String,
     url: String,
     notes: String,
+    totp: String,
 ) -> Result<(), String> {
     let engine = state.engine.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        engine.vault_add(&title, &username, &password, &url, &notes)
+        engine.vault_add(&title, &username, &password, &url, &notes, &totp)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -153,12 +154,12 @@ async fn vault_action(
     .map_err(|e| e.to_string())?
 }
 
-/// 取单条账号完整记录（编辑预填；含解密后的密码明文）
+/// 取单条账号完整记录（编辑预填；含解密后的密码明文与 TOTP 密钥）
 #[tauri::command]
 async fn vault_get(
     state: tauri::State<'_, AppState>,
     id: i64,
-) -> Result<(String, String, String, String, String, i64), String> {
+) -> Result<providers::vault::VaultRecord, String> {
     let engine = state.engine.clone();
     tauri::async_runtime::spawn_blocking(move || engine.vault_get(id))
         .await
@@ -177,10 +178,13 @@ async fn vault_update(
     url: String,
     notes: String,
     pinned: i64,
+    totp: String,
 ) -> Result<(), String> {
     let engine = state.engine.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        engine.vault_update(id, &title, &username, &password, &url, &notes, pinned)
+        engine.vault_update(
+            id, &title, &username, &password, &url, &notes, pinned, &totp,
+        )
     })
     .await
     .map_err(|e| e.to_string())?

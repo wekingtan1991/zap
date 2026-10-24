@@ -17,7 +17,7 @@ const NONCE_LEN: usize = 12;
 /// 单份备份条目上限（防御性：远超个人账号库规模即拒绝）
 const MAX_ENTRIES: usize = 10_000;
 
-/// 备份条目：恢复时全字段还原（含 pinned），与智能导入的 ParsedAccount 是两条线
+/// 备份条目：恢复时全字段还原（含 pinned 与 TOTP 密钥），与智能导入的 ParsedAccount 是两条线
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupEntry {
@@ -28,6 +28,8 @@ pub struct BackupEntry {
     pub url: String,
     pub notes: String,
     pub pinned: i64,
+    /// TOTP Base32 密钥明文（随信封整体加密），空串 = 未配置
+    pub totp: String,
 }
 
 /// 解密预览：条目 + 每条是否与现有账号库疑似重复（同有效标题与用户名）。
@@ -138,6 +140,7 @@ mod tests {
                 url: "https://a.com".into(),
                 notes: "备注".into(),
                 pinned: 1,
+                totp: "GEZDGNBVGY3TQOJQ".into(),
             },
             BackupEntry {
                 title: "gitlab".into(),
@@ -146,6 +149,7 @@ mod tests {
                 url: String::new(),
                 notes: String::new(),
                 pinned: 0,
+                totp: String::new(),
             },
         ]
     }
@@ -155,11 +159,14 @@ mod tests {
         let entries = sample();
         let file = encrypt_backup(&entries, "口令123").unwrap();
         assert!(!file.contains("P@ss"), "文件内容不得含明文密码");
+        assert!(!file.contains("GEZDGNBV"), "文件内容不得含明文 TOTP 密钥");
         let back = decrypt_backup(&file, "口令123").unwrap();
         assert_eq!(back.len(), 2);
         assert_eq!(back[0].password, "P@ss 中文✓");
         assert_eq!(back[0].pinned, 1);
+        assert_eq!(back[0].totp, "GEZDGNBVGY3TQOJQ");
         assert_eq!(back[1].title, "gitlab");
+        assert_eq!(back[1].totp, "");
     }
 
     #[test]

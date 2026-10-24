@@ -933,3 +933,24 @@ button.zap-json-toggle:hover .zap-json-key {
   cursor: pointer;
   user-select: none;
 }
+
+/* ---------- 详情页 TOTP 实时验证码 ---------- */
+
+.zap-totp-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  color: #fff;
+}
+
+.zap-totp-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  letter-spacing: 0;
+  color: #6b7280;
+}
