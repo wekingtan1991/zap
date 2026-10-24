@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { useEscCapture } from "@/hooks/useEscCapture";
 
 /// 后端 texttools::ToolBundle 的线协议镜像
 interface ToolBundle {
@@ -40,7 +41,6 @@ interface Props {
   onBack: () => void;
   /// 子页面焦点接管（防 Esc 失效，见 AppView 同名约定），仅 full 模式使用
   focusRef?: (el: HTMLDivElement | null) => void;
-  onKeyDown?: (e: React.KeyboardEvent) => void;
 }
 
 /// 结果行：标签 + 值（悬停全文）+ 复制；值为 null 显示"不适用"
@@ -94,7 +94,6 @@ export function ToolWorkbench({
   full,
   onBack,
   focusRef,
-  onKeyDown,
 }: Props) {
   const [srcText, setSrcText] = useState<string | null>(
     text !== undefined ? text : null
@@ -125,18 +124,8 @@ export function ToolWorkbench({
 
   const active = textMode ? (text ?? "") : (srcText ?? "");
 
-  // full 模式窗口捕获兜 Esc：焦点掉 body 后面板 onKeyDown 收不到（与 JsonWorkbench 同因）
-  useEffect(() => {
-    if (!full) return;
-    const onWinKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopPropagation();
-      onBack();
-    };
-    window.addEventListener("keydown", onWinKey, true);
-    return () => window.removeEventListener("keydown", onWinKey, true);
-  }, [full, onBack]);
+  // full 模式窗口捕获兜 Esc（焦点掉 body 后面板 onKeyDown 收不到）；嵌入模式归主面板
+  useEscCapture(onBack, full === true);
 
   // 转换防抖：前缀域每击键触发；行号源加载后只触发一次
   useEffect(() => {
@@ -358,7 +347,6 @@ export function ToolWorkbench({
         className="zap-panel outline-none"
         tabIndex={-1}
         ref={focusRef}
-        onKeyDown={onKeyDown}
       >
         {header}
         <div className="zap-form">{body}</div>

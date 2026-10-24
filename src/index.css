@@ -3,7 +3,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* ---------- 设计令牌（暗色琥珀主题，与原 .zap-* 样式一致） ---------- */
+/* ---------- 设计令牌（暗色琥珀主题为默认，浅色经 :root.zap-light 覆盖） ---------- */
 :root {
   --radius: 0.5rem;
   --background: #181a1f;
@@ -27,6 +27,112 @@
   --border: rgba(255, 255, 255, 0.14);
   --input: rgba(255, 255, 255, 0.17);
   --ring: #f59e0b;
+
+  color-scheme: dark;
+
+  /* ---------- zap 面板语义变量（App.css 消费；浅色在下方覆盖） ---------- */
+  --zap-panel-grad: linear-gradient(180deg, #1d2027 0%, #15171b 100%);
+  --zap-dialog-grad: linear-gradient(180deg, #23262e 0%, #1a1d22 100%);
+  --zap-backdrop: rgba(13, 15, 18, 0.62);
+  --zap-shadow: rgba(0, 0, 0, 0.45);
+  --zap-body-bg: #181a1f;
+  /* 文本（强→弱） */
+  --zap-fg-strong: #ffffff;
+  --zap-fg: #e5e7eb;
+  --zap-fg-mid: #d1d5db;
+  --zap-fg-mute: #9aa1ad;
+  --zap-fg-mute2: #8a8f98;
+  --zap-fg-dim: #6b7280;
+  --zap-fg-faint: #4b5563;
+  --zap-fg-soft: #b6bac1;
+  --zap-fg-soft2: #c9ccd2;
+  --zap-fg-ph: #5f6368;
+  /* 白系发丝线/表面（按 alpha 分档） */
+  --zap-w-025: rgba(255, 255, 255, 0.025);
+  --zap-w-03: rgba(255, 255, 255, 0.03);
+  --zap-w-04: rgba(255, 255, 255, 0.04);
+  --zap-w-05: rgba(255, 255, 255, 0.05);
+  --zap-w-055: rgba(255, 255, 255, 0.055);
+  --zap-w-06: rgba(255, 255, 255, 0.06);
+  --zap-w-07: rgba(255, 255, 255, 0.07);
+  --zap-w-08: rgba(255, 255, 255, 0.08);
+  --zap-w-09: rgba(255, 255, 255, 0.09);
+  --zap-w-10: rgba(255, 255, 255, 0.1);
+  --zap-w-12: rgba(255, 255, 255, 0.12);
+  --zap-w-14: rgba(255, 255, 255, 0.14);
+  --zap-w-35: rgba(255, 255, 255, 0.35);
+  --zap-w-85: rgba(255, 255, 255, 0.85);
+  /* 状态色 */
+  --zap-err: #f87171;
+  --zap-err-soft: rgba(248, 113, 113, 0.35);
+  --zap-err-bg: rgba(248, 113, 113, 0.08);
+  --zap-err-fg: #fecaca;
+  --zap-warn: #fbbf24;
+  --zap-warn-2: #fcd34d;
+  --zap-green-soft: #a5d6a7;
+}
+
+/* ---------- 浅色主题（documentElement 挂 zap-light 类，src/lib/appearance.ts） ---------- */
+:root.zap-light {
+  --background: #f4f5f7;
+  --foreground: #1f2937;
+  --card: rgba(17, 24, 39, 0.05);
+  --card-foreground: #1f2937;
+  --popover: #ffffff;
+  --popover-foreground: #1f2937;
+  --primary: #d97706;
+  --primary-foreground: #fffaf0;
+  --secondary: rgba(17, 24, 39, 0.08);
+  --secondary-foreground: #1f2937;
+  --muted: rgba(17, 24, 39, 0.06);
+  --muted-foreground: #6b7280;
+  --accent: rgba(17, 24, 39, 0.09);
+  --accent-foreground: #111827;
+  --destructive: #dc2626;
+  --destructive-foreground: #fee2e2;
+  --success: #16a34a;
+  --border: rgba(17, 24, 39, 0.13);
+  --input: rgba(17, 24, 39, 0.15);
+  --ring: #d97706;
+
+  color-scheme: light;
+
+  --zap-panel-grad: linear-gradient(180deg, #ffffff 0%, #f2f3f6 100%);
+  --zap-dialog-grad: linear-gradient(180deg, #ffffff 0%, #f2f3f6 100%);
+  --zap-backdrop: rgba(15, 23, 42, 0.35);
+  --zap-shadow: rgba(0, 0, 0, 0.14);
+  --zap-body-bg: #eef0f3;
+  --zap-fg-strong: #111827;
+  --zap-fg: #1f2937;
+  --zap-fg-mid: #374151;
+  --zap-fg-mute: #6b7280;
+  --zap-fg-mute2: #6b7280;
+  --zap-fg-dim: #9ca3af;
+  --zap-fg-faint: #b0b7c3;
+  --zap-fg-soft: #6b7280;
+  --zap-fg-soft2: #9ca3af;
+  --zap-fg-ph: #9ca3af;
+  --zap-w-025: rgba(17, 24, 39, 0.025);
+  --zap-w-03: rgba(17, 24, 39, 0.03);
+  --zap-w-04: rgba(17, 24, 39, 0.04);
+  --zap-w-05: rgba(17, 24, 39, 0.05);
+  --zap-w-055: rgba(17, 24, 39, 0.055);
+  --zap-w-06: rgba(17, 24, 39, 0.06);
+  --zap-w-07: rgba(17, 24, 39, 0.09);
+  --zap-w-08: rgba(17, 24, 39, 0.1);
+  --zap-w-09: rgba(17, 24, 39, 0.11);
+  --zap-w-10: rgba(17, 24, 39, 0.12);
+  --zap-w-12: rgba(17, 24, 39, 0.15);
+  --zap-w-14: rgba(17, 24, 39, 0.17);
+  --zap-w-35: rgba(17, 24, 39, 0.35);
+  --zap-w-85: rgba(17, 24, 39, 0.75);
+  --zap-err: #dc2626;
+  --zap-err-soft: rgba(220, 38, 38, 0.3);
+  --zap-err-bg: rgba(220, 38, 38, 0.06);
+  --zap-err-fg: #b91c1c;
+  --zap-warn: #b45309;
+  --zap-warn-2: #b45309;
+  --zap-green-soft: #15803d;
 }
 
 @theme inline {
@@ -171,14 +277,15 @@
 }
 
 /* ---------- 基础 ---------- */
-/* 面板不透明填充：窗口虽是透明窗口，但四角不透出桌面（避免"透明角"） */
+/* 面板不透明填充：窗口虽是透明窗口，但四角不透出桌面（避免"透明角"）。
+   背景随主题切换（:root / :root.zap-light 的 --zap-body-bg） */
 html,
 body,
 #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background: #181a1f;
+  background: var(--zap-body-bg);
   overflow: hidden;
   user-select: none;
 }
@@ -186,14 +293,13 @@ body,
 body {
   font-family: var(--font-sans);
   font-size: 14px;
-  color-scheme: dark;
   -webkit-font-smoothing: antialiased;
 }
 
 /* 细滚动条 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  scrollbar-color: var(--zap-w-14) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -202,12 +308,12 @@ body {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--zap-w-14);
   border-radius: 4px;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.24);
+  background: var(--zap-w-35);
 }
 
 *::-webkit-scrollbar-track {

@@ -1,6 +1,6 @@
-/// 设置页（从 App.tsx 迁出的自包含视图）：设置加载/保存、热键录制、
+﻿/// 设置页（从 App.tsx 迁出的自包含视图）：设置加载/保存、热键录制、
 /// 各分区渲染。更新区消费 AppView 传入的 useUpdater 状态机。
-/// 挂载即拉取设置，卸载即停热键钩子——开关状态由父级 settingsOpen 决定
+/// 挂载即拉取设置，卸载即停热键钩子——开关状态由父级 view 状态机决定
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -15,6 +15,7 @@ import {
   Download,
   KeyRound,
   Loader2,
+  Palette,
   Puzzle,
   RefreshCw,
   RotateCw,
@@ -34,6 +35,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { Updater } from "./useUpdater";
+import { useEscCapture } from "@/hooks/useEscCapture";
+import { applyAppearance, type Appearance } from "@/lib/appearance";
 
 export interface PluginState {
   id: string;
@@ -51,6 +54,8 @@ export interface AppSettings {
   pwdClearSecs: number;
   autostart: boolean;
   everythingAutostart: boolean;
+  /// 外观模式（dark/light/system）
+  appearance: string;
   /// 可开关插件清单（后端 meta 下发，设置页「插件」分区渲染）
   plugins: PluginState[];
 }
@@ -80,12 +85,11 @@ const formatHotkey = (hk: string) =>
 
 interface Props {
   updater: Updater;
-  onKeyDown: (e: React.KeyboardEvent) => void;
   focusRef: (el: HTMLDivElement | null) => void;
   onClose: () => void;
 }
 
-export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
+export function SettingsView({ updater, focusRef, onClose }: Props) {
   const [st, setSt] = useState<AppSettings | null>(null);
   const [appVersion, setAppVersion] = useState("");
   const [hkRecording, setHkRecording] = useState(false);
@@ -205,10 +209,15 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
   };
 
   useEffect(() => {
-    // clipAutoPaste 归一化：半新半旧会话里旧后端不下发该键，undefined 会导致
-    // 保存时 invoke 序列化丢键
+    // 归一化：半新半旧会话里旧后端不下发新键，undefined 会导致保存时丢键
     invoke<AppSettings>("get_app_settings")
-      .then((res) => setSt({ ...res, clipAutoPaste: res.clipAutoPaste ?? true }))
+      .then((res) =>
+        setSt({
+          ...res,
+          clipAutoPaste: res.clipAutoPaste ?? true,
+          appearance: res.appearance ?? "dark",
+        })
+      )
       .catch(() => {});
     // 版本号异步读取（tauri.conf.json 的 version），失败时留空
     getVersion()
@@ -276,15 +285,11 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
     return () => window.removeEventListener("keydown", onWinKey, true);
   }, [hkRecording, stopHkCapture]);
 
-  // 窗口捕获兜 Esc 关设置页：焦点掉 body（点击非焦点区）后面板 onKeyDown 收不到
-  // （与 VaultFormView 同因）。录制态必须让位——上方录制监听注册更晚，
-  // 若这里拦截会抢掉「Esc=取消录制」，故录制时直接放行不碰事件。
-  // 备份弹窗存活时 Esc 只关弹窗（重置口令与预览状态），不连设置页一起退。
-  useEffect(() => {
-    const onWinKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || hkRecording) return;
-      e.preventDefault();
-      e.stopPropagation();
+  // 窗口捕获兜 Esc 关设置页（焦点掉 body 后面板 onKeyDown 收不到）。
+  // 录制态让位（enabled=false，录制监听自己管 Esc=取消录制）；备份弹窗存活时
+  // Esc 只关弹窗（重置口令与预览状态），不连设置页一起退。
+  useEscCapture(
+    () => {
       if (bkDialog) {
         setBkDialog(null);
         setBkPass("");
@@ -295,10 +300,9 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
         return;
       }
       onClose();
-    };
-    window.addEventListener("keydown", onWinKey, true);
-    return () => window.removeEventListener("keydown", onWinKey, true);
-  }, [hkRecording, onClose, bkDialog]);
+    },
+    !hkRecording
+  );
 
   const saveSettings = async () => {
     if (!st) return;
@@ -310,6 +314,7 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
         clipAutoPaste: st.clipAutoPaste ?? true,
         pwdClearSecs: st.pwdClearSecs,
         everythingAutostart: st.everythingAutostart,
+        appearance: st.appearance ?? "dark",
         plugins: st.plugins.map((p) => ({ id: p.id, enabled: p.enabled })),
       });
       if (res.hotkeyError) {
@@ -335,12 +340,7 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
   if (!st) {
     // 设置加载中的一帧空壳（get_app_settings 实际不会失败，罕见网络态兜底）
     return (
-      <div
-        className="zap-panel outline-none"
-        tabIndex={-1}
-        ref={focusRef}
-        onKeyDown={onKeyDown}
-      />
+      <div className="zap-panel outline-none" tabIndex={-1} ref={focusRef} />
     );
   }
 
@@ -349,7 +349,6 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
       className="zap-panel vault outline-none"
       tabIndex={-1}
       ref={focusRef}
-      onKeyDown={onKeyDown}
     >
       <div className="zap-input-row">
         <span className="zap-logo">
@@ -427,7 +426,7 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
             }}
           />
         </div>
-        <div className="mt-3 border-t border-white/5 pt-3">
+        <div className="mt-3 border-t border-border pt-3">
           <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Clipboard className="size-3 text-primary/75" />
             剪贴板
@@ -490,7 +489,7 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
             />
           </div>
         </div>
-        <div className="mt-3 border-t border-white/5 pt-3">
+        <div className="mt-3 border-t border-border pt-3">
           <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <KeyRound className="size-3 text-primary/75" />
             密码安全
@@ -517,7 +516,40 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
             </Select>
           </div>
         </div>
-        <div className="mt-3 border-t border-white/5 pt-3">
+        <div className="mt-3 border-t border-border pt-3">
+          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+            <Palette className="size-3 text-primary/75" />
+            外观
+          </div>
+          <div className="flex min-h-[38px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <Label className="text-[13px] font-normal text-foreground">
+                主题
+              </Label>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                跟随系统实时响应系统深浅切换
+              </span>
+            </span>
+            <Select
+              value={st.appearance ?? "dark"}
+              onValueChange={(v) => {
+                setSt((s) => (s ? { ...s, appearance: v } : s));
+                // 即时预览（保存后经 get_app_settings 同步回 AppView）
+                applyAppearance(v as Appearance);
+              }}
+            >
+              <SelectTrigger className="h-[30px] w-[126px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="dark">深色</SelectItem>
+                <SelectItem value="light">浅色</SelectItem>
+                <SelectItem value="system">跟随系统</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <div className="mt-3 border-t border-border pt-3">
           <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Database className="size-3 text-primary/75" />
             账号库
@@ -543,7 +575,7 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
             </span>
           </div>
         </div>
-        <div className="mt-3 border-t border-white/5 pt-3">
+        <div className="mt-3 border-t border-border pt-3">
           <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Search className="size-3 text-primary/75" />
             Everything
@@ -571,7 +603,7 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
             />
           </div>
         </div>
-        <div className="mt-3 border-t border-white/5 pt-3">
+        <div className="mt-3 border-t border-border pt-3">
           <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Puzzle className="size-3 text-primary/75" />
             插件
@@ -617,7 +649,7 @@ export function SettingsView({ updater, onKeyDown, focusRef, onClose }: Props) {
             ))
           )}
         </div>
-        <div className="mt-3 border-t border-white/5 pt-3">
+        <div className="mt-3 border-t border-border pt-3">
           <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <RefreshCw className="size-3 text-primary/75" />
             软件更新

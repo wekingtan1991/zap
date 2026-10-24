@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { useEscCapture } from "@/hooks/useEscCapture";
 
 /// 后端 jsontools::JsonReport 的线协议镜像
 interface JsonReport {
@@ -29,7 +30,6 @@ interface Props {
   onBack: () => void;
   /// 子页面焦点接管（防 Esc 失效，见 AppView 同名约定），仅 full 模式使用
   focusRef?: (el: HTMLDivElement | null) => void;
-  onKeyDown?: (e: React.KeyboardEvent) => void;
 }
 
 /// JSON 工作台：状态条 + 树/文本双视图 + 复制美化/压缩。
@@ -40,7 +40,6 @@ export function JsonWorkbench({
   full,
   onBack,
   focusRef,
-  onKeyDown,
 }: Props) {
   const [srcText, setSrcText] = useState<string | null>(
     text !== undefined ? text : null
@@ -77,19 +76,8 @@ export function JsonWorkbench({
   const active = textMode ? (text ?? "") : (srcText ?? "");
 
   // full 模式（识别条目进入的独立面板）窗口捕获兜 Esc：焦点掉 body 后
-  // 面板 onKeyDown 收不到（与 VaultFormView 同因）。嵌入模式（前缀域）不挂——
-  // 那里的 Esc 清词归主面板导航管。
-  useEffect(() => {
-    if (!full) return;
-    const onWinKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopPropagation();
-      onBack();
-    };
-    window.addEventListener("keydown", onWinKey, true);
-    return () => window.removeEventListener("keydown", onWinKey, true);
-  }, [full, onBack]);
+  // 面板 onKeyDown 收不到。嵌入模式（前缀域）不挂——那里的 Esc 清词归主面板导航管
+  useEscCapture(onBack, full === true);
 
   // 分析防抖：前缀域每击键触发；行号源加载后只触发一次
   useEffect(() => {
@@ -328,7 +316,6 @@ export function JsonWorkbench({
         className="zap-panel outline-none"
         tabIndex={-1}
         ref={focusRef}
-        onKeyDown={onKeyDown}
       >
         {header}
         <div className="zap-form">{body}</div>

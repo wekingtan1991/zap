@@ -203,6 +203,8 @@ struct AppSettingsDto {
     pwd_clear_secs: i64,
     autostart: bool,
     everything_autostart: bool,
+    /// 外观模式（dark/light/system）
+    appearance: String,
     /// 可开关插件清单（仅工具插件；核心搜索源不列）
     plugins: Vec<providers::PluginInfo>,
 }
@@ -225,6 +227,10 @@ fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSetting
             .get_setting(providers::appconfig::KEY_EVERYTHING_AUTOSTART)
             .map(|v| v != "0")
             .unwrap_or(providers::appconfig::DEFAULT_EVERYTHING_AUTOSTART),
+        appearance: state
+            .engine
+            .get_setting(providers::appconfig::KEY_APPEARANCE)
+            .unwrap_or_else(|| "dark".into()),
         plugins: state.engine.plugin_states(),
     }
 }
@@ -257,6 +263,7 @@ fn save_settings(
     clip_autopaste: Option<bool>,
     pwd_clear_secs: i64,
     everything_autostart: bool,
+    appearance: Option<String>,
     plugins: Vec<PluginSwitchDto>,
 ) -> Result<SaveOutcome, String> {
     let hotkey = hotkey.trim().to_lowercase();
@@ -310,6 +317,14 @@ fn save_settings(
             providers::appconfig::KEY_CLIP_AUTOPASTE,
             if on { "1" } else { "0" },
         )?;
+    }
+    if let Some(mode) = appearance {
+        // 只收合法值（防前端脏数据把主题写坏）
+        if matches!(mode.as_str(), "dark" | "light" | "system") {
+            state
+                .engine
+                .set_setting(providers::appconfig::KEY_APPEARANCE, &mode)?;
+        }
     }
     state.engine.set_setting(
         providers::appconfig::KEY_PWD_CLEAR_SECS,

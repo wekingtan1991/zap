@@ -1,6 +1,7 @@
 /// 新增/编辑账号表单（从 App.tsx 迁出）：字段渲染 + 密码生成 + 保存。
-/// 表单状态仍在 AppView（多处入口写入：列表伪条目 / 详情编辑），此处受控渲染
-import { useEffect } from "react";
+/// 表单数据由 AppView 的视图状态机持有（多处入口写入），此处受控渲染；
+/// 表单校验错误本地自持（挂载即清空）
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { useEscCapture } from "@/hooks/useEscCapture";
 
 export interface AccountForm {
   id?: number;
@@ -32,9 +34,7 @@ export const EMPTY_FORM: AccountForm = {
 
 interface Props {
   form: AccountForm;
-  formError: string;
   setForm: React.Dispatch<React.SetStateAction<AccountForm | null>>;
-  setFormError: (msg: string) => void;
   /// 保存成功后回调（父级：关表单 + 回账号库 + 刷新列表）
   onSaved: () => void;
   /// 取消（Esc 与「取消」按钮共用；父级负责焦点回主输入框）
@@ -44,23 +44,21 @@ interface Props {
 
 export function VaultFormView({
   form,
-  formError,
   setForm,
-  setFormError,
   onSaved,
   onCancel,
   focusRef,
 }: Props) {
-  // 表单域键盘自持：Ctrl+Enter 保存，Esc 取消。挂窗口捕获而非面板 onKeyDown：
-  // 点击表单空白处/Label 后焦点掉到 body，面板收不到 keydown，Esc 会失灵——
-  // 编辑态下 Esc 必须无条件可退出。不传依赖数组：每次渲染重挂，闭包永远拿到最新表单。
+  const [formError, setFormError] = useState("");
+
+  // Esc 取消：窗口捕获（点击表单空白处/Label 后焦点掉到 body，面板收不到 keydown）。
+  // Ctrl+Enter 保存仍是独立监听（useEscCapture 只管 Esc）
+  useEscCapture(onCancel);
+
+  // 表单域键盘自持：Ctrl+Enter 保存。不传依赖数组：每次渲染重挂，闭包永远拿到最新表单。
   useEffect(() => {
     const onWinKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-      } else if (e.key === "Enter" && e.ctrlKey) {
+      if (e.key === "Enter" && e.ctrlKey) {
         e.preventDefault();
         e.stopPropagation();
         void saveForm();
