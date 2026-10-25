@@ -1,7 +1,8 @@
-//! 插件协议：搜索贡献与剪贴板内容识别的统一入口。
+//! 插件协议：搜索贡献、剪贴板内容识别与输入框即时识别的统一入口。
 //! zap 的插件是**编译期内置**的功能模块（无动态加载）：实现 Plugin 并注册进
-//! SearchEngine 即可贡献搜索结果、参与面板呼出时的剪贴板识别；前端以 kind 为键
-//! 在 src/plugins/registry.tsx 声明徽标与激活行为，两端各自收敛、互不渗透。
+//! SearchEngine 即可贡献搜索结果、参与面板呼出时的剪贴板识别与键入/粘贴时的
+//! 万能输入框识别；前端以 kind 为键在 src/plugins/registry.tsx 声明徽标与
+//! 激活行为，两端各自收敛、互不渗透。
 
 use std::sync::atomic::AtomicBool;
 
@@ -53,4 +54,28 @@ pub trait Plugin: Send + Sync {
         let _ = (clip_rowid, clip_text);
         Vec::new()
     }
+
+    /// 万能输入框：对输入框当前内容（query 本身）的即时识别，键入/粘贴即触发。
+    /// 与 detect 的差异：detect 面向「呼出瞬间的剪贴板」（target = 行号，内容
+    /// 以识别时刻为准），probe 面向「用户正在输入的内容」（target 约定 "q"，
+    /// 前端以进入工作台时的输入框全文为初始文本）。默认不参与
+    fn probe(&self, text: &str) -> Vec<SearchItem> {
+        let _ = text;
+        Vec::new()
+    }
+}
+
+/// 插件入口条目的命中判定：query（trim + 小写）能否装进任一入口词——
+/// 与常规搜索共用 MatchForms 打分器（前缀 > 包含 > 子序列 + 拼音全拼/首字母），
+/// 方向天然只取「query 不长于入口词」：jsonview / toolkit 这类更长的词是在
+/// 搜别的东西，不命中、不再劫持。过短的 query（<2 字符）不出，降低单字母噪音
+pub fn entry_hit(query: &str, words: &[&str]) -> bool {
+    let q = query.trim().to_lowercase();
+    let n = q.chars().count();
+    if !(2..=16).contains(&n) {
+        return false;
+    }
+    words
+        .iter()
+        .any(|w| super::MatchForms::new(w).score(&q).is_some())
 }

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
   Check,
+  ClipboardPaste,
   Copy,
   Hash,
   Link2,
@@ -32,14 +33,13 @@ interface ToolBundle {
 }
 
 interface Props {
-  /// 前缀域文本源（随输入实时变化）；识别条目进入时不传
+  /// 初始文本（万能输入框识别 = 进入时的搜索词全文 / 搜索入口 = 空串），
+  /// 仅挂载时生效；后续换内容走「粘贴替换」
   text?: string;
-  /// 剪贴板行号源：进入时回查一次，以识别时刻的内容为准
+  /// 剪贴板行号源：进入时回查一次，以识别时刻的内容为准（与 text 互斥）
   clipRow?: number;
-  /// 完整面板（识别条目进入：自带头部与返回按钮）；缺省嵌在结果区（前缀域）
-  full?: boolean;
   onBack: () => void;
-  /// 子页面焦点接管（防 Esc 失效，见 AppView 同名约定），仅 full 模式使用
+  /// 子页面焦点接管（防 Esc 失效，见 AppView 同名约定）
   focusRef?: (el: HTMLDivElement | null) => void;
 }
 
@@ -86,15 +86,9 @@ function ToolRow({
   );
 }
 
-/// 文本工具工作台：时间戳/Base64/URL/UUID/哈希。
+/// 文本工具工作台（独立面板）：时间戳/Base64/URL/UUID/哈希。
 /// 分析与转换在后端（tool_convert_all 防抖一次返回），前端只做展示与复制
-export function ToolWorkbench({
-  text,
-  clipRow,
-  full,
-  onBack,
-  focusRef,
-}: Props) {
+export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
   const [srcText, setSrcText] = useState<string | null>(
     text !== undefined ? text : null
   );
@@ -103,12 +97,12 @@ export function ToolWorkbench({
   const [cmdErr, setCmdErr] = useState("");
   const [uuid, setUuid] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
+  /// 粘贴替换等待态：点击按钮后下一次 Ctrl+V 整体替换内容，5 秒无粘贴自动取消
+  const [awaitPaste, setAwaitPaste] = useState(false);
 
-  const textMode = text !== undefined;
-
-  // 行号源：进入时回查一次（与 JSON 工作台同构）
+  // 行号源：进入时回查一次（文本源初值即内容，与 JSON 工作台同构）
   useEffect(() => {
-    if (textMode) return;
+    if (text !== undefined) return;
     let cancelled = false;
     invoke<string>("clip_row", { id: clipRow })
       .then((t) => {
@@ -120,12 +114,30 @@ export function ToolWorkbench({
     return () => {
       cancelled = true;
     };
-  }, [textMode, clipRow]);
+  }, [text, clipRow]);
 
-  const active = textMode ? (text ?? "") : (srcText ?? "");
+  const active = srcText ?? "";
 
-  // full 模式窗口捕获兜 Esc（焦点掉 body 后面板 onKeyDown 收不到）；嵌入模式归主面板
-  useEscCapture(onBack, full === true);
+  // 独立面板：窗口捕获兜 Esc（焦点掉 body 后面板 onKeyDown 收不到）
+  useEscCapture(onBack, true);
+
+  // 粘贴替换：捕获阶段挂 window——焦点在非可编辑元素时 paste 事件仍会到达
+  useEffect(() => {
+    if (!awaitPaste) return;
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.clipboardData?.getData("text");
+      if (!t) return;
+      e.preventDefault();
+      setSrcText(t);
+      setAwaitPaste(false);
+    };
+    window.addEventListener("paste", onPaste, true);
+    const timer = setTimeout(() => setAwaitPaste(false), 5000);
+    return () => {
+      window.removeEventListener("paste", onPaste, true);
+      clearTimeout(timer);
+    };
+  }, [awaitPaste]);
 
   // 转换防抖：前缀域每击键触发；行号源加载后只触发一次
   useEffect(() => {
@@ -178,17 +190,25 @@ export function ToolWorkbench({
         <Wrench className="size-4 text-primary" />
       </span>
       <span className="zap-vault-tag">文本工具</span>
-      {full && (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-          onClick={onBack}
-        >
-          <ArrowLeft className="size-3" />
-          返回（Esc）
-        </Button>
-      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+        disabled={awaitPaste}
+        onClick={() => setAwaitPaste(true)}
+      >
+        <ClipboardPaste className="size-3" />
+        {awaitPaste ? "按 Ctrl+V 粘贴…" : "粘贴替换"}
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+        onClick={onBack}
+      >
+        <ArrowLeft className="size-3" />
+        返回（Esc）
+      </Button>
     </div>
   );
 
@@ -335,23 +355,18 @@ export function ToolWorkbench({
       </div>
       {!active.trim() && !loadErr && (
         <div className="zap-tool-empty-all">
-          {textMode ? "在 tool 后继续输入或粘贴文本" : "正在读取剪贴板…"}
+          {text !== undefined
+            ? "按 Ctrl+V 粘贴，或点右上「粘贴替换」"
+            : "正在读取剪贴板…"}
         </div>
       )}
     </div>
   );
 
-  if (full) {
-    return (
-      <div
-        className="zap-panel outline-none"
-        tabIndex={-1}
-        ref={focusRef}
-      >
-        {header}
-        <div className="zap-form">{body}</div>
-      </div>
-    );
-  }
-  return body;
+  return (
+    <div className="zap-panel outline-none" tabIndex={-1} ref={focusRef}>
+      {header}
+      <div className="zap-form">{body}</div>
+    </div>
+  );
 }
