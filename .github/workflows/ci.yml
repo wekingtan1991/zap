@@ -36,6 +36,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: 前端单元测试
+        run: pnpm test
+
       - name: 前端类型检查与构建
         run: pnpm build
 

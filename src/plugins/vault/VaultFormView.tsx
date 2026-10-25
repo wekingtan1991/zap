@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useEscCapture } from "@/hooks/useEscCapture";
+import { generatePassword } from "./password";
 
 export interface AccountForm {
   id?: number;
@@ -71,14 +72,9 @@ export function VaultFormView({
     setForm((f) => (f ? { ...f, [key]: value } : f));
   };
 
-  // 表单密码生成：crypto 随机 16 位（去掉易混淆字符）
+  // 表单密码生成按钮：算法在 plugins/vault/password.ts（可单测）
   const genPassword = () => {
-    const chars =
-      "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*";
-    const arr = new Uint32Array(16);
-    crypto.getRandomValues(arr);
-    const pw = Array.from(arr, (n) => chars[n % chars.length]).join("");
-    setFormField("password", pw);
+    setFormField("password", generatePassword());
   };
 
   const saveForm = async () => {
