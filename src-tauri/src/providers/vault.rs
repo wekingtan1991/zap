@@ -45,8 +45,7 @@ fn now_ms() -> i64 {
 // ---------- 剪贴板 ----------
 
 fn copy_text(text: &str) -> Result<(), String> {
-    arboard::Clipboard::new()
-        .map_err(|e| e.to_string())?
+    super::clipboard::open_retrying()?
         .set_text(text.to_string())
         .map_err(|e| e.to_string())
 }
@@ -57,8 +56,7 @@ fn copy_text(text: &str) -> Result<(), String> {
 #[cfg(windows)]
 fn copy_text_private(text: &str) -> Result<(), String> {
     use arboard::SetExtWindows;
-    arboard::Clipboard::new()
-        .map_err(|e| e.to_string())?
+    super::clipboard::open_retrying()?
         .set()
         .exclude_from_history()
         .exclude_from_cloud()

@@ -77,13 +77,13 @@ impl super::plugin::Plugin for TextToolsPlugin {
         if ensure_enabled().is_err() {
             return Vec::new();
         }
-        let hits = detect_kinds(clip_text.trim());
+        let hits = recognize(clip_text.trim());
         if hits.is_empty() {
             return Vec::new();
         }
         vec![SearchItem {
             id: format!("tool:clip:{clip_rowid}"),
-            title: format!("检测到剪贴板{}", hits.join(" / ")),
+            title: format!("检测到剪贴板{}", hits_title(&hits)),
             subtitle: "文本工具 · 换算/编解码/哈希，Enter 打开".into(),
             kind: "tool".into(),
             // target = 剪贴板行号：进入工作台后按行号回查当时内容
@@ -93,19 +93,19 @@ impl super::plugin::Plugin for TextToolsPlugin {
         }]
     }
 
-    /// 万能输入框识别：与 detect 同一套 detect_kinds 判定，
+    /// 万能输入框识别：与 detect 同一套 recognize 判定，
     /// target = "q"（前端以当前输入框文本为工作台初始内容）
     fn probe(&self, text: &str) -> Vec<SearchItem> {
         if ensure_enabled().is_err() {
             return Vec::new();
         }
-        let hits = detect_kinds(text.trim());
+        let hits = recognize(text.trim());
         if hits.is_empty() {
             return Vec::new();
         }
         vec![SearchItem {
             id: "tool:q".into(),
-            title: format!("识别到{}", hits.join(" / ")),
+            title: format!("识别到{}", hits_title(&hits)),
             subtitle: "文本工具 · 换算/编解码/哈希，Enter 打开".into(),
             kind: "tool".into(),
             target: "q".into(),
@@ -115,25 +115,67 @@ impl super::plugin::Plugin for TextToolsPlugin {
     }
 }
 
-/// 剪贴板内容识别：返回命中的工具名（中文，用于条目标题）
-fn detect_kinds(text: &str) -> Vec<&'static str> {
+/// 识别命中：标签 + 即问即答的答案（时间戳给换算时刻、Base64/URL 给解码预览）。
+/// 答案直接写进条目标题，最常见的「这是几点/这是什么」扫一眼即得，不用进工作台
+fn recognize(text: &str) -> Vec<(&'static str, Option<String>)> {
     if text.is_empty() || text.len() > MAX_INPUT_BYTES {
         return Vec::new();
     }
     let mut hits = Vec::new();
     if is_timestamp_text(text) {
-        hits.push("时间戳");
+        let answer = text
+            .parse::<u64>()
+            .ok()
+            .and_then(|n| to_local_datetime(if n > 100_000_000_000 { n } else { n * 1000 }));
+        hits.push(("时间戳", answer));
     }
     if is_uuid_text(text) {
-        hits.push("UUID");
+        hits.push(("UUID", None));
     }
     if is_base64_text(text) {
-        hits.push("Base64");
+        use base64::Engine as _;
+        let answer = base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|s| preview(&s));
+        hits.push(("Base64", answer));
     }
     if count_percent_escapes(text) >= 3 {
-        hits.push("URL 编码");
+        let answer = urlencoding::decode(text)
+            .ok()
+            .map(|c| preview(&c))
+            .filter(|d| !d.is_empty());
+        hits.push(("URL 编码", answer));
     }
     hits
+}
+
+/// 识别条目标题段：有答案的命中即问即答（「时间戳 → 2026-10-25 19:32:00」）
+fn hits_title(hits: &[(&'static str, Option<String>)]) -> String {
+    hits.iter()
+        .map(|(label, ans)| match ans {
+            Some(a) => format!("{label} → {a}"),
+            None => label.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// 解码答案预览：滤控制字符、压平空白，超 40 字符截断
+fn preview(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut out: String = flat.chars().take(40).collect();
+    if flat.chars().count() > 40 {
+        out.push('…');
+    }
+    out
 }
 
 /// 10 位秒级（2001-2286 年）或 13 位毫秒级时间戳
@@ -332,30 +374,34 @@ mod tests {
     /// （同 jsontools/mod.rs plugin_tests 的既知竞态）
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    /// 仅取命中标签（answers 在内联答案用例里另行断言）
+    fn kinds(text: &str) -> Vec<&'static str> {
+        recognize(text)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect()
+    }
+
     #[test]
     fn 识别时间戳uuid与base64() {
         let _g = TEST_LOCK.lock().unwrap();
-        assert_eq!(detect_kinds("1791828000"), vec!["时间戳"]);
-        assert_eq!(detect_kinds("1791828000000"), vec!["时间戳"]);
-        assert!(detect_kinds("12345").is_empty(), "过短数字不判时间戳");
-        assert!(detect_kinds("999999999").is_empty(), "9 位超出下限");
-        assert_eq!(
-            detect_kinds("550e8400-e29b-41d4-a716-446655440000"),
-            vec!["UUID"]
-        );
+        assert_eq!(kinds("1791828000"), vec!["时间戳"]);
+        assert_eq!(kinds("1791828000000"), vec!["时间戳"]);
+        assert!(kinds("12345").is_empty(), "过短数字不判时间戳");
+        assert!(kinds("999999999").is_empty(), "9 位超出下限");
+        assert_eq!(kinds("550e8400-e29b-41d4-a716-446655440000"), vec!["UUID"]);
         assert!(
-            detect_kinds("550E8400E29B41D4A716446655440000").is_empty(),
+            kinds("550E8400E29B41D4A716446655440000").is_empty(),
             "无连字符不判 UUID"
         );
         // Base64("hello text tools") 且非纯数字
-        assert_eq!(detect_kinds("aGVsbG8gdGV4dCB0b29scw=="), vec!["Base64"]);
+        assert_eq!(kinds("aGVsbG8gdGV4dCB0b29scw=="), vec!["Base64"]);
         // 16+ 位纯数字优先判时间戳而非 Base64
         assert!(
-            detect_kinds("1234567890123456").is_empty()
-                || detect_kinds("1234567890123456") == vec!["时间戳"]
+            kinds("1234567890123456").is_empty() || kinds("1234567890123456") == vec!["时间戳"]
         );
-        assert_eq!(detect_kinds("name%3Dzap%26ver%3D2"), vec!["URL 编码"]);
-        assert!(detect_kinds("hello world").is_empty());
+        assert_eq!(kinds("name%3Dzap%26ver%3D2"), vec!["URL 编码"]);
+        assert!(kinds("hello world").is_empty());
     }
 
     #[test]
@@ -402,6 +448,52 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert!(items[0].title.contains("URL"));
         assert!(TextToolsPlugin.probe("hello").is_empty());
+    }
+
+    #[test]
+    fn 识别条目内联答案免进工作台() {
+        let _g = TEST_LOCK.lock().unwrap();
+        use chrono::TimeZone;
+        // 时间戳期望值与实现同一时区来源（Local），往返自证不脆断言
+        let expected = chrono::Local
+            .timestamp_millis_opt(1_791_828_000_000)
+            .single()
+            .unwrap()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let items = TextToolsPlugin.probe("1791828000");
+        assert_eq!(items[0].title, format!("识别到时间戳 → {expected}"));
+        // detect（呼出剪贴板识别）同款带答案
+        let items = TextToolsPlugin.detect(7, "1791828000");
+        assert_eq!(items[0].title, format!("检测到剪贴板时间戳 → {expected}"));
+        // Base64 / URL 解码预览直接可见
+        let items = TextToolsPlugin.probe("aGVsbG8gdGV4dCB0b29scw==");
+        assert_eq!(items[0].title, "识别到Base64 → hello text tools");
+        let items = TextToolsPlugin.probe("name%3Dzap%26ver%3D2");
+        assert_eq!(items[0].title, "识别到URL 编码 → name=zap&ver=2");
+        // UUID 无可换算答案：仅标签
+        let items = TextToolsPlugin.probe("550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(items[0].title, "识别到UUID");
+    }
+
+    #[test]
+    fn 解码预览压平空白并截断() {
+        let _g = TEST_LOCK.lock().unwrap();
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"hello \n\t world");
+        let items = TextToolsPlugin.probe(&b64);
+        assert!(
+            items[0].title.contains("hello world"),
+            "空白应压平：{}",
+            items[0].title
+        );
+        let b64_long = base64::engine::general_purpose::STANDARD.encode("a".repeat(60).as_bytes());
+        let items = TextToolsPlugin.probe(&b64_long);
+        assert!(
+            items[0].title.ends_with('…'),
+            "超长预览应截断：{}",
+            items[0].title
+        );
     }
 
     #[test]

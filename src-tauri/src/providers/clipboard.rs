@@ -24,6 +24,26 @@ pub fn begin_self_copy() {
     SUPPRESS_CLIP_UNTIL.store(now_ms() as u64 + 1500, Ordering::Relaxed);
 }
 
+/// 打开剪贴板（含退避重试）。OpenClipboard 是全局独占资源，其他进程
+/// （IM/浏览器常驻监听、本机运行的另一 zap 实例及其监听线程）可能瞬时占用，
+/// arboard 自带 5×5ms 重试窗口太窄——这里 5 次递进退避（合计约 370ms 上限）。
+/// 与 vault.rs 焚除的 6 次重试同源教训；写路径（复制）是同步用户操作，
+/// 退避刻意比焚除的 200ms×6 短，避免卡手感
+pub fn open_retrying() -> Result<arboard::Clipboard, String> {
+    const BACKOFF_MS: [u64; 5] = [0, 20, 50, 100, 200];
+    let mut last: Option<arboard::Error> = None;
+    for ms in BACKOFF_MS {
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+        match arboard::Clipboard::new() {
+            Ok(cb) => return Ok(cb),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.expect("5 次尝试必有错误").to_string())
+}
+
 /// 剪贴板历史总开关（设置页/托盘切换），关闭时监听仍运行但不入库
 pub static CLIP_ENABLED: AtomicBool = AtomicBool::new(true);
 

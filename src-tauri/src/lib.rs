@@ -435,13 +435,12 @@ async fn clip_row(state: tauri::State<'_, AppState>, id: i64) -> Result<String, 
 }
 
 /// 通用文本复制（JSON 美化/压缩结果回填等）：
-/// 走自身复制抑制窗，派生结果不重复进入剪贴板历史
+/// 走自身复制抑制窗，派生结果不重复进入剪贴板历史；打开剪贴板带退避重试
 #[tauri::command]
 async fn copy_text(text: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         providers::clipboard::begin_self_copy();
-        arboard::Clipboard::new()
-            .map_err(|e| e.to_string())?
+        providers::clipboard::open_retrying()?
             .set_text(text)
             .map_err(|e| e.to_string())?;
         Ok("已复制".to_string())
