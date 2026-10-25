@@ -10,17 +10,22 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { toast } from "sonner";
 import {
   ArrowLeft,
+  ChevronDown,
+  ChevronUp,
   Clipboard,
   Database,
   Download,
+  Globe,
   KeyRound,
   Loader2,
   Palette,
+  Plus,
   Puzzle,
   RefreshCw,
   RotateCw,
   Search,
   Settings as SettingsIcon,
+  X,
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -70,6 +75,14 @@ interface BackupEntry {
   pinned: number;
 }
 
+/// 搜索捷径（后端 shortcuts::Shortcut 的线协议镜像）：
+/// keyword 触发词 / name 展示名 / url 含 {query} 占位的模板
+interface Shortcut {
+  keyword: string;
+  name: string;
+  url: string;
+}
+
 /// 解密预览（后端 backup::BackupPreview）：条目 + 疑似重复标记
 interface BackupPreview {
   entries: BackupEntry[];
@@ -95,6 +108,9 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   const [hkRecording, setHkRecording] = useState(false);
   const [hkError, setHkError] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
+  /// 搜索捷径清单：随「保存」整单提交（校验失败留页修正）
+  const [scList, setScList] = useState<Shortcut[]>([]);
+  const [scErr, setScErr] = useState("");
 
   // ---------- 账号库备份（加密导出/恢复，弹窗承载流程，动作即时执行不随「保存」） ----------
   // 导出：弹窗填口令（二次确认）→ save 对话框 → 加密落盘
@@ -219,6 +235,10 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         })
       )
       .catch(() => {});
+    // 搜索捷径清单（独立命令：与主设置分开读写）
+    invoke<Shortcut[]>("shortcuts_list")
+      .then(setScList)
+      .catch(() => {});
     // 版本号异步读取（tauri.conf.json 的 version），失败时留空
     getVersion()
       .then(setAppVersion)
@@ -304,8 +324,31 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
     !hkRecording
   );
 
+  // ---------- 搜索捷径（增删改排序，本地编辑、随「保存」整单提交） ----------
+  const updateSc = (i: number, patch: Partial<Shortcut>) =>
+    setScList((list) => list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+  const moveSc = (i: number, dir: -1 | 1) =>
+    setScList((list) => {
+      const j = i + dir;
+      if (j < 0 || j >= list.length) return list;
+      const next = [...list];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  const delSc = (i: number) => setScList((list) => list.filter((_, j) => j !== i));
+  const addSc = () =>
+    setScList((list) => [...list, { keyword: "", name: "", url: "" }]);
+
   const saveSettings = async () => {
     if (!st) return;
+    setScErr("");
+    // 捷径整单先行：校验失败（空字段/重复关键词）留在本页修正，不半存
+    try {
+      await invoke("shortcuts_save", { list: scList });
+    } catch (e) {
+      setScErr(String(e));
+      return;
+    }
     try {
       const res = await invoke<{ hotkeyError: string | null }>("save_settings", {
         hotkey: st.hotkey,
@@ -601,6 +644,83 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                 )
               }
             />
+          </div>
+        </div>
+        <div className="mt-3 border-t border-border pt-3">
+          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+            <Globe className="size-3 text-primary/75" />
+            搜索捷径
+          </div>
+          <div className="pb-1.5 text-[11px] leading-snug text-muted-foreground">
+            主面板输入「关键词 + 空格 + 内容」直达搜索，URL 里用
+            <code className="mx-1 rounded bg-muted px-1 font-mono">{"{query}"}</code>
+            代表内容，如 gh rust clap
+          </div>
+          {scList.map((s, i) => (
+            <div key={i} className="flex min-h-[38px] items-center gap-1.5">
+              <Input
+                className="h-[30px] w-[64px] shrink-0 px-2 font-mono text-xs"
+                placeholder="关键词"
+                spellCheck={false}
+                value={s.keyword}
+                onChange={(e) => updateSc(i, { keyword: e.target.value })}
+              />
+              <Input
+                className="h-[30px] w-[88px] shrink-0 px-2"
+                placeholder="名称"
+                value={s.name}
+                onChange={(e) => updateSc(i, { name: e.target.value })}
+              />
+              <Input
+                className="h-[30px] min-w-0 flex-1 px-2 font-mono text-xs"
+                placeholder="https://…?q={query}"
+                spellCheck={false}
+                value={s.url}
+                onChange={(e) => updateSc(i, { url: e.target.value })}
+              />
+              <span className="flex shrink-0 items-center">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground"
+                  aria-label="上移"
+                  disabled={i === 0}
+                  onClick={() => moveSc(i, -1)}
+                >
+                  <ChevronUp className="size-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground"
+                  aria-label="下移"
+                  disabled={i === scList.length - 1}
+                  onClick={() => moveSc(i, 1)}
+                >
+                  <ChevronDown className="size-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground hover:text-destructive"
+                  aria-label="删除"
+                  onClick={() => delSc(i)}
+                >
+                  <X className="size-3.5" />
+                </Button>
+              </span>
+            </div>
+          ))}
+          <div className="flex min-h-[34px] items-center justify-between gap-3">
+            <Button variant="outline" size="sm" onClick={addSc}>
+              <Plus className="size-3.5" />
+              添加捷径
+            </Button>
+            {scErr && (
+              <span className="animate-shake text-[11px] text-destructive">
+                {scErr}
+              </span>
+            )}
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">
