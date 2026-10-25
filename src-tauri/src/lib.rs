@@ -449,6 +449,24 @@ async fn copy_text(text: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// 搜索捷径清单（设置页「搜索捷径」分区）：纯缓存读，无库访问
+#[tauri::command]
+fn shortcuts_list(state: tauri::State<AppState>) -> Vec<providers::shortcuts::Shortcut> {
+    state.engine.shortcuts_list()
+}
+
+/// 整单保存搜索捷径：校验 + 写库 + 热替换搜索缓存（写库走线程池）
+#[tauri::command]
+async fn shortcuts_save(
+    state: tauri::State<'_, AppState>,
+    list: Vec<providers::shortcuts::Shortcut>,
+) -> Result<(), String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.shortcuts_save(list))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn vault_import(
     state: tauri::State<'_, AppState>,
@@ -812,6 +830,8 @@ pub fn run() {
             tool_uuid,
             clip_row,
             copy_text,
+            shortcuts_list,
+            shortcuts_save,
             get_app_settings,
             save_settings,
             autostart_set,

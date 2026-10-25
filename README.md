@@ -24,6 +24,7 @@ Tauri 2 + React 19 + shadcn/ui + Rust，仅支持 Windows 10/11。
 | 最近 | 系统「最近使用」里的文件 |
 | 设置 | 40+ 个 Windows 设置页直达（`ms-settings:`），支持中文/英文/缩写 |
 | 网页 | 网址直达；其余兜底为百度 / 必应 / 谷歌搜索 |
+| 搜索捷径 | 自定义「关键词 + 空格 + 内容」直达任意站点搜索（如 `gh rust clap` 搜 GitHub、`zh 关键词` 搜知乎）；URL 模板用 `{query}` 占位，设置 → 搜索捷径 里可增删排序，预置 gh / zh / db 三条 |
 | JSON 工具 | 直接把 JSON 粘贴进输入框即识别（合法给摘要、疑似给错误定位），Enter 进工具：校验 / 美化 / 压缩 / 树形折叠 / 转 YAML / TS 类型；也可搜 `json`、`格式化` 等词进入 |
 | 文本工具 | 直接粘贴或键入时间戳 / UUID / Base64 / URL 编码即识别，Enter 进工具：时间戳↔日期 / Base64 / URL 编解码 / UUID v4 / MD5·SHA1·SHA256；也可搜 `tool`、`时间戳`、`base64` 等词进入 |
 

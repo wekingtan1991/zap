@@ -11,6 +11,7 @@ pub mod jsontools;
 pub mod plugin;
 pub mod recent;
 pub mod settings;
+pub mod shortcuts;
 pub mod sysutil;
 pub mod texttools;
 pub mod totp;
@@ -156,6 +157,8 @@ pub struct SearchEngine {
     /// 应用源具体句柄：呼出时 refresh_if_stale 要走具体类型，不经过 trait 对象；
     /// 同一 Arc 也注册在 plugins 里，搜索时与其他源一视同仁
     apps: std::sync::Arc<apps::AppsPlugin>,
+    /// 搜索捷径源具体句柄：设置页读写清单要走具体类型（同 apps 的理由）
+    shortcuts: std::sync::Arc<shortcuts::ShortcutsPlugin>,
     /// 插件注册表：搜索贡献 + 剪贴板识别；顺序即结果顺序，勿随意调整
     plugins: Vec<std::sync::Arc<dyn plugin::Plugin>>,
 }
@@ -171,10 +174,11 @@ impl SearchEngine {
         let apps = std::sync::Arc::new(apps::AppsPlugin {
             index: apps::AppIndex::scan(icon_cache.as_deref()),
         });
+        let shortcuts = std::sync::Arc::new(shortcuts::ShortcutsPlugin::new(&conn));
         // 注册顺序 = 结果展示顺序（JSON 工具识别 / apps / files / winsys /
-        // 剪贴板 / 最近 / 设置 / 网页兜底）。JSON 工具只贡献识别条目、不参与
-        // 常规搜索，放最前是识别条目之间的展示顺序；其余与插件化前的拼接
-        // 顺序一致，保持前端展示不变
+        // 剪贴板 / 最近 / 设置 / 搜索捷径 / 网页兜底）。JSON 工具只贡献识别条目、
+        // 不参与常规搜索，放最前是识别条目之间的展示顺序；其余与插件化前的拼接
+        // 顺序一致，保持前端展示不变；捷径排在兜底源之前（命中时优先于通用搜索）
         let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
             std::sync::Arc::new(jsontools::JsonToolsPlugin),
             std::sync::Arc::new(texttools::TextToolsPlugin),
@@ -186,6 +190,7 @@ impl SearchEngine {
                 entries: recent::scan(),
             }),
             std::sync::Arc::new(settings::SettingsPlugin),
+            shortcuts.clone(),
             std::sync::Arc::new(web::WebPlugin),
         ];
         // 插件开关从存档加载到静态原子量（热路径只读原子量，不查库）
@@ -200,8 +205,20 @@ impl SearchEngine {
         Self {
             clip: Mutex::new(conn),
             apps,
+            shortcuts,
             plugins,
         }
+    }
+
+    /// 搜索捷径清单（设置页「搜索捷径」分区）
+    pub fn shortcuts_list(&self) -> Vec<shortcuts::Shortcut> {
+        self.shortcuts.list()
+    }
+
+    /// 整单保存搜索捷径：校验 + 写库 + 热替换搜索缓存
+    pub fn shortcuts_save(&self, list: Vec<shortcuts::Shortcut>) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        self.shortcuts.save(&conn, list)
     }
 
     pub fn get_setting(&self, key: &str) -> Option<String> {
