@@ -338,7 +338,11 @@ impl SearchEngine {
             let conn = self.clip.lock().expect("clip db poisoned");
             return assemble_opening(&self.plugins, &conn);
         }
-        run_parallel(&self.plugins, q, &self.clip)
+        // 万能输入框：对输入框内容先跑一轮即时识别（键入/粘贴即识别），
+        // 命中条目置顶于入口条目与常规结果之前
+        let mut items = probe_all(&self.plugins, q);
+        items.extend(run_parallel(&self.plugins, q, &self.clip));
+        items
     }
 
     /// 设置页插件清单（仅可开关插件；核心源不列）
@@ -376,6 +380,20 @@ impl SearchEngine {
 fn plugin_off(p: &dyn plugin::Plugin) -> bool {
     p.meta()
         .is_some_and(|m| !m.state.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// 万能输入框识别：对输入框当前内容逐插件跑 probe（停用插件跳过），
+/// 命中条目整体置顶。识别是廉价字符串判定（前缀/字符集检查，256KB 上限），
+/// 每次击键跑一遍没有压力
+fn probe_all(plugins: &[std::sync::Arc<dyn plugin::Plugin>], q: &str) -> Vec<SearchItem> {
+    let mut items = Vec::new();
+    for p in plugins {
+        if plugin_off(p.as_ref()) {
+            continue;
+        }
+        items.extend(p.probe(q));
+    }
+    items
 }
 
 /// 插件并行执行：总延迟从"串行求和"变"最慢一路"（files 的 HTTP 超时 250ms 与
@@ -554,6 +572,65 @@ mod plugin_tests {
             "关闭记录时不应出现识别条目：{items:?}"
         );
         assert_eq!(items.len(), 1);
+    }
+
+    /// 万能输入框 probe 的循环级测试件：带可开关清单的 probe 源。
+    /// 刻意不用 json/tool 真插件——它们的停用测试在别的模块翻转全局原子量，
+    /// 与这里的读并发会互踩（跨模块没有共享串行锁）
+    struct ProbeQPlugin {
+        tag: &'static str,
+        switch: &'static std::sync::atomic::AtomicBool,
+    }
+    static PROBE_Q_A: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    static PROBE_Q_B: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+    impl plugin::Plugin for ProbeQPlugin {
+        fn search(&self, _q: &str, _c: Option<&Connection>) -> Vec<SearchItem> {
+            Vec::new()
+        }
+        fn meta(&self) -> Option<plugin::PluginMeta> {
+            Some(plugin::PluginMeta {
+                id: self.tag,
+                title: self.tag,
+                hint: "",
+                key: "",
+                default_on: true,
+                state: self.switch,
+            })
+        }
+        fn probe(&self, text: &str) -> Vec<SearchItem> {
+            vec![SearchItem {
+                id: format!("{}:{text}", self.tag),
+                title: self.tag.to_string(),
+                subtitle: String::new(),
+                kind: "info".into(),
+                target: "q".into(),
+                icon: None,
+                score: 0.0,
+            }]
+        }
+    }
+
+    #[test]
+    fn 万能输入框probe聚合并跳过停用插件() {
+        let _serial = CLIP_ENABLED_LOCK.lock().unwrap();
+        PROBE_Q_A.store(true, std::sync::atomic::Ordering::Relaxed);
+        PROBE_Q_B.store(false, std::sync::atomic::Ordering::Relaxed);
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
+            std::sync::Arc::new(ProbeQPlugin {
+                tag: "qa",
+                switch: &PROBE_Q_A,
+            }),
+            std::sync::Arc::new(ProbeQPlugin {
+                tag: "qb",
+                switch: &PROBE_Q_B,
+            }),
+        ];
+        let items = probe_all(&plugins, "任意内容");
+        assert_eq!(items.len(), 1, "停用插件的 probe 应被跳过");
+        assert_eq!(items[0].id, "qa:任意内容");
+        assert_eq!(items[0].target, "q");
+        PROBE_Q_B.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 带延迟的探针源：并行执行与保序断言用

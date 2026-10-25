@@ -1,6 +1,7 @@
-//! JSON 工具插件：剪贴板识别 + 文本分析 + 美化/压缩。
+//! JSON 工具插件：万能输入框识别 + 搜索入口条目 + 剪贴板识别 + 美化/压缩。
 //! 识别条目只带类型摘要、不携带内容（列表会明文渲染 title/subtitle）；
-//! Enter 进入工作台后按行号回查原文（clip_row），或由 "json " 前缀域直取输入文本
+//! target 三态：q = 以当前输入框文本为工作台初始内容，entry = 入口进入等粘贴，
+//! 数字 = 剪贴板行号（Enter 后 clip_row 回查原文）
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,17 +29,32 @@ fn ensure_enabled() -> Result<(), String> {
 
 pub struct JsonToolsPlugin;
 
+/// 入口词：query 装进任一词（前缀/包含/子序列 + 拼音）即出「JSON 工具」入口条目。
+/// json 前缀域已退役——工具靠搜索命中进入，jsonview 等更长的词不再被劫持
+const ENTRY_WORDS: &[&str] = &["json", "json工具", "格式化", "美化", "压缩", "校验", "yaml"];
+
 impl super::plugin::Plugin for JsonToolsPlugin {
-    fn search(&self, _query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
-        // 常规搜索不贡献结果：工具经剪贴板识别或 "json" 前缀域进入
-        Vec::new()
+    fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
+        if ensure_enabled().is_err() || !super::plugin::entry_hit(query, ENTRY_WORDS) {
+            return Vec::new();
+        }
+        vec![SearchItem {
+            id: "json:entry".into(),
+            title: "JSON 工具".into(),
+            subtitle: "粘贴 JSON 实时校验 · 美化 / 压缩 / 转 YAML / TS 类型".into(),
+            kind: "json".into(),
+            // entry = 入口进入：工作台空内容等待粘贴
+            target: "entry".into(),
+            icon: None,
+            score: 0.0,
+        }]
     }
 
     fn meta(&self) -> Option<super::plugin::PluginMeta> {
         Some(super::plugin::PluginMeta {
             id: "json-tools",
             title: "JSON 工具",
-            hint: "剪贴板 JSON 识别 + json 前缀工具（美化/压缩/校验/YAML/TS）",
+            hint: "粘贴/键入 JSON 即时识别（美化/压缩/校验/YAML/TS），搜索 json 等词进入",
             key: "plugin_json_tools",
             default_on: true,
             state: &JSON_TOOLS_ON,
@@ -65,6 +81,43 @@ impl super::plugin::Plugin for JsonToolsPlugin {
             icon: None,
             score: 0.0,
         }]
+    }
+
+    /// 万能输入框识别：形似 JSON 才参与——合法出识别条目；形似但非法
+    /// （{ 或 [ 开头、≥4 字符）出「疑似」条目，Enter 进工作台看行列错误。
+    /// 比 detect（呼出剪贴板仅认合法）宽一档：输入内容是用户当下的明确意图
+    fn probe(&self, text: &str) -> Vec<SearchItem> {
+        if ensure_enabled().is_err() {
+            return Vec::new();
+        }
+        let t = text.trim();
+        if t.len() > MAX_ANALYZE_BYTES || !(t.starts_with('{') || t.starts_with('[')) {
+            return Vec::new();
+        }
+        match serde_json::from_str::<serde_json::Value>(t) {
+            Ok(v) => vec![SearchItem {
+                id: "json:q".into(),
+                title: format!("识别到输入 JSON（{}）", describe(&v)),
+                subtitle: format!(
+                    "JSON 工具 · {} · 美化 / 压缩 / 校验，Enter 打开",
+                    human_size(t.len())
+                ),
+                kind: "json".into(),
+                target: "q".into(),
+                icon: None,
+                score: 0.0,
+            }],
+            Err(_) if t.chars().count() >= 4 => vec![SearchItem {
+                id: "json:q".into(),
+                title: "疑似 JSON · 校验未通过".into(),
+                subtitle: "JSON 工具 · Enter 打开查看错误位置".into(),
+                kind: "json".into(),
+                target: "q".into(),
+                icon: None,
+                score: 0.0,
+            }],
+            Err(_) => Vec::new(),
+        }
     }
 }
 
@@ -337,6 +390,58 @@ mod tests {
                 "「{text}」不应识别"
             );
         }
+    }
+
+    #[test]
+    fn 入口词命中出条目() {
+        let _g = TEST_LOCK.lock().unwrap();
+        // 前缀（正在输入）/ 全词 / 中文 / 拼音全拼与首字母，与常规搜索同一打分器
+        for q in ["json", "js", "JSON", "格式化", "geshihua", "yaml", "美化"] {
+            let items = JsonToolsPlugin.search(q, None);
+            assert_eq!(items.len(), 1, "「{q}」应命中入口");
+            assert_eq!(items[0].id, "json:entry");
+            assert_eq!(items[0].kind, "json");
+            assert_eq!(items[0].target, "entry");
+        }
+    }
+
+    #[test]
+    fn 更长的词不再命中入口() {
+        let _g = TEST_LOCK.lock().unwrap();
+        // 前缀域退役后的关键行为：jsonview 是在搜别的东西，不劫持、不出条目
+        for q in ["jsonview", "json格式化工具下载", "yamllint", "j", ""] {
+            assert!(
+                JsonToolsPlugin.search(q, None).is_empty(),
+                "「{q}」不应命中"
+            );
+        }
+    }
+
+    #[test]
+    fn 万能输入框识别合法与疑似() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let items = JsonToolsPlugin.probe(" {\"a\": 1} ");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].target, "q", "识别条目应携带 q 源标记");
+        assert!(items[0].title.contains("对象"));
+        // 形似但非法（≥4 字符）出疑似档：Enter 进工作台看行列错误
+        let items = JsonToolsPlugin.probe("{\"a\": 1");
+        assert_eq!(items.len(), 1);
+        assert!(items[0].title.contains("疑似"));
+        // 普通文本与过短片段不识别
+        assert!(JsonToolsPlugin.probe("hello world").is_empty());
+        assert!(JsonToolsPlugin.probe("{\"a").is_empty());
+    }
+
+    #[test]
+    fn 停用后入口与识别拒绝() {
+        let _g = TEST_LOCK.lock().unwrap();
+        JSON_TOOLS_ON.store(false, Ordering::Relaxed);
+        let search_off = JsonToolsPlugin.search("json", None);
+        let probe_off = JsonToolsPlugin.probe("{\"a\":1}");
+        JSON_TOOLS_ON.store(true, Ordering::Relaxed);
+        assert!(search_off.is_empty());
+        assert!(probe_off.is_empty());
     }
 
     #[test]

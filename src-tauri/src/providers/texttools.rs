@@ -1,6 +1,7 @@
-﻿//! 文本工具域：时间戳 / Base64 / URL / UUID / 哈希。
-//! 入口 = "tool" 前缀域（tool 后接空格或为空才进域，避免误伤含 tool 的搜索词）
-//! 与剪贴板识别（呼出时检测时间戳/UUID/Base64/URL 编码，识别条目按行号回查原文）。
+//! 文本工具域：时间戳 / Base64 / URL / UUID / 哈希。
+//! 入口 = 万能输入框识别（键入/粘贴即识别时间戳/UUID/Base64/URL 编码）、
+//! 搜索入口条目（tool / 时间戳 / base64 等词命中）与剪贴板识别
+//! （呼出时检测，识别条目按行号回查原文）。
 //! 全部转换由 tool_convert_all 一次返回（防抖后单次 IPC），前端按卡片渲染
 
 use md5::Md5;
@@ -26,17 +27,46 @@ fn ensure_enabled() -> Result<(), String> {
 
 pub struct TextToolsPlugin;
 
+/// 入口词：query 装进任一词（前缀/包含/子序列 + 拼音）即出「文本工具」入口条目。
+/// tool 前缀域已退役——toolkit 等更长的词不再被劫持
+const ENTRY_WORDS: &[&str] = &[
+    "tool",
+    "文本工具",
+    "时间戳",
+    "base64",
+    "uuid",
+    "哈希",
+    "hash",
+    "编码",
+    "解码",
+    "md5",
+    "sha1",
+    "sha256",
+    "url",
+];
+
 impl super::plugin::Plugin for TextToolsPlugin {
-    fn search(&self, _query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
-        // 常规搜索不贡献结果：工具经剪贴板识别或 "tool" 前缀域进入
-        Vec::new()
+    fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
+        if ensure_enabled().is_err() || !super::plugin::entry_hit(query, ENTRY_WORDS) {
+            return Vec::new();
+        }
+        vec![SearchItem {
+            id: "tool:entry".into(),
+            title: "文本工具".into(),
+            subtitle: "时间戳 / Base64 / URL / UUID / 哈希换算，粘贴文本即出结果".into(),
+            kind: "tool".into(),
+            // entry = 入口进入：工作台空内容等待粘贴
+            target: "entry".into(),
+            icon: None,
+            score: 0.0,
+        }]
     }
 
     fn meta(&self) -> Option<super::plugin::PluginMeta> {
         Some(super::plugin::PluginMeta {
             id: "text-tools",
             title: "文本工具",
-            hint: "tool 前缀 + 剪贴板识别（时间戳/Base64/URL/UUID/哈希）",
+            hint: "粘贴/键入时间戳/Base64/URL/UUID/哈希即时换算，搜索 tool 等词进入",
             key: "plugin_text_tools",
             default_on: true,
             state: &TEXT_TOOLS_ON,
@@ -58,6 +88,27 @@ impl super::plugin::Plugin for TextToolsPlugin {
             kind: "tool".into(),
             // target = 剪贴板行号：进入工作台后按行号回查当时内容
             target: clip_rowid.to_string(),
+            icon: None,
+            score: 0.0,
+        }]
+    }
+
+    /// 万能输入框识别：与 detect 同一套 detect_kinds 判定，
+    /// target = "q"（前端以当前输入框文本为工作台初始内容）
+    fn probe(&self, text: &str) -> Vec<SearchItem> {
+        if ensure_enabled().is_err() {
+            return Vec::new();
+        }
+        let hits = detect_kinds(text.trim());
+        if hits.is_empty() {
+            return Vec::new();
+        }
+        vec![SearchItem {
+            id: "tool:q".into(),
+            title: format!("识别到{}", hits.join(" / ")),
+            subtitle: "文本工具 · 换算/编解码/哈希，Enter 打开".into(),
+            kind: "tool".into(),
+            target: "q".into(),
             icon: None,
             score: 0.0,
         }]
@@ -273,6 +324,7 @@ fn hex_lowercase(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::plugin::Plugin;
     use std::sync::Mutex;
 
     /// 串行化对全局开关原子量的读改窗口：停用测试翻转 TEXT_TOOLS_ON 时，
@@ -304,6 +356,63 @@ mod tests {
         );
         assert_eq!(detect_kinds("name%3Dzap%26ver%3D2"), vec!["URL 编码"]);
         assert!(detect_kinds("hello world").is_empty());
+    }
+
+    #[test]
+    fn 入口词命中出条目() {
+        let _g = TEST_LOCK.lock().unwrap();
+        for q in [
+            "tool",
+            "to",
+            "时间戳",
+            "sjc",
+            "shijian",
+            "base",
+            "uuid",
+            "md5",
+            "哈希",
+        ] {
+            let items = TextToolsPlugin.search(q, None);
+            assert_eq!(items.len(), 1, "「{q}」应命中入口");
+            assert_eq!(items[0].id, "tool:entry");
+            assert_eq!(items[0].kind, "tool");
+            assert_eq!(items[0].target, "entry");
+        }
+    }
+
+    #[test]
+    fn 更长的词不再命中入口() {
+        let _g = TEST_LOCK.lock().unwrap();
+        for q in ["toolkit", "tools下载", "uuidgen下载", "t", ""] {
+            assert!(
+                TextToolsPlugin.search(q, None).is_empty(),
+                "「{q}」不应命中"
+            );
+        }
+    }
+
+    #[test]
+    fn 万能输入框识别输入内容() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let items = TextToolsPlugin.probe("1791828000");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].target, "q", "识别条目应携带 q 源标记");
+        assert!(items[0].title.contains("时间戳"));
+        let items = TextToolsPlugin.probe("name%3Dzap%26ver%3D2");
+        assert_eq!(items.len(), 1);
+        assert!(items[0].title.contains("URL"));
+        assert!(TextToolsPlugin.probe("hello").is_empty());
+    }
+
+    #[test]
+    fn 停用后入口与识别拒绝() {
+        let _g = TEST_LOCK.lock().unwrap();
+        TEXT_TOOLS_ON.store(false, Ordering::Relaxed);
+        let search_off = TextToolsPlugin.search("tool", None);
+        let probe_off = TextToolsPlugin.probe("1791828000");
+        TEXT_TOOLS_ON.store(true, Ordering::Relaxed);
+        assert!(search_off.is_empty());
+        assert!(probe_off.is_empty());
     }
 
     #[test]

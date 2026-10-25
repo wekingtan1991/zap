@@ -9,9 +9,9 @@ import { isPinned, type SearchItem } from "./types";
 /// 激活上下文：AppView 提供的动作入口，各 kind 的 activate 按需取用
 export interface ItemActions {
   openVaultDetail: (it: SearchItem) => void;
-  /// 打开 JSON 工作台（识别条目按行号回查剪贴板原文）
+  /// 打开 JSON 工作台（按条目 target 定内容源：q=搜索词 / entry=空待粘贴 / 行号回查）
   openJson: (it: SearchItem) => void;
-  /// 打开文本工具工作台（识别条目按行号回查剪贴板原文）
+  /// 打开文本工具工作台（target 语义同 openJson）
   openTool: (it: SearchItem) => void;
   runCommand: (target: string) => void;
   /// 默认动作：交给后端 open_item（启动应用 / 打开文件 / 激活窗口等）
