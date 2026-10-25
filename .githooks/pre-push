@@ -14,4 +14,7 @@ echo "[pre-push] pnpm exec tsc --noEmit"
 cd "$root"
 pnpm exec tsc --noEmit
 
+echo "[pre-push] pnpm test"
+pnpm test
+
 echo "[pre-push] 全部通过"

@@ -112,10 +112,17 @@ pnpm build            # 仅前端类型检查 + 构建（tsc && vite build）
 测试与规范（在 `src-tauri/` 下）：
 
 ```bash
-cargo test --lib                                    # 单元测试（61 个）
+cargo test --lib                                    # 后端单元测试（61 个）
 cargo test --lib -- --ignored --nocapture           # 真实开始菜单图标提取冒烟（机器相关）
 cargo fmt --check                                   # 格式检查（CI 同款）
 cargo clippy --all-targets -- -D warnings           # lint（CI 同款，零警告）
+```
+
+前端（仓库根目录）：
+
+```bash
+pnpm test                                           # 前端单元测试（vitest：分发/注册表/命令/密码生成/主题）
+pnpm build                                          # 类型检查 + 构建（tsc && vite build）
 ```
 
 前端用 Tailwind CSS v4 + shadcn/ui（组件在 `src/components/ui/`，主题令牌在 `src/index.css`）。新增 shadcn 组件：

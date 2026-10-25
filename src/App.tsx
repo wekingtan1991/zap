@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { kindUi, type ItemActions } from "@/plugins/registry";
+import { routeItem } from "@/plugins/dispatch";
 import { isPinned, type SearchItem } from "@/plugins/types";
 import {
   kickEverythingEnsure,
@@ -627,26 +628,25 @@ function AppView() {
   const runItem = useCallback(
     (it: SearchItem | undefined) => {
       if (!it || busyRef.current) return;
-      // 保护域伪条目：id 寻址（列表展示与普通条目无异，动作单独接）
-      if (it.id === "vault:add") {
-        setView({ kind: "form", data: { ...EMPTY_FORM } });
-        return;
+      // 分发决策收敛在 plugins/dispatch.ts（纯函数，可单测）；这里只执行
+      const route = routeItem(it);
+      switch (route.type) {
+        case "form-add":
+          setView({ kind: "form", data: { ...EMPTY_FORM } });
+          return;
+        case "import":
+          setView({ kind: "import" });
+          return;
+        case "activate":
+          // 路由保证 activate 存在（dispatch.ts 契约，有单测锁定）
+          route.ui.activate!(it, actions);
+          return;
+        case "external":
+          activate(it);
+          return;
+        case "none":
+          return;
       }
-      if (it.id === "vault:import") {
-        setView({ kind: "import" });
-        return;
-      }
-      const ui = kindUi(it.kind);
-      if (!ui) {
-        // 未注册 kind：按旧约定交给后端（条目结构向后兼容）
-        activate(it);
-        return;
-      }
-      if (ui.activate) {
-        ui.activate(it, actions);
-        return;
-      }
-      if (ui.external !== false) activate(it);
     },
     // actions 引用稳定的 useState setter / useCallback 闭包，逐项列出即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
