@@ -577,6 +577,11 @@ fn expand_env_vars(path: &str) -> String {
 /// 注意：SLGP_RAWPATH 按设计不展开环境变量，且可能是相对路径——两者都必须处理，
 /// 否则管理员运行/定位拿到坏路径必失败（复制路径不校验存在性，坏路径会静默扩散）
 pub fn resolve_lnk_target(path: &str) -> Option<String> {
+    // 非 .lnk 直接退出：COM 初始化 + IPersistFile::Load 对普通文件/URL 必然失败，
+    // 白走一趟（调用方对 None 回退原始路径，语义不变）
+    if !path.to_lowercase().ends_with(".lnk") {
+        return None;
+    }
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
         IPersistFile, STGM_READ,
