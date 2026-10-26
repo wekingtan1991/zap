@@ -295,7 +295,7 @@ fn cache_key(lnk: &str) -> u64 {
     h
 }
 
-fn to_data_url(png: &[u8]) -> String {
+pub(crate) fn to_data_url(png: &[u8]) -> String {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as B64;
     format!("data:image/png;base64,{}", B64.encode(png))
@@ -429,14 +429,15 @@ fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
     }
 }
 
-/// 从 .lnk 提取目标图标为 PNG（系统 32x32 大图标）；失败返回 None，前端退回角标
-fn extract_icon_png(lnk: &str) -> Option<Vec<u8>> {
+/// 从路径提取图标为 PNG（SHGetFileInfoW 系统 32x32 大图标，对任意文件/目录路径
+/// 通用，不限于 .lnk）；失败返回 None，前端退回角标
+pub(crate) fn extract_icon_png(path: &str) -> Option<Vec<u8>> {
     use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
     use windows::Win32::UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGetFileInfoW};
     use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
     use windows::core::PCWSTR;
 
-    let wide: Vec<u16> = wide(lnk);
+    let wide: Vec<u16> = wide(path);
     unsafe {
         let mut info: SHFILEINFOW = std::mem::zeroed();
         let ok = SHGetFileInfoW(

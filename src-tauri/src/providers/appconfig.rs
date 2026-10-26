@@ -29,6 +29,8 @@ pub const KEY_CLIP_HOTKEY: &str = "clip_hotkey";
 /// 超级面板直达热键（空串 = 未绑定）：抓取选中文本出动作菜单。
 /// 早版用长按右键手势，因与各应用右键菜单冲突风险大改为热键触发
 pub const KEY_SUPERPANEL_HOTKEY: &str = "superpanel_hotkey";
+/// 中转站直达热键（空串 = 未绑定）：呼出面板并进入中转站视图
+pub const KEY_STAGE_HOTKEY: &str = "stage_hotkey";
 /// 中转站未固定条目容量上限
 pub const KEY_STAGE_CAP: &str = "stage_cap";
 pub const DEFAULT_STAGE_CAP: i64 = 50;

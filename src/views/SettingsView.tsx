@@ -66,6 +66,8 @@ export interface AppSettings {
   clipHotkey: string;
   /// 超级面板直达热键（空串 = 未绑定）
   superpanelHotkey: string;
+  /// 中转站直达热键（空串 = 未绑定）
+  stageHotkey: string;
   clipEnabled: boolean;
   clipMax: number;
   /// 剪贴板条目选中后自动粘贴到原窗口
@@ -115,7 +117,7 @@ const formatHotkey = (hk: string) =>
     .join(" + ");
 
 /// 录制中的槽位：main = 呼出热键，vault/clip/superpanel = 直达热键
-type HkSlot = "main" | "vault" | "clip" | "superpanel";
+type HkSlot = "main" | "vault" | "clip" | "superpanel" | "stage";
 
 /// 热键录制键帽（呼出与直达共用）：点击录制、Esc 取消；带 onClear 的槽位可解绑
 function HotkeyButton({
@@ -310,6 +312,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           appearance: res.appearance ?? "dark",
           panelTransparency: res.panelTransparency ?? true,
           superpanelHotkey: res.superpanelHotkey ?? "",
+          stageHotkey: res.stageHotkey ?? "",
           vaultHotkey: res.vaultHotkey ?? "",
           clipHotkey: res.clipHotkey ?? "",
           plugins: (res.plugins ?? []).map((p) => ({
@@ -355,6 +358,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         if (hkSlot === "main") return { ...s, hotkey: key };
         if (hkSlot === "vault") return { ...s, vaultHotkey: key };
         if (hkSlot === "superpanel") return { ...s, superpanelHotkey: key };
+        if (hkSlot === "stage") return { ...s, stageHotkey: key };
         return { ...s, clipHotkey: key };
       });
       setHkSlot(null);
@@ -401,6 +405,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         if (hkSlot === "main") return { ...s, hotkey: combo };
         if (hkSlot === "vault") return { ...s, vaultHotkey: combo };
         if (hkSlot === "superpanel") return { ...s, superpanelHotkey: combo };
+        if (hkSlot === "stage") return { ...s, stageHotkey: combo };
         return { ...s, clipHotkey: combo };
       });
       setHkSlot(null);
@@ -463,6 +468,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         vaultHotkey: st.vaultHotkey ?? "",
         clipHotkey: st.clipHotkey ?? "",
         superpanelHotkey: st.superpanelHotkey ?? "",
+        stageHotkey: st.stageHotkey ?? "",
         clipEnabled: st.clipEnabled,
         clipMax: st.clipMax,
         clipAutoPaste: st.clipAutoPaste ?? true,
@@ -584,6 +590,20 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             onClear={() =>
               setSt((s) => (s ? { ...s, superpanelHotkey: "" } : s))
             }
+          />
+        </div>
+        <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <span className="flex min-w-0 flex-col gap-px">
+            <span className="text-[13px]">中转站直达</span>
+            <span className="text-[11px] leading-snug text-muted-foreground">
+              呼出面板并进入中转站，可直接拖入文件/文件夹
+            </span>
+          </span>
+          <HotkeyButton
+            value={st.stageHotkey ?? ""}
+            recording={hkSlot === "stage"}
+            onRecord={() => startRecording("stage")}
+            onClear={() => setSt((s) => (s ? { ...s, stageHotkey: "" } : s))}
           />
         </div>
         {hkError && (
