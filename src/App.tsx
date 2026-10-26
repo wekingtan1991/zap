@@ -279,16 +279,37 @@ function AppView() {
     };
   }, []);
 
+  // ---------- 中转站 ----------
+  // 视图期间 hold 住面板：拖拽自资源管理器的第一步就把焦点交给了 Explorer，
+  // 失焦即隐会直接杀死拖放——hold 是拖拽落区的前提。释放只挂在几个出口：
+  // 返回/Esc（closeStage）、进设置页（openSettings/closeSettings 统一释放）、
+  // 任何隐藏路径（后端 hide_panel_window 统一释放）与重新呼出（后端兜底清零）
+
+  const openStage = useCallback(() => {
+    void invoke("set_hold_panel", { hold: true }).catch(() => {});
+    setView({ kind: "stage" });
+  }, []);
+
+  const closeStage = useCallback(() => {
+    void invoke("set_hold_panel", { hold: false }).catch(() => {});
+    setView({ kind: "main" });
+    setTimeout(() => inputRef.current?.focus(), 30);
+  }, []);
+
   // 直达热键预设词：Rust 在 shown 之后追加发出（顺序即生效顺序），
-  // 据此让面板直接落在账号库等保护域
+  // 据此让面板直接落在账号库等保护域；"stage" 是视图名不是搜索词，直接切视图
   useEffect(() => {
     const un = listen<string>("zap://preset", (e) => {
+      if (e.payload === "stage") {
+        openStage();
+        return;
+      }
       setQuery(e.payload);
     });
     return () => {
       un.then((f) => f());
     };
-  }, []);
+  }, [openStage]);
 
   // 普通域搜索（账号库保护域下不生效；万能输入框识别与工具入口条目
   // 由后端 probe/entry 在 search 结果里置顶返回，前端无感知）
@@ -357,10 +378,14 @@ function AppView() {
   const updater = useUpdater();
 
   const openSettings = useCallback(() => {
+    // 释放视图残留的 hold（中转站视图经托盘/Ctrl+, 进设置时不能带着幽灵 hold；
+    // 更新下载等自持 hold 的流程有自己的 finally 兜底，此处释放无冲突）
+    void invoke("set_hold_panel", { hold: false }).catch(() => {});
     setView({ kind: "settings" });
   }, []);
 
   const closeSettings = useCallback(() => {
+    void invoke("set_hold_panel", { hold: false }).catch(() => {});
     setView({ kind: "main" });
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
@@ -647,21 +672,6 @@ function AppView() {
   }, []);
 
   // ---------- 中转站 ----------
-  // 视图期间 hold 住面板：拖拽自资源管理器的第一步就把焦点交给了 Explorer，
-  // 失焦即隐会直接杀死拖放——hold 是拖拽落区的前提。释放只挂在两个出口：
-  // 返回/Esc（closeStage）与任何隐藏路径（后端 hide_panel_window 统一释放）
-
-  const openStage = useCallback(() => {
-    void invoke("set_hold_panel", { hold: true }).catch(() => {});
-    setView({ kind: "stage" });
-  }, []);
-
-  const closeStage = useCallback(() => {
-    void invoke("set_hold_panel", { hold: false }).catch(() => {});
-    setView({ kind: "main" });
-    setTimeout(() => inputRef.current?.focus(), 30);
-  }, []);
-
   /// 搜索结果右键「放入中转站」：失败明细由 stage_add 返回，这里只报成败
   const stageAdd = useCallback(async (it: SearchItem) => {
     try {

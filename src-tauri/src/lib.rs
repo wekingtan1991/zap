@@ -23,12 +23,14 @@ const PANEL_WIDTH: f64 = 720.0;
 const PANEL_HEIGHT: f64 = 480.0;
 
 /// 直达热键的动作：账号库 = 呼出面板并进入 pw 保护域；快速粘贴 = 不经面板，
-/// 把最近一条剪贴板内容粘贴到当前前台窗口；超级面板 = 抓取选中文本出动作菜单
+/// 把最近一条剪贴板内容粘贴到当前前台窗口；超级面板 = 抓取选中文本出动作菜单；
+/// 中转站 = 呼出面板并直接落中转站视图
 #[derive(Clone, Copy)]
 enum DirectKind {
     Vault,
     QuickPaste,
     SuperPanel,
+    Stage,
 }
 
 struct AppState {
@@ -219,6 +221,8 @@ struct AppSettingsDto {
     clip_hotkey: String,
     /// 超级面板直达热键（空串 = 未绑定）
     superpanel_hotkey: String,
+    /// 中转站直达热键（空串 = 未绑定）
+    stage_hotkey: String,
     clip_enabled: bool,
     clip_max: i64,
     /// 剪贴板条目选中后自动粘贴到原窗口
@@ -251,6 +255,10 @@ fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSetting
         superpanel_hotkey: state
             .engine
             .get_setting(providers::appconfig::KEY_SUPERPANEL_HOTKEY)
+            .unwrap_or_default(),
+        stage_hotkey: state
+            .engine
+            .get_setting(providers::appconfig::KEY_STAGE_HOTKEY)
             .unwrap_or_default(),
         clip_enabled: providers::clipboard::CLIP_ENABLED.load(Ordering::Relaxed),
         clip_max: providers::clipboard::RETENTION_LIMIT.load(Ordering::Relaxed),
@@ -308,6 +316,7 @@ fn save_settings(
     vault_hotkey: Option<String>,
     clip_hotkey: Option<String>,
     superpanel_hotkey: Option<String>,
+    stage_hotkey: Option<String>,
     clip_enabled: bool,
     clip_max: i64,
     clip_autopaste: Option<bool>,
@@ -377,6 +386,11 @@ fn save_settings(
                 superpanel_hotkey,
                 providers::appconfig::KEY_SUPERPANEL_HOTKEY,
                 DirectKind::SuperPanel,
+            ),
+            (
+                stage_hotkey,
+                providers::appconfig::KEY_STAGE_HOTKEY,
+                DirectKind::Stage,
             ),
         ] {
             let Some(raw) = raw else { continue };
@@ -1009,6 +1023,23 @@ async fn stage_copy_file(paths: Vec<String>) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
+/// 撤销恢复：原样插回刚移出/清空的条目（含固定态与时间戳；路径已被重新放入则忽略）
+#[tauri::command]
+async fn stage_restore(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    is_dir: bool,
+    pinned: bool,
+    added_at: i64,
+) -> Result<bool, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine.stage_restore(&path, is_dir, pinned, added_at)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 前台窗口的根窗口是否是本面板（WebView2 子窗口夺焦时 tao 会误报 Focused(false)）
 #[cfg(windows)]
 fn foreground_belongs_to_panel(window: &tauri::Window) -> bool {
@@ -1058,6 +1089,9 @@ pub(crate) fn toggle_panel(app: &AppHandle, preset: Option<&str>) {
         return;
     }
     let state = app.state::<AppState>();
+    // 呼出即作废旧视图残留的 hold：中转站视图借用 hold 对抗失焦即隐，
+    // 视图切换路径（如中转站→设置）可能漏释放，呼出时统一清零兜底
+    state.hold_panel.store(false, Ordering::Relaxed);
     // 前台窗口必须在 show 之前记：show+set_focus 后前台就换成面板了
     *state
         .prev_foreground
@@ -1198,6 +1232,7 @@ pub fn run() {
                         match direct {
                             Some(DirectKind::Vault) => toggle_panel(app, Some("pw")),
                             Some(DirectKind::QuickPaste) => quick_paste_latest(app),
+                            Some(DirectKind::Stage) => toggle_panel(app, Some("stage")),
                             Some(DirectKind::SuperPanel) => {
                                 // 抓取+识别+展示是重活（最长 ~400ms），压后台线程做
                                 let handle = app.clone();
@@ -1253,6 +1288,7 @@ pub fn run() {
             stage_clear,
             stage_pin,
             stage_relocate,
+            stage_restore,
             stage_copy_file,
             everything_status,
             everything_ensure,
@@ -1347,7 +1383,7 @@ pub fn run() {
                 eprintln!("zap: 呼出热键注册失败，仅可通过托盘呼出面板");
             }
 
-            // 直达热键：账号库 / 快速粘贴 / 超级面板
+            // 直达热键：账号库 / 快速粘贴 / 超级面板 / 中转站
             // （未绑定 = 空串；注册失败仅落日志不影响启动）
             let mut direct = HashMap::new();
             for (cfg_key, kind) in [
@@ -1360,6 +1396,7 @@ pub fn run() {
                     providers::appconfig::KEY_SUPERPANEL_HOTKEY,
                     DirectKind::SuperPanel,
                 ),
+                (providers::appconfig::KEY_STAGE_HOTKEY, DirectKind::Stage),
             ] {
                 let hk = engine
                     .get_setting(cfg_key)

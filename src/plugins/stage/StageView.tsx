@@ -23,6 +23,8 @@ interface StageRow {
   isDir: boolean;
   pinned: boolean;
   missing: boolean;
+  icon?: string | null;
+  addedAt: number;
 }
 
 /// 右键菜单项：run 缺省 = 纯占位（配合 disabled）
@@ -45,8 +47,9 @@ interface Props {
   onClose: () => void;
 }
 
-/// 中转站视图：拖入即存（存路径引用不存副本）、双击/Enter 打开、右键操作、
-/// 固定条目置顶且不被容量淘汰，失效条目灰显可重新定位。
+/// 中转站视图：拖入即存（存路径引用不存副本）、点击/Enter 打开（与主列表
+/// 单击即开心智一致，误开无破坏性）、右键操作、固定条目置顶且不被容量淘汰，
+/// 失效条目灰显可重新定位，移出/清空支持 toast 撤销。
 /// 视图打开期间面板被 AppView 置为 hold（拖拽自资源管理器时焦点在 Explorer，
 /// 面板不能失焦即隐）；Esc / 返回由 AppView 释放 hold。
 export function StageView({ focusRef, onClose }: Props) {
@@ -124,7 +127,7 @@ export function StageView({ focusRef, onClose }: Props) {
     activeItemRef.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
-  /// 打开（双击 / Enter 共用）：交给后端 open_item 的 stage 分支，
+  /// 打开（点击 / Enter 共用）：交给后端 open_item 的 stage 分支，
   /// 成功即收面板（与普通条目启动同口径）
   const openRow = useCallback((row: StageRow) => {
     if (row.missing) {
@@ -193,12 +196,20 @@ export function StageView({ focusRef, onClose }: Props) {
     [load]
   );
 
-  const removeRow = useCallback(
-    async (row: StageRow) => {
+  /// 撤销恢复：按快照原样插回（含固定态与时间戳，排序位不变；
+  /// 路径已被重新放入时后端幂等忽略）
+  const restoreRows = useCallback(
+    async (snapshot: StageRow[]) => {
       try {
-        await invoke("stage_remove", { id: row.id });
+        for (const r of snapshot) {
+          await invoke("stage_restore", {
+            path: r.path,
+            isDir: r.isDir,
+            pinned: r.pinned,
+            addedAt: r.addedAt,
+          });
+        }
         await load();
-        toast.success("已移出中转站（原文件不受影响）");
       } catch (e) {
         toast.error(String(e));
       }
@@ -206,15 +217,37 @@ export function StageView({ focusRef, onClose }: Props) {
     [load]
   );
 
+  const removeRow = useCallback(
+    async (row: StageRow) => {
+      try {
+        await invoke("stage_remove", { id: row.id });
+        await load();
+        toast.success("已移出中转站（原文件不受影响）", {
+          action: { label: "撤销", onClick: () => void restoreRows([row]) },
+          duration: 6000,
+        });
+      } catch (e) {
+        toast.error(String(e));
+      }
+    },
+    [load, restoreRows]
+  );
+
   const clearUnpinned = useCallback(async () => {
+    // 清空前持快照供撤销（撤销按原样插回，顺序与固定态不丢）
+    const snapshot = rows.filter((r) => !r.pinned);
+    if (snapshot.length === 0) return;
     try {
       const n = await invoke<number>("stage_clear");
       await load();
-      toast.success(`已清空 ${n} 条（固定条目保留）`);
+      toast.success(`已清空 ${n} 条（固定条目保留）`, {
+        action: { label: "撤销", onClick: () => void restoreRows(snapshot) },
+        duration: 6000,
+      });
     } catch (e) {
       toast.error(String(e));
     }
-  }, [load]);
+  }, [rows, load, restoreRows]);
 
   const addFilesDialog = useCallback(async () => {
     const picked = await pickPath({ multiple: true });
@@ -362,8 +395,7 @@ export function StageView({ focusRef, onClose }: Props) {
                 (row.missing ? " zap-stage-dead" : "")
               }
               onMouseEnter={() => setActive(i)}
-              onClick={() => setActive(i)}
-              onDoubleClick={() => openRow(row)}
+              onClick={() => openRow(row)}
               onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -371,7 +403,11 @@ export function StageView({ focusRef, onClose }: Props) {
                 setMenu({ x: e.clientX, y: e.clientY, row });
               }}
             >
-              <Badge variant="file">{row.isDir ? "文件夹" : "文件"}</Badge>
+              {row.icon ? (
+                <img className="zap-ico" src={row.icon} alt="" draggable={false} />
+              ) : (
+                <Badge variant="file">{row.isDir ? "文件夹" : "文件"}</Badge>
+              )}
               <div className="zap-texts">
                 <div className="zap-title">
                   {row.missing && (
@@ -433,7 +469,7 @@ export function StageView({ focusRef, onClose }: Props) {
       )}
       <div className="zap-footer">
         <span className="zap-footer-hints">
-          <span>拖入即存 · 双击 / Enter 打开 · 右键更多操作</span>
+          <span>拖入即存 · 点击 / Enter 打开 · 右键更多操作</span>
         </span>
         <span className="zap-footer-hints">
           <span>固定条目永不清出</span>

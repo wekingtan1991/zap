@@ -284,16 +284,22 @@ impl SearchEngine {
     }
 
     // ---------- 中转站 ----------
+    // 锁纪律：磁盘 IO（resolve 的 metadata/lnk 解析、finish 的存在性+图标）
+    // 一律在锁外，锁内只做纯库操作——网络路径的 stat 可达秒级
 
     pub fn stage_list(&self) -> Vec<stage::StageRecord> {
-        let conn = self.clip.lock().expect("clip db poisoned");
-        stage::list(&conn)
+        let rows = {
+            let conn = self.clip.lock().expect("clip db poisoned");
+            stage::rows(&conn)
+        };
+        stage::finish(rows)
     }
 
     /// 批量放入：逐条尝试，个别失败不影响其余（失败明细回传前端提示）
     pub fn stage_add(&self, paths: &[String]) -> stage::StageAddOutcome {
+        let resolved = stage::resolve_paths(paths);
         let conn = self.clip.lock().expect("clip db poisoned");
-        stage::add(&conn, paths)
+        stage::commit_add(&conn, resolved)
     }
 
     pub fn stage_remove(&self, id: i64) -> Result<(), String> {
@@ -312,8 +318,21 @@ impl SearchEngine {
     }
 
     pub fn stage_relocate(&self, id: i64, path: &str) -> Result<(), String> {
+        let (p, is_dir) = stage::resolve_relocate(path)?;
         let conn = self.clip.lock().expect("clip db poisoned");
-        stage::relocate(&conn, id, path)
+        stage::commit_relocate(&conn, id, &p, is_dir)
+    }
+
+    /// 撤销恢复：原样插回刚移出/清空的条目（返回是否落库，false = 路径已重新放入）
+    pub fn stage_restore(
+        &self,
+        path: &str,
+        is_dir: bool,
+        pinned: bool,
+        added_at: i64,
+    ) -> Result<bool, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::restore(&conn, path, is_dir, pinned, added_at)
     }
 
     pub fn vault_add(

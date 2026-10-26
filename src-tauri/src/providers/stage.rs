@@ -2,8 +2,12 @@
 //! 两层结构 = 临时（可被容量淘汰、可一键清空）+ 固定（永不清出，置顶展示），
 //! 与剪贴板历史的「容量让位于固定」同一套行为模式。
 //! 死链不自动删：列表时点查存在性，前端灰显 + 右键「重新定位」重绑路径。
-//! 入口 = 声明化入口词（entry_hit），条目 kind=stage，激活切到前端 StageView
+//! 入口 = 声明化入口词（entry_hit），条目 kind=stage，激活切到前端 StageView。
+//! 锁纪律：所有磁盘 IO（lnk 解析、存在性 metadata、图标提取）一律在共享库锁外
+//! 进行——网络路径的 stat 可达秒级，进锁会拖死共用连接的 vault 与设置操作
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use rusqlite::{Connection, params};
@@ -29,6 +33,9 @@ pub struct StageRecord {
     pub pinned: bool,
     /// 路径已失效（原文件/文件夹不存在）：列表时点查，不自动删
     pub missing: bool,
+    /// 文件图标 data URL（PNG，按扩展名缓存）；失效条目不提取
+    pub icon: Option<String>,
+    pub added_at: i64,
 }
 
 /// 批量放入结果：added = 新增条数（重复放入计 0，仅置顶）；
@@ -71,12 +78,44 @@ fn normalize(raw: &str) -> Result<String, String> {
     Ok(p)
 }
 
-/// 放入一条：存在性校验 → 去重置顶（UNIQUE 冲突仅提升 added_at）→ 容量淘汰。
-/// 重复放入保留既有固定态（重复 = 再次置顶，不是取消固定）
-pub fn add_one(conn: &Connection, raw: &str) -> Result<i64, String> {
+/// 锁外解析单条：归一化 + 存在性 metadata（磁盘 IO 不持锁）
+fn resolve_one(raw: &str) -> Result<(String, bool), String> {
     let p = normalize(raw)?;
     let meta = std::fs::metadata(&p).map_err(|_| format!("路径不存在：{p}"))?;
-    let is_dir = meta.is_dir() as i64;
+    Ok((p, meta.is_dir()))
+}
+
+/// 批量解析待放入路径（锁外执行，调用方随后只持锁写库）
+pub fn resolve_paths(paths: &[String]) -> Vec<Result<(String, bool), String>> {
+    paths.iter().map(|p| resolve_one(p)).collect()
+}
+
+/// 锁内提交放入：逐条入库（个别失败不影响其余），返回新增数/总数/失败明细
+pub fn commit_add(
+    conn: &Connection,
+    resolved: Vec<Result<(String, bool), String>>,
+) -> StageAddOutcome {
+    let mut outcome = StageAddOutcome {
+        added: 0,
+        total: 0,
+        failed: Vec::new(),
+    };
+    for r in resolved {
+        match r {
+            Ok((p, is_dir)) => match insert_one(conn, &p, is_dir) {
+                Ok(is_new) => outcome.added += i64::from(is_new),
+                Err(e) => outcome.failed.push(e),
+            },
+            Err(e) => outcome.failed.push(e),
+        }
+    }
+    outcome.total = count(conn);
+    outcome
+}
+
+/// 锁内入库一条：返回是否新增。重复放入 = 严格置顶（取「库内最大 added_at + 1」，
+/// 与同毫秒新插入拉开差距），保留既有固定态（重复 = 再次置顶，不是取消固定）
+fn insert_one(conn: &Connection, p: &str, is_dir: bool) -> Result<bool, String> {
     let existed: bool = conn
         .query_row(
             "SELECT 1 FROM stage_items WHERE path=?1",
@@ -85,8 +124,6 @@ pub fn add_one(conn: &Connection, raw: &str) -> Result<i64, String> {
         )
         .unwrap_or(false);
     conn.execute(
-        // 重复放入 = 严格置顶：取「库内最大 added_at + 1」，与同毫秒新插入的
-        // 条目拉开差距（新插入同为 now_ms 时由 id DESC 次序兜底新者在前）
         "INSERT INTO stage_items(path, is_dir, pinned, added_at) VALUES(?1, ?2, 0, ?3)
          ON CONFLICT(path) DO UPDATE SET
              added_at=(SELECT COALESCE(MAX(added_at),0) FROM stage_items)+1",
@@ -94,10 +131,11 @@ pub fn add_one(conn: &Connection, raw: &str) -> Result<i64, String> {
     )
     .map_err(|e| e.to_string())?;
     evict_beyond_cap(conn);
-    Ok(if existed { 0 } else { 1 })
+    Ok(!existed)
 }
 
-/// 未固定条目超出容量时挤掉最旧的（固定条目不参与，同剪贴板清理口径）
+/// 未固定条目超出容量时挤掉最旧的（固定条目不参与，同剪贴板清理口径）。
+/// added_at 同毫秒时 id DESC 兜底确定性
 fn evict_beyond_cap(conn: &Connection) {
     let _ = conn.execute(
         "DELETE FROM stage_items WHERE pinned=0 AND id NOT IN (
@@ -114,67 +152,101 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 批量放入：逐条尝试，个别失败不影响其余；全部失败才整体报错
-pub fn add(conn: &Connection, paths: &[String]) -> StageAddOutcome {
-    let mut outcome = StageAddOutcome {
-        added: 0,
-        total: 0,
-        failed: Vec::new(),
-    };
-    for p in paths {
-        match add_one(conn, p) {
-            Ok(n) => outcome.added += n,
-            Err(e) => outcome.failed.push(e),
-        }
-    }
-    outcome.total = count(conn);
-    outcome
-}
-
 pub fn count(conn: &Connection) -> i64 {
     conn.query_row("SELECT COUNT(*) FROM stage_items", [], |r| r.get(0))
         .unwrap_or(0)
 }
 
-/// 列表：固定在上（按放入时间），其后临时按放入时间倒序。
-/// missing 现场点查（symlink 目标失效时 metadata 兜不住，exists 走真实解析）
-pub fn list(conn: &Connection) -> Vec<StageRecord> {
+/// 锁内取行：纯库操作，不做存在性/图标（磁盘 IO 出锁，见模块头锁纪律）
+pub struct StageRowData {
+    pub id: i64,
+    pub path: String,
+    pub is_dir: bool,
+    pub pinned: bool,
+    pub added_at: i64,
+}
+
+pub fn rows(conn: &Connection) -> Vec<StageRowData> {
     let mut stmt = match conn.prepare(
-        "SELECT id, path, is_dir, pinned FROM stage_items ORDER BY pinned DESC, added_at DESC, id DESC",
+        "SELECT id, path, is_dir, pinned, added_at FROM stage_items
+         ORDER BY pinned DESC, added_at DESC, id DESC",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let rows = match stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, i64>(2)?,
-            r.get::<_, i64>(3)?,
-        ))
+    let mapped = match stmt.query_map([], |r| {
+        Ok(StageRowData {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            is_dir: r.get::<_, i64>(2)? != 0,
+            pinned: r.get::<_, i64>(3)? != 0,
+            added_at: r.get(4)?,
+        })
     }) {
-        Ok(r) => r,
+        Ok(m) => m,
         Err(_) => return Vec::new(),
     };
-    // query_map 迭代借用 stmt，先收行再做存在性点查
-    let mut out = Vec::new();
-    for row in rows.flatten() {
-        let (id, path, is_dir, pinned) = row;
-        let name = std::path::Path::new(&path)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.clone());
-        let missing = !std::path::Path::new(&path).exists();
-        out.push(StageRecord {
-            id,
-            name,
-            path,
-            is_dir: is_dir != 0,
-            pinned: pinned != 0,
-            missing,
-        });
+    mapped.flatten().collect()
+}
+
+/// 锁外补全：存在性点查（symlink 目标失效时 metadata 兜不住，exists 走真实解析）
+/// + 图标。missing 现场判定、不自动删
+pub fn finish(rows: Vec<StageRowData>) -> Vec<StageRecord> {
+    rows.into_iter()
+        .map(|r| {
+            let missing = !std::path::Path::new(&r.path).exists();
+            let name = std::path::Path::new(&r.path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| r.path.clone());
+            let icon = if missing {
+                None
+            } else {
+                icon_for(&r.path, r.is_dir)
+            };
+            StageRecord {
+                id: r.id,
+                name,
+                path: r.path,
+                is_dir: r.is_dir,
+                pinned: r.pinned,
+                missing,
+                icon,
+                added_at: r.added_at,
+            }
+        })
+        .collect()
+}
+
+/// 图标缓存：文件图标只由扩展名决定（目录统一一份），按扩展名惰性提取——
+/// 几十个扩展名即覆盖全部条目，远轻于按路径缓存
+static ICON_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Option<String>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 缓存键：目录固定 "/"，与无扩展名文件不共用
+fn icon_cache_key(path: &str, is_dir: bool) -> String {
+    if is_dir {
+        return "/".to_string();
     }
-    out
+    std::path::Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
+/// 提取失败也缓存 None：同扩展名不反复打系统调用
+fn icon_for(path: &str, is_dir: bool) -> Option<String> {
+    let key = icon_cache_key(path, is_dir);
+    if let Ok(cache) = ICON_CACHE.lock()
+        && let Some(hit) = cache.get(&key)
+    {
+        return hit.clone();
+    }
+    let icon = super::apps::extract_icon_png(path).map(|png| super::apps::to_data_url(&png));
+    if let Ok(mut cache) = ICON_CACHE.lock() {
+        cache.insert(key, icon.clone());
+    }
+    icon
 }
 
 /// 移出中转站（只删引用，不碰原文件）
@@ -212,20 +284,42 @@ pub fn pin_toggle(conn: &Connection, id: i64) -> Result<bool, String> {
     Ok(next != 0)
 }
 
-/// 重新定位：为失效条目重绑路径（保留固定态与加入时间）
-pub fn relocate(conn: &Connection, id: i64, raw: &str) -> Result<(), String> {
-    let p = normalize(raw)?;
-    let meta = std::fs::metadata(&p).map_err(|_| format!("路径不存在：{p}"))?;
+/// 锁外解析重定位目标（normalize + 存在性，磁盘 IO 不持锁）
+pub fn resolve_relocate(raw: &str) -> Result<(String, bool), String> {
+    resolve_one(raw)
+}
+
+/// 锁内提交重定位：换绑路径（保留固定态与加入时间）
+pub fn commit_relocate(conn: &Connection, id: i64, path: &str, is_dir: bool) -> Result<(), String> {
     let n = conn
         .execute(
             "UPDATE stage_items SET path=?1, is_dir=?2 WHERE id=?3",
-            params![p, meta.is_dir() as i64, id],
+            params![path, is_dir as i64, id],
         )
         .map_err(|e| e.to_string())?;
     if n == 0 {
         return Err("条目不存在".into());
     }
     Ok(())
+}
+
+/// 撤销恢复：原样插回刚移出/清空的条目（含固定态与时间戳，排序位不变）。
+/// 不走 normalize/metadata——恢复的是自家刚删掉的数据；路径已被重新放入时
+/// 幂等忽略；刻意不触发容量淘汰（恢复不应立刻挤出条目，上限在下次放入时收敛）
+pub fn restore(
+    conn: &Connection,
+    path: &str,
+    is_dir: bool,
+    pinned: bool,
+    added_at: i64,
+) -> Result<bool, String> {
+    let n = conn
+        .execute(
+            "INSERT OR IGNORE INTO stage_items(path, is_dir, pinned, added_at) VALUES(?1, ?2, ?3, ?4)",
+            params![path, is_dir as i64, pinned as i64, added_at],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
 }
 
 /// 复制文件到剪贴板（CF_HDROP）：粘贴到任意对话框/资源管理器即为复制原文件。
@@ -306,7 +400,7 @@ impl super::plugin::Plugin for StagePlugin {
         vec![SearchItem {
             id: "stage:entry".into(),
             title: "打开中转站".into(),
-            subtitle: "拖入文件/文件夹随手暂存 · 双击打开 · 常用可固定".into(),
+            subtitle: "拖入文件/文件夹随手暂存 · 点击打开 · 常用可固定".into(),
             kind: "stage".into(),
             target: "entry".into(),
             icon: None,
@@ -318,7 +412,7 @@ impl super::plugin::Plugin for StagePlugin {
         Some(super::plugin::PluginMeta {
             id: "stage",
             title: "中转站",
-            hint: "拖入文件/文件夹随手暂存：双击打开、右键操作，常用文件夹可固定不被清出",
+            hint: "拖入文件/文件夹随手暂存：点击打开、右键操作，常用文件夹可固定不被清出",
             key: "plugin_stage",
             default_on: true,
             state: &STAGE_ON,
@@ -337,7 +431,7 @@ mod tests {
         conn
     }
 
-    /// 测试用临时文件（存在性是 add 的硬校验）
+    /// 测试用临时文件（存在性是 resolve 的硬校验）
     fn temp_file(tag: &str) -> String {
         let p =
             std::env::temp_dir().join(format!("zap-stage-test-{}-{}.txt", std::process::id(), tag));
@@ -350,6 +444,16 @@ mod tests {
             std::env::temp_dir().join(format!("zap-stage-test-dir-{}-{}", std::process::id(), tag));
         let _ = std::fs::create_dir_all(&p);
         p.to_string_lossy().into_owned()
+    }
+
+    /// 测试装配：resolve + commit 两段（生产走引擎同名拆分）
+    fn add(conn: &Connection, paths: &[String]) -> StageAddOutcome {
+        commit_add(conn, resolve_paths(paths))
+    }
+
+    /// 测试装配：rows + finish
+    fn list(conn: &Connection) -> Vec<StageRecord> {
+        finish(rows(conn))
     }
 
     #[test]
@@ -365,8 +469,8 @@ mod tests {
         let out = add(&conn, std::slice::from_ref(&a));
         assert_eq!(out.added, 0);
         assert_eq!(out.total, 2);
-        let list = list(&conn);
-        assert_eq!(list[0].path, a, "重复放入应置顶");
+        let rows = list(&conn);
+        assert_eq!(rows[0].path, a, "重复放入应置顶");
         // 不存在与 shell: 拒绝
         let out = add(&conn, &["C:\\zap-不存在-xyz".into()]);
         assert_eq!(out.added, 0);
@@ -420,9 +524,10 @@ mod tests {
         let cleared = clear(&conn).unwrap();
         assert_eq!(cleared, 1, "固定条目保留");
         assert_eq!(count(&conn), 1);
-        // 重定位：换绑到另一真实路径，固定态保留
+        // 重定位：换绑到另一真实路径，固定态保留（resolve 锁外 + commit 锁内）
         let c = temp_file("d3");
-        relocate(&conn, id_b, &c).unwrap();
+        let (p, is_dir) = resolve_relocate(&c).unwrap();
+        commit_relocate(&conn, id_b, &p, is_dir).unwrap();
         let rows = list(&conn);
         assert_eq!(rows[0].path, c);
         assert!(rows[0].pinned);
@@ -435,16 +540,64 @@ mod tests {
     }
 
     #[test]
+    fn 撤销恢复原样插回且幂等() {
+        let conn = mem_conn();
+        let a = temp_file("r1");
+        let b = temp_file("r2");
+        add(&conn, &[a.clone(), b.clone()]);
+        let rows = list(&conn);
+        let b_row = rows.iter().find(|r| r.path == b).unwrap().clone();
+        remove(&conn, b_row.id).unwrap();
+        assert_eq!(count(&conn), 1);
+        // 原样插回：id 会变，但时间戳/固定态/排序位不变
+        assert!(
+            restore(
+                &conn,
+                &b_row.path,
+                b_row.is_dir,
+                b_row.pinned,
+                b_row.added_at
+            )
+            .unwrap()
+        );
+        let rows = list(&conn);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].path, b_row.path, "撤销恢复后回到原排序位");
+        assert!(!rows[0].pinned);
+        // 路径已在库中（用户重新放入过）：幂等忽略
+        assert!(!restore(&conn, &b_row.path, false, false, 0).unwrap());
+        let _ = std::fs::remove_file(a);
+        let _ = std::fs::remove_file(b);
+    }
+
+    #[test]
     fn 死链不自动删标记失效() {
         let conn = mem_conn();
         let a = temp_file("e1");
         add(&conn, std::slice::from_ref(&a));
         assert!(!list(&conn)[0].missing);
         let _ = std::fs::remove_file(&a);
-        let list = list(&conn);
-        assert_eq!(list.len(), 1, "死链保留在列表");
-        assert!(list[0].missing);
-        remove(&conn, list[0].id).unwrap();
+        let rows = list(&conn);
+        assert_eq!(rows.len(), 1, "死链保留在列表");
+        assert!(rows[0].missing);
+        assert!(rows[0].icon.is_none(), "失效条目不提取图标");
+        remove(&conn, rows[0].id).unwrap();
+    }
+
+    #[test]
+    fn 图标缓存键按扩展名归一() {
+        assert_eq!(icon_cache_key("C:\\a\\b.TXT", false), "txt");
+        assert_eq!(
+            icon_cache_key("C:\\a\\b.tar.gz", false),
+            "gz",
+            "只取末段扩展名"
+        );
+        assert_eq!(icon_cache_key("C:\\a\\noext", false), "");
+        assert_eq!(
+            icon_cache_key("C:\\a\\dir", true),
+            "/",
+            "目录与无扩展名文件不可共用键"
+        );
     }
 
     #[test]
