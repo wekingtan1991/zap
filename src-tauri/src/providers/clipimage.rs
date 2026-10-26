@@ -234,6 +234,16 @@ pub fn get(conn: &Connection, id: i64) -> Option<(u32, u32, Vec<u8>)> {
     .ok()
 }
 
+/// 行号是否仍有图片：open_item 的同步错误路径用，只探存在性不拖 PNG 大字段
+pub fn exists(conn: &Connection, id: i64) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM clipboard_images WHERE id=?1",
+        params![id],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
 /// 图片表固定/取消固定（pin_toggle 在文本表未命中时落到这里，返回操作后状态）
 pub fn pin_toggle(conn: &Connection, id: i64) -> Result<bool, String> {
     let changed = conn

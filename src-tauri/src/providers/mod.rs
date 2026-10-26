@@ -256,6 +256,12 @@ impl SearchEngine {
         clipimage::get(&conn, id)
     }
 
+    /// 剪贴板图片行号是否仍存在：open_item 的同步错误路径用，不拖 PNG 大字段
+    pub fn clip_image_exists(&self, id: i64) -> bool {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipimage::exists(&conn, id)
+    }
+
     /// 后台重建应用索引（面板呼出时调用）。10 秒内已扫过则跳过，
     /// 避免连续呼出反复走目录树 + UWP 枚举；false = 本次跳过或上次未完成
     pub fn refresh_apps(&self) -> bool {

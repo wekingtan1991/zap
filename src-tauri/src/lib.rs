@@ -345,8 +345,11 @@ fn save_settings(
     }
 
     // 直达热键槽位：None = 旧前端未带键跳过；空串 = 解绑；其余 = 注册
-    // （失败记 direct_hotkey_error 不阻塞其余保存，与主热键同口径）
-    let mut direct_hotkey_error: Option<String> = None;
+    // （失败逐条记入 direct_errors 不阻塞其余保存，与主热键同口径）
+    let mut direct_errors: Vec<String> = Vec::new();
+    // 已被占用的键：主呼出热键 + 先处理的直达槽位，后槽位同键直接拒绝
+    // （否则槽位间冲突会上游报「被其他程序占用」，实为自家槽位，误导）
+    let mut taken = vec![hotkey.clone()];
     {
         let gs = app.global_shortcut();
         for (raw, cfg_key, kind) in [
@@ -368,7 +371,8 @@ fn save_settings(
         ] {
             let Some(raw) = raw else { continue };
             let norm = raw.trim().to_lowercase();
-            // 旧绑定先解绑（无论换成什么值）
+            let mut map = state.direct_hotkeys.lock().expect("direct poisoned");
+            // 旧绑定先解绑并移出热键表（无论换成什么值），死键不能留到重启
             let old = state
                 .engine
                 .get_setting(cfg_key)
@@ -380,32 +384,39 @@ fn save_settings(
             }
             if norm.is_empty() {
                 state.engine.set_setting(cfg_key, "")?;
+                map.remove(&old);
                 continue;
             }
-            if norm == hotkey {
-                direct_hotkey_error = Some("直达热键不能与呼出热键相同".into());
+            // 同键冲突：拒绝并恢复原绑定（旧绑定已解绑，不恢复就丢了）
+            if taken.contains(&norm) {
+                direct_errors.push("直达热键不能与呼出热键相同，各直达热键之间也不能相同".into());
+                if let Ok(old_sc) = old.parse::<Shortcut>() {
+                    let _ = gs.register(old_sc);
+                }
                 continue;
             }
             match norm.parse::<Shortcut>() {
                 Ok(sc) => match gs.register(sc) {
                     Ok(_) => {
                         state.engine.set_setting(cfg_key, &norm)?;
-                        state
-                            .direct_hotkeys
-                            .lock()
-                            .expect("direct poisoned")
-                            .insert(norm, kind);
+                        map.remove(&old);
+                        map.insert(norm.clone(), kind);
+                        taken.push(norm);
                     }
                     Err(e) => {
-                        direct_hotkey_error =
-                            Some(format!("直达热键注册失败，可能已被其他程序占用：{e}"));
+                        direct_errors.push(format!("直达热键注册失败，可能已被其他程序占用：{e}"));
                         // 恢复旧绑定
                         if let Ok(old_sc) = old.parse::<Shortcut>() {
                             let _ = gs.register(old_sc);
                         }
                     }
                 },
-                Err(e) => direct_hotkey_error = Some(format!("无法识别的按键组合：{e}")),
+                Err(e) => {
+                    direct_errors.push(format!("无法识别的按键组合：{e}"));
+                    if let Ok(old_sc) = old.parse::<Shortcut>() {
+                        let _ = gs.register(old_sc);
+                    }
+                }
             }
         }
     }
@@ -449,6 +460,11 @@ fn save_settings(
     if let Some(item) = state.clip_item.lock().expect("clip_item poisoned").as_ref() {
         let _ = item.set_checked(clip_enabled);
     }
+    let direct_hotkey_error = if direct_errors.is_empty() {
+        None
+    } else {
+        Some(direct_errors.join("；"))
+    };
     Ok(SaveOutcome {
         hotkey_error,
         direct_hotkey_error,
@@ -814,29 +830,15 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
             Ok(())
         }
         "clip" | "clipimg" => {
-            // 回填剪贴板（文本=内容本体；图片=按行号点查全图并解码 RGBA）；
-            // 我们的监听会把它移动到历史顶部（重复内容自动去重）
-            if item.kind == "clip" {
-                providers::clipboard::retrying(|| {
-                    arboard::Clipboard::new().and_then(|mut cb| cb.set_text(item.target.clone()))
-                })
-                .ok();
-            } else if let Ok(rowid) = item.target.parse::<i64>()
-                && let Some((w, h, png)) = app.state::<AppState>().engine.clip_image(rowid)
-                && let Ok((_, _, rgba)) = providers::clipimage::decode_png(&png)
-            {
-                providers::clipboard::retrying(|| {
-                    arboard::Clipboard::new().and_then(|mut cb| {
-                        cb.set_image(arboard::ImageData {
-                            width: w as usize,
-                            height: h as usize,
-                            bytes: std::borrow::Cow::Owned(rgba.clone()),
-                        })
-                    })
-                })
-                .ok();
-            } else {
-                return Err("该条剪贴板图片已被清理".into());
+            // 图片行号同步探存在：「已被清理」要即时回前端 toast（不收面板），不能异步化
+            if item.kind == "clipimg" {
+                let rowid = item
+                    .target
+                    .parse::<i64>()
+                    .map_err(|_| "无效图片条目".to_string())?;
+                if !app.state::<AppState>().engine.clip_image_exists(rowid) {
+                    return Err("该条剪贴板图片已被清理".into());
+                }
             }
             // 选中即粘贴：焦点交还呼出前的窗口并注入 Ctrl+V，省掉手动一步；
             // 设置关闭或无记录（呼出时前台就是面板/捕获失败）则退化为仅回填
@@ -850,14 +852,45 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
             } else {
                 None
             };
-            if let Some(hwnd) = prev {
+            // 回填与粘贴压后台线程：retrying 退避（最坏 ~370ms）与图片的
+            // 点查全图 + PNG 解码不能占主线程消息泵
+            let engine = app.state::<AppState>().engine.clone();
+            let target = item.target.clone();
+            let is_img = item.kind == "clipimg";
+            paste_started = prev.is_some();
+            if prev.is_some() {
                 hide_panel_window(&app);
-                paste_started = true;
-                std::thread::spawn(move || {
+            }
+            std::thread::spawn(move || {
+                // 回填剪贴板（文本=内容本体；图片=按行号点查全图并解码 RGBA）；
+                // 我们的监听会把它移动到历史顶部（重复内容自动去重）
+                if is_img {
+                    if let Ok(rowid) = target.parse::<i64>()
+                        && let Some((w, h, png)) = engine.clip_image(rowid)
+                        && let Ok((_, _, rgba)) = providers::clipimage::decode_png(&png)
+                    {
+                        let _ = providers::clipboard::retrying(|| {
+                            let rgba = rgba.clone();
+                            arboard::Clipboard::new().and_then(|mut cb| {
+                                cb.set_image(arboard::ImageData {
+                                    width: w as usize,
+                                    height: h as usize,
+                                    bytes: std::borrow::Cow::Owned(rgba),
+                                })
+                            })
+                        });
+                    }
+                } else {
+                    let _ = providers::clipboard::retrying(|| {
+                        let target = target.clone();
+                        arboard::Clipboard::new().and_then(|mut cb| cb.set_text(target))
+                    });
+                }
+                if let Some(hwnd) = prev {
                     std::thread::sleep(Duration::from_millis(80));
                     providers::winsys::paste_to_prev(hwnd);
-                });
-            }
+                }
+            });
             Ok(())
         }
         "win" => {
@@ -969,28 +1002,62 @@ pub(crate) fn toggle_panel(app: &AppHandle, preset: Option<&str>) {
     }));
 }
 
-/// 直达热键·快速粘贴：不经面板，把最近一条剪贴板内容回填并粘贴到当前前台窗口。
-/// 无历史记录时静默不动（面板隐藏状态没有可用的反馈通道）
+/// 直达热键·快速粘贴：不经面板，把最近复制的文本粘贴到当前前台窗口。
+/// 剪贴板已有文本时直接注入（历史库不覆盖密码管理器来源/总开关关闭的复制，
+/// 直接读库会把刚复制的内容覆盖成上一条历史）；空/非文本才回源历史库并回填。
+/// 重活（剪贴板读写退避、SQLite 点查）压后台线程，不占热键回调所在的主线程
 fn quick_paste_latest(app: &AppHandle) {
-    let state = app.state::<AppState>();
-    let Some(text) = state.engine.latest_clip() else {
-        return;
-    };
+    // 前台窗口在回调内先取（无阻塞）；面板自身在前台时不注入（会贴进搜索框）
     let Some(hwnd) = foreground_hwnd() else {
         return;
     };
-    if providers::clipboard::retrying(|| {
-        let text = text.clone();
-        arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text))
-    })
-    .is_err()
-    {
+    if foreground_in_panel(app, hwnd) {
         return;
     }
+    let engine = app.state::<AppState>().engine.clone();
     std::thread::spawn(move || {
+        let current = arboard::Clipboard::new()
+            .ok()
+            .and_then(|mut cb| cb.get_text().ok());
+        let (text, needs_backfill) = match current {
+            Some(t) if !t.trim().is_empty() => (t, false),
+            _ => match engine.latest_clip() {
+                Some(t) => (t, true),
+                None => return,
+            },
+        };
+        if needs_backfill
+            && providers::clipboard::retrying(|| {
+                let text = text.clone();
+                arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text))
+            })
+            .is_err()
+        {
+            return;
+        }
+        // 稍候再注入：热键组合的修饰键可能尚未松开
         std::thread::sleep(Duration::from_millis(80));
         providers::winsys::paste_to_prev(hwnd);
     });
+}
+
+/// 前台窗口是否属于本面板（快速粘贴防自注入：面板可见时按热键，前台就是面板）
+#[cfg(windows)]
+fn foreground_in_panel(app: &AppHandle, fg: isize) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor};
+    let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
+        return false;
+    };
+    let Ok(ours) = win.hwnd() else {
+        return false;
+    };
+    unsafe { GetAncestor(HWND(fg as *mut core::ffi::c_void), GA_ROOT) == ours }
+}
+
+#[cfg(not(windows))]
+fn foreground_in_panel(_app: &AppHandle, _fg: isize) -> bool {
+    false
 }
 
 /// 当前前台窗口句柄（快速粘贴的注入目标）
@@ -1214,6 +1281,11 @@ pub fn run() {
                 .unwrap_or(providers::appconfig::DEFAULT_PANEL_TRANSPARENCY);
             if let Err(e) = apply_window_effects(app.handle(), transparency_on) {
                 eprintln!("zap: 透明效果应用失败（面板保持不透明）: {e}");
+                // 偏好落 0 收敛状态：否则前端按存档偏好挂 zap-trans 类，
+                // 得到无模糊底的纯半透明面板（设置页路径失败本就不落偏好，此处对齐）
+                if transparency_on {
+                    let _ = engine.set_setting(providers::appconfig::KEY_PANEL_TRANSPARENCY, "0");
+                }
             }
 
             // Everything 自动检测：未运行且已安装则自动拉起（UAC 会弹一次）。

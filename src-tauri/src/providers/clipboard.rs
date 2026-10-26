@@ -345,11 +345,13 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 最新一条历史的 (行号, 内容)：面板呼出时内容识别的输入。
+/// 最新一条历史的 (行号, 内容)：面板呼出时内容识别与快速粘贴的输入。
+/// 按时间取而非按 id：入库是 content 唯一约束的 upsert（重抄旧内容只更新
+/// created_at 不产生新 id），按 id 排序会返回上一条新插入的而非刚复制的。
 /// 无历史（首次使用/已清空）返回 None
 pub fn latest(conn: &Connection) -> Option<(i64, String)> {
     conn.query_row(
-        "SELECT id, content FROM clipboard_history ORDER BY id DESC LIMIT 1",
+        "SELECT id, content FROM clipboard_history ORDER BY created_at DESC, id DESC LIMIT 1",
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
@@ -399,6 +401,23 @@ mod tests {
         .expect("insert");
         conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
             .expect("rowid")
+    }
+
+    #[test]
+    fn 重抄旧内容后最新一条按时间取() {
+        let conn = mem_db();
+        insert(&conn, "旧内容", 1000);
+        insert(&conn, "新内容", 2000);
+        // 模拟监听线程的 upsert：重抄「旧内容」只更新时间，行号不变
+        conn.execute(
+            "INSERT INTO clipboard_history(content, created_at) VALUES(?1, ?2)
+             ON CONFLICT(content) DO UPDATE SET created_at=excluded.created_at",
+            params!["旧内容", 3000],
+        )
+        .unwrap();
+        let (id, text) = latest(&conn).expect("有历史");
+        assert_eq!(text, "旧内容", "最新一条应是刚重抄的内容");
+        assert_eq!(id, 1, "行号保持首次插入的 id，不能按 id 取成新内容");
     }
 
     #[test]

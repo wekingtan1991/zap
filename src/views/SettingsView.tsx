@@ -387,7 +387,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
       if (e.ctrlKey) mods.push("ctrl");
       if (e.altKey) mods.push("alt");
       if (e.shiftKey) mods.push("shift");
-      if (e.metaKey) mods.push("meta");
+      if (e.metaKey) mods.push("super"); // global-hotkey 只认 super，meta 会解析失败
       if (mods.length === 0) return; // 必须带修饰键
       e.preventDefault();
       e.stopPropagation();
@@ -467,10 +467,13 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         appearance: st.appearance ?? "dark",
         plugins: st.plugins.map((p) => ({ id: p.id, enabled: p.enabled })),
       });
-      setDirectErr(res.directHotkeyError ?? "");
-      if (res.hotkeyError) {
-        setHkError(res.hotkeyError);
-        setSt(await invoke<AppSettings>("get_app_settings")); // 回显实际生效值
+      const directError = res.directHotkeyError ?? "";
+      setDirectErr(directError);
+      if (res.hotkeyError || directError) {
+        // 任一热键失败都重拉实际生效值：直达槽位冲突/占用时存档串与显示值会漂移；
+        // 且此场景不算保存成功，不显示「已保存 ✓」
+        if (res.hotkeyError) setHkError(res.hotkeyError);
+        setSt(await invoke<AppSettings>("get_app_settings"));
       } else {
         setHkError("");
         setSaveMsg("已保存 ✓");
