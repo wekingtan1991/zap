@@ -13,6 +13,7 @@ pub mod plugin;
 pub mod recent;
 pub mod settings;
 pub mod shortcuts;
+pub mod stage;
 pub mod superpanel;
 pub mod sysutil;
 pub mod texttools;
@@ -171,6 +172,7 @@ impl SearchEngine {
         vault::init_table(&conn);
         appconfig::init_table(&conn);
         apps::init_stats(&conn);
+        stage::init_table(&conn);
         // 图标缓存随库存放，键 = lnk 路径+mtime 哈希
         let icon_cache = db_path.parent().map(|p| p.join("icons"));
         let apps = std::sync::Arc::new(apps::AppsPlugin {
@@ -184,6 +186,7 @@ impl SearchEngine {
         let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
             std::sync::Arc::new(jsontools::JsonToolsPlugin),
             std::sync::Arc::new(texttools::TextToolsPlugin),
+            std::sync::Arc::new(stage::StagePlugin),
             apps.clone(),
             std::sync::Arc::new(files::FilesPlugin),
             std::sync::Arc::new(winsys::WinsysPlugin),
@@ -278,6 +281,39 @@ impl SearchEngine {
     pub fn clip_pin(&self, id: i64) -> Result<bool, String> {
         let conn = self.clip.lock().expect("clip db poisoned");
         clipboard::pin_toggle(&conn, id)
+    }
+
+    // ---------- 中转站 ----------
+
+    pub fn stage_list(&self) -> Vec<stage::StageRecord> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::list(&conn)
+    }
+
+    /// 批量放入：逐条尝试，个别失败不影响其余（失败明细回传前端提示）
+    pub fn stage_add(&self, paths: &[String]) -> stage::StageAddOutcome {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::add(&conn, paths)
+    }
+
+    pub fn stage_remove(&self, id: i64) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::remove(&conn, id)
+    }
+
+    pub fn stage_clear(&self) -> Result<usize, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::clear(&conn)
+    }
+
+    pub fn stage_pin(&self, id: i64) -> Result<bool, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::pin_toggle(&conn, id)
+    }
+
+    pub fn stage_relocate(&self, id: i64, path: &str) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::relocate(&conn, id, path)
     }
 
     pub fn vault_add(

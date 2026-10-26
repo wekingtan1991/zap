@@ -844,6 +844,69 @@ button.zap-json-toggle:hover .zap-json-key {
   color: var(--zap-fg-strong);
 }
 
+.zap-ctx-item:disabled {
+  color: var(--zap-fg-dim);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.zap-ctx-item:disabled:hover {
+  background: transparent;
+  color: var(--zap-fg-dim);
+}
+
+/* ---------- 中转站视图：拖入即存的路径引用暂存区 ---------- */
+
+/* 头部计数：域标签（胶囊）旁的弱化补充信息 */
+.zap-stage-count {
+  color: var(--zap-fg-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 落区：results 容器自身作为拖放高亮面与提示层的定位基准 */
+.zap-stage {
+  position: relative;
+}
+
+.zap-stage.zap-stage-drop {
+  outline: 2px dashed rgba(245, 158, 11, 0.6);
+  outline-offset: -8px;
+  border-radius: 12px;
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.zap-stage-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--zap-warn);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  animation: fade-in 0.12s ease-out both;
+}
+
+/* 失效条目：整行弱化 + 行尾「已失效」小标（死链不自动删，右键可重新定位） */
+.zap-item.zap-stage-dead {
+  opacity: 0.55;
+}
+
+.zap-stage-dead-tag {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 /* ---------- 备份导出/导入弹窗（复用 zap-dialog 骨架，中性边框） ---------- */
 
 .zap-bk-dialog {

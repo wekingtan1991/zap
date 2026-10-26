@@ -77,6 +77,11 @@ fn hide_panel_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
         let _ = win.hide();
     }
+    // 任何隐藏路径都释放 hold：中转站视图借用 hold 对抗失焦即隐，
+    // 面板已隐还挂着 hold 会变成幽灵态（下次呼出失焦不隐）
+    app.state::<AppState>()
+        .hold_panel
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     let _ = app.emit("zap://hidden", ());
 }
 
@@ -218,6 +223,8 @@ struct AppSettingsDto {
     clip_max: i64,
     /// 剪贴板条目选中后自动粘贴到原窗口
     clip_autopaste: bool,
+    /// 中转站未固定条目容量上限
+    stage_max: i64,
     pwd_clear_secs: i64,
     autostart: bool,
     everything_autostart: bool,
@@ -248,6 +255,7 @@ fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSetting
         clip_enabled: providers::clipboard::CLIP_ENABLED.load(Ordering::Relaxed),
         clip_max: providers::clipboard::RETENTION_LIMIT.load(Ordering::Relaxed),
         clip_autopaste: providers::clipboard::PASTE_TO_PREV.load(Ordering::Relaxed),
+        stage_max: providers::stage::CAP.load(Ordering::Relaxed),
         pwd_clear_secs: state
             .engine
             .get_setting(providers::appconfig::KEY_PWD_CLEAR_SECS)
@@ -303,6 +311,8 @@ fn save_settings(
     clip_enabled: bool,
     clip_max: i64,
     clip_autopaste: Option<bool>,
+    // Option 容错：半新半旧的会话（前端未带上新键）保存时不再整单被拒
+    stage_max: Option<i64>,
     pwd_clear_secs: i64,
     everything_autostart: bool,
     appearance: Option<String>,
@@ -436,6 +446,13 @@ fn save_settings(
             providers::appconfig::KEY_CLIP_AUTOPASTE,
             if on { "1" } else { "0" },
         )?;
+    }
+    if let Some(cap) = stage_max {
+        let cap = cap.clamp(10, 500);
+        providers::stage::CAP.store(cap, Ordering::Relaxed);
+        state
+            .engine
+            .set_setting(providers::appconfig::KEY_STAGE_CAP, &cap.to_string())?;
     }
     if let Some(mode) = appearance {
         // 只收合法值（防前端脏数据把主题写坏）
@@ -783,7 +800,7 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
     // 粘贴前的等待（焦点回落最长 ~600ms）不能压在这里
     let mut paste_started = false;
     let result = match item.kind.as_str() {
-        "app" | "recent" | "file" => {
+        "app" | "recent" | "file" | "stage" => {
             // 启动计数（frecency 排序依据）：仅应用类，按 target 路径累计
             if item.kind == "app" {
                 app.state::<AppState>()
@@ -916,6 +933,78 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
 async fn clip_pin(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
     let engine = state.engine.clone();
     tauri::async_runtime::spawn_blocking(move || engine.clip_pin(id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+// ---------- 中转站 ----------
+
+#[tauri::command]
+async fn stage_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<providers::stage::StageRecord>, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.stage_list())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 批量放入：逐条尝试，个别失败不影响其余（失败明细回传前端提示）
+#[tauri::command]
+async fn stage_add(
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<providers::stage::StageAddOutcome, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.stage_add(&paths))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 移出中转站（只删引用，不碰原文件）
+#[tauri::command]
+async fn stage_remove(state: tauri::State<'_, AppState>, id: i64) -> Result<(), String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.stage_remove(id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 清空临时区（固定条目保留），返回清掉条数
+#[tauri::command]
+async fn stage_clear(state: tauri::State<'_, AppState>) -> Result<usize, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.stage_clear())
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 固定/取消固定（返回操作后的状态）
+#[tauri::command]
+async fn stage_pin(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.stage_pin(id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 重新定位：为失效条目重绑路径
+#[tauri::command]
+async fn stage_relocate(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    path: String,
+) -> Result<(), String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.stage_relocate(id, &path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 复制文件到剪贴板（CF_HDROP，可粘贴到任意位置）；无库访问但剪贴板写入带重试，照例压线程池
+#[tauri::command]
+async fn stage_copy_file(paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || providers::stage::copy_files_to_clipboard(&paths))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1158,6 +1247,13 @@ pub fn run() {
             hide_panel,
             open_item,
             clip_pin,
+            stage_list,
+            stage_add,
+            stage_remove,
+            stage_clear,
+            stage_pin,
+            stage_relocate,
+            stage_copy_file,
             everything_status,
             everything_ensure,
             everything_setup,
@@ -1218,6 +1314,14 @@ pub fn run() {
                 .map(|v| v != "0")
                 .unwrap_or(providers::appconfig::DEFAULT_CLIP_AUTOPASTE);
             providers::clipboard::PASTE_TO_PREV.store(clip_autopaste, Ordering::Relaxed);
+
+            // 中转站容量：存档失效回退默认（10–500 之外视为坏值）
+            let stage_cap: i64 = engine
+                .get_setting(providers::appconfig::KEY_STAGE_CAP)
+                .and_then(|v| v.parse().ok())
+                .filter(|v| (10..=500).contains(v))
+                .unwrap_or(providers::appconfig::DEFAULT_STAGE_CAP);
+            providers::stage::CAP.store(stage_cap, Ordering::Relaxed);
 
             let saved_hotkey = engine
                 .get_setting(providers::appconfig::KEY_HOTKEY)

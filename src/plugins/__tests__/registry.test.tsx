@@ -26,7 +26,7 @@ describe("kindUi 注册表", () => {
   });
 
   it("专属激活行为只出现在预期的 kind 上", () => {
-    const withActivate = ["vault", "json", "tool", "cmd"];
+    const withActivate = ["vault", "json", "tool", "cmd", "stage"];
     const withoutActivate = [
       "app",
       "clip",
@@ -68,8 +68,10 @@ describe("kindUi 注册表", () => {
       ["admin", "管理员运行"],
       ["copy_path", "复制路径"],
     ]);
-    // recent 是 lnk 指针，复用路径类动作（后端解析真实目标）
+    // recent 是 lnk 指针，复用路径类动作（后端解析真实目标）；
+    // 放入中转站排首位（主路径动作，.lnk 由后端 stage_add 解析为真实目标）
     expect(kindUi("recent")?.ctxActions).toEqual([
+      ["stage_add", "放入中转站"],
       ["reveal", "打开所在文件夹"],
       ["copy_path", "复制路径"],
     ]);
