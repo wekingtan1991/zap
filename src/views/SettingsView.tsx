@@ -16,6 +16,7 @@ import {
   Database,
   Download,
   Globe,
+  Inbox,
   KeyRound,
   Loader2,
   Palette,
@@ -69,6 +70,8 @@ export interface AppSettings {
   clipMax: number;
   /// 剪贴板条目选中后自动粘贴到原窗口
   clipAutoPaste: boolean;
+  /// 中转站未固定条目容量上限
+  stageMax: number;
   pwdClearSecs: number;
   autostart: boolean;
   everythingAutostart: boolean;
@@ -303,6 +306,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         setSt({
           ...res,
           clipAutoPaste: res.clipAutoPaste ?? true,
+          stageMax: res.stageMax ?? 50,
           appearance: res.appearance ?? "dark",
           panelTransparency: res.panelTransparency ?? true,
           superpanelHotkey: res.superpanelHotkey ?? "",
@@ -462,6 +466,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         clipEnabled: st.clipEnabled,
         clipMax: st.clipMax,
         clipAutoPaste: st.clipAutoPaste ?? true,
+        stageMax: st.stageMax,
         pwdClearSecs: st.pwdClearSecs,
         everythingAutostart: st.everythingAutostart,
         appearance: st.appearance ?? "dark",
@@ -668,6 +673,38 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                 setSt((s) => (s ? { ...s, clipAutoPaste: v === true } : s))
               }
             />
+          </div>
+        </div>
+        <div className="mt-3 border-t border-border pt-3">
+          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+            <Inbox className="size-3 text-primary/75" />
+            中转站
+          </div>
+          <div className="flex min-h-[38px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <Label className="text-[13px] font-normal text-foreground">
+                未固定条目容量
+              </Label>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                超出挤掉最旧的未固定条目；固定条目不占容量、永不清出
+              </span>
+            </span>
+            <Select
+              value={String(st.stageMax)}
+              onValueChange={(v) =>
+                setSt((s) => (s ? { ...s, stageMax: Number(v) } : s))
+              }
+            >
+              <SelectTrigger className="h-[30px] w-[126px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="30">30</SelectItem>
+                <SelectItem value="50">50</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+                <SelectItem value="200">200</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">

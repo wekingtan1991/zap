@@ -30,6 +30,7 @@ import {
   type CommandCtx,
 } from "@/plugins/commands";
 import { VaultDetailView, type VaultDetail } from "@/plugins/vault/VaultDetailView";
+import { StageView } from "@/plugins/stage/StageView";
 import {
   EMPTY_FORM,
   VaultFormView,
@@ -58,6 +59,7 @@ type WorkbenchSource =
 type View =
   | { kind: "main" }
   | { kind: "settings" }
+  | { kind: "stage" }
   | { kind: "detail"; data: VaultDetail; askDelete?: boolean }
   | { kind: "form"; data: AccountForm }
   | { kind: "reveal"; data: RevealInfo }
@@ -644,6 +646,42 @@ function AppView() {
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
 
+  // ---------- 中转站 ----------
+  // 视图期间 hold 住面板：拖拽自资源管理器的第一步就把焦点交给了 Explorer，
+  // 失焦即隐会直接杀死拖放——hold 是拖拽落区的前提。释放只挂在两个出口：
+  // 返回/Esc（closeStage）与任何隐藏路径（后端 hide_panel_window 统一释放）
+
+  const openStage = useCallback(() => {
+    void invoke("set_hold_panel", { hold: true }).catch(() => {});
+    setView({ kind: "stage" });
+  }, []);
+
+  const closeStage = useCallback(() => {
+    void invoke("set_hold_panel", { hold: false }).catch(() => {});
+    setView({ kind: "main" });
+    setTimeout(() => inputRef.current?.focus(), 30);
+  }, []);
+
+  /// 搜索结果右键「放入中转站」：失败明细由 stage_add 返回，这里只报成败
+  const stageAdd = useCallback(async (it: SearchItem) => {
+    try {
+      const r = await invoke<{
+        added: number;
+        total: number;
+        failed: string[];
+      }>("stage_add", { paths: [it.target] });
+      if (r.failed.length > 0) {
+        toast.error(r.failed[0]);
+      } else if (r.added === 0) {
+        toast.success(`已在中转站（已置顶）· 共 ${r.total} 条`);
+      } else {
+        toast.success(`已放入中转站 · 共 ${r.total} 条`);
+      }
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }, []);
+
   // ---------- 统一条目分发 ----------
   // Enter 与点击共用：伪条目（新增/导入）→ 注册表 activate → 默认 openExternal。
   // kind 行为收敛在 plugins/registry.tsx，这里只接装配，不写 kind 特判
@@ -660,6 +698,7 @@ function AppView() {
     openExternal: activate,
     vaultPin: (it) => void vaultAction(it, "pin"),
     clipPin: (it) => void clipPin(it),
+    openStage: () => void openStage(),
   };
 
   const runItem = useCallback(
@@ -882,6 +921,10 @@ function AppView() {
     );
   }
 
+  if (view.kind === "stage") {
+    return <StageView focusRef={focusPanelRef} onClose={closeStage} />;
+  }
+
   if (view.kind === "json") {
     return (
       <JsonWorkbench
@@ -1050,7 +1093,8 @@ function AppView() {
                   className="zap-ctx-item"
                   onClick={() => {
                     setCtxMenu(null);
-                    if (act === "clip_pin") void clipPin(ctxMenu.item);
+                    if (act === "stage_add") void stageAdd(ctxMenu.item);
+                    else if (act === "clip_pin") void clipPin(ctxMenu.item);
                     else void secondaryAction(
                       act as "admin" | "reveal" | "copy_path" | "clip_copy" | "close_window",
                       ctxMenu.item

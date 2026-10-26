@@ -20,6 +20,8 @@ export interface ItemActions {
   vaultPin: (it: SearchItem) => void;
   /// 剪贴板条目的行尾固定
   clipPin: (it: SearchItem) => void;
+  /// 切到中转站视图（stage 入口条目激活）
+  openStage: () => void;
 }
 
 export interface KindUi {
@@ -48,6 +50,12 @@ const REGISTRY: Record<string, KindUi> = {
       ["copy_path", "复制路径"],
     ],
   },
+  // 中转站入口条目：activate 切到中转站视图（列表管理在 StageView 内自持）
+  stage: {
+    label: "中转站",
+    badge: "file",
+    activate: (_it, act) => act.openStage(),
+  },
   clip: {
     label: "剪贴板",
     badge: "clip",
@@ -73,6 +81,7 @@ const REGISTRY: Record<string, KindUi> = {
     label: "文件",
     badge: "file",
     ctxActions: [
+      ["stage_add", "放入中转站"],
       ["reveal", "打开所在文件夹"],
       ["copy_path", "复制路径"],
     ],
@@ -87,6 +96,7 @@ const REGISTRY: Record<string, KindUi> = {
     label: "最近",
     badge: "recent",
     ctxActions: [
+      ["stage_add", "放入中转站"],
       ["reveal", "打开所在文件夹"],
       ["copy_path", "复制路径"],
     ],

@@ -29,6 +29,9 @@ pub const KEY_CLIP_HOTKEY: &str = "clip_hotkey";
 /// 超级面板直达热键（空串 = 未绑定）：抓取选中文本出动作菜单。
 /// 早版用长按右键手势，因与各应用右键菜单冲突风险大改为热键触发
 pub const KEY_SUPERPANEL_HOTKEY: &str = "superpanel_hotkey";
+/// 中转站未固定条目容量上限
+pub const KEY_STAGE_CAP: &str = "stage_cap";
+pub const DEFAULT_STAGE_CAP: i64 = 50;
 
 pub fn init_table(conn: &Connection) {
     let _ = conn.execute_batch(
