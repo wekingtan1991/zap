@@ -66,6 +66,14 @@ pub trait Plugin: Send + Sync {
         let _ = text;
         Vec::new()
     }
+
+    /// 功能入口兜底：常规结果里除网页兜底外一无所获（或空面板呼出）时，
+    /// 引擎收拢各插件的入口条目附在列表尾部——可发现性不依赖用户记得
+    /// 入口词或翻设置页。兜底时机不经 entry_hit 也没有 conn，实现须自查
+    /// 开关态；入口条目应与 search 命中时共用同一构造，防文案漂移。默认不参与
+    fn fallback_entry(&self) -> Vec<SearchItem> {
+        Vec::new()
+    }
 }
 
 /// 插件入口条目的命中判定：query（trim + 小写）能否装进任一入口词——

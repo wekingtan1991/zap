@@ -56,6 +56,8 @@ export interface PluginState {
   enabled: boolean;
   /// 搜索入口词（后端 PluginMeta.entries 声明化下发）
   entries: string[];
+  /// 入口词冲突（与其他插件或搜索捷径关键词重合，后端现算下发）
+  conflicts: string[];
 }
 
 export interface AppSettings {
@@ -318,6 +320,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           plugins: (res.plugins ?? []).map((p) => ({
             ...p,
             entries: p.entries ?? [],
+            conflicts: p.conflicts ?? [],
           })),
         })
       )
@@ -979,6 +982,12 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                       {(p.entries ?? []).map((w) => (
                         <Kbd key={w}>{w}</Kbd>
                       ))}
+                    </span>
+                  )}
+                  {(p.conflicts?.length ?? 0) > 0 && (
+                    <span className="pt-0.5 text-[11px] leading-snug text-destructive">
+                      入口词冲突：{(p.conflicts ?? []).join("、")}
+                      {" · 与其他插件或搜索捷径重合，搜索时会同时出多条目"}
                     </span>
                   )}
                 </span>
