@@ -391,13 +391,10 @@ pub fn copy_files_to_clipboard(_paths: &[String]) -> Result<(), String> {
 
 pub struct StagePlugin;
 
-impl super::plugin::Plugin for StagePlugin {
-    fn search(&self, query: &str, _conn: Option<&Connection>) -> Vec<SearchItem> {
-        let words = self.meta().map(|m| m.entries).unwrap_or(&[]);
-        if !STAGE_ON.load(Ordering::Relaxed) || !super::plugin::entry_hit(query, words) {
-            return Vec::new();
-        }
-        vec![SearchItem {
+impl StagePlugin {
+    /// 入口条目：搜索命中与兜底清单共用同一构造，文案不漂移
+    fn entry_item() -> SearchItem {
+        SearchItem {
             id: "stage:entry".into(),
             title: "打开中转站".into(),
             subtitle: "拖入文件/文件夹随手暂存 · 点击打开 · 常用可固定".into(),
@@ -405,7 +402,25 @@ impl super::plugin::Plugin for StagePlugin {
             target: "entry".into(),
             icon: None,
             score: 0.0,
-        }]
+        }
+    }
+}
+
+impl super::plugin::Plugin for StagePlugin {
+    fn search(&self, query: &str, _conn: Option<&Connection>) -> Vec<SearchItem> {
+        let words = self.meta().map(|m| m.entries).unwrap_or(&[]);
+        if !STAGE_ON.load(Ordering::Relaxed) || !super::plugin::entry_hit(query, words) {
+            return Vec::new();
+        }
+        vec![Self::entry_item()]
+    }
+
+    fn fallback_entry(&self) -> Vec<SearchItem> {
+        if STAGE_ON.load(Ordering::Relaxed) {
+            vec![Self::entry_item()]
+        } else {
+            Vec::new()
+        }
     }
 
     fn meta(&self) -> Option<super::plugin::PluginMeta> {

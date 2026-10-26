@@ -207,6 +207,22 @@ impl SearchEngine {
                 meta.state.store(on, std::sync::atomic::Ordering::Relaxed);
             }
         }
+        // 入口词声明一致性（仅开发期断言）：同一词被多个插件声明会静默双出条目。
+        // 与捷径关键词的重合不在此查——那是用户数据，随 plugin_states 现算
+        #[cfg(debug_assertions)]
+        {
+            let no_shortcuts: std::collections::HashSet<String> = Default::default();
+            let conflicts = entry_conflicts(
+                plugins
+                    .iter()
+                    .filter_map(|p| p.meta().map(|m| (m.id, m.entries))),
+                &no_shortcuts,
+            );
+            debug_assert!(
+                conflicts.is_empty(),
+                "插件入口词冲突（同一词被多个插件声明，命中会双出条目）：{conflicts:?}"
+            );
+        }
         Self {
             clip: Mutex::new(conn),
             apps,
@@ -428,17 +444,46 @@ impl SearchEngine {
         let q = query.trim();
         if q.is_empty() {
             let conn = self.clip.lock().expect("clip db poisoned");
-            return assemble_opening(&self.plugins, &conn);
+            let mut items = assemble_opening(&self.plugins, &conn);
+            // 空面板即功能首页：识别与最近剪贴板之后附上插件入口清单，
+            // 呼出即可见，可发现性不依赖记住入口词
+            items.extend(fallback_all(&self.plugins));
+            return items;
         }
         // 万能输入框：对输入框内容先跑一轮即时识别（键入/粘贴即识别），
         // 命中条目置顶于入口条目与常规结果之前
         let mut items = probe_all(&self.plugins, q);
-        items.extend(run_parallel(&self.plugins, q, &self.clip));
+        let regular = run_parallel(&self.plugins, q, &self.clip);
+        // 网页兜底对任何 query 恒有产出，不足为「有结果」的凭据：除网页兜底
+        // （含捷径命中的 web 条目，id 前缀 sc:）外一无所获时，尾部附上插件入口清单
+        let has_strong = items
+            .iter()
+            .chain(regular.iter())
+            .any(|i| i.kind != "web" || i.id.starts_with("sc:"));
+        items.extend(regular);
+        if !has_strong {
+            items.extend(fallback_all(&self.plugins));
+        }
         items
     }
 
-    /// 设置页插件清单（仅可开关插件；核心源不列）
+    /// 设置页插件清单（仅可开关插件；核心源不列）。
+    /// 入口词与捷径关键词的重合随调用现算——捷径是用户数据，装配期缓存会陈旧
     pub fn plugin_states(&self) -> Vec<PluginInfo> {
+        let shortcut_words: std::collections::HashSet<String> = self
+            .shortcuts
+            .list()
+            .into_iter()
+            .map(|s| s.keyword)
+            .collect();
+        let conflicts = entry_conflicts(
+            self.plugins.iter().filter_map(|p| {
+                p.meta()
+                    .filter(|m| m.state.load(std::sync::atomic::Ordering::Relaxed))
+                    .map(|m| (m.id, m.entries))
+            }),
+            &shortcut_words,
+        );
         self.plugins
             .iter()
             .filter_map(|p| {
@@ -448,6 +493,10 @@ impl SearchEngine {
                     hint: m.hint.to_string(),
                     enabled: m.state.load(std::sync::atomic::Ordering::Relaxed),
                     entries: m.entries.iter().map(|w| w.to_string()).collect(),
+                    conflicts: conflicts
+                        .get(m.id)
+                        .map(|ws| ws.iter().map(|w| w.to_string()).collect())
+                        .unwrap_or_default(),
                 })
             })
             .collect()
@@ -487,6 +536,48 @@ fn probe_all(plugins: &[std::sync::Arc<dyn plugin::Plugin>], q: &str) -> Vec<Sea
         items.extend(p.probe(q));
     }
     items
+}
+
+/// 功能入口兜底：按注册序收拢各插件的入口条目（停用插件跳过——核心源无
+/// meta 恒过，各插件实现里再自查开关态）
+fn fallback_all(plugins: &[std::sync::Arc<dyn plugin::Plugin>]) -> Vec<SearchItem> {
+    let mut items = Vec::new();
+    for p in plugins {
+        if plugin_off(p.as_ref()) {
+            continue;
+        }
+        items.extend(p.fallback_entry());
+    }
+    items
+}
+
+/// 入口词冲突：返回 插件 id → 冲突入口词。冲突 = 同一词被多个声明方认领，
+/// 或唯一认领方与搜索捷径关键词重合（搜索时同词双出条目）。
+/// 入参是 (声明方, 词表) 序列 + 捷径关键词集合；是否纳入由调用方先过滤
+/// ——停用插件的入口词不会命中，不算真实冲突。输出按词排序保证确定性
+fn entry_conflicts<'a>(
+    decls: impl IntoIterator<Item = (&'a str, &'a [&'a str])>,
+    shortcut_words: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<&'a str, Vec<&'a str>> {
+    let mut owners: std::collections::HashMap<&'a str, Vec<&'a str>> = Default::default();
+    for (id, words) in decls {
+        for w in words.iter().copied() {
+            owners.entry(w).or_default().push(id);
+        }
+    }
+    let mut out: std::collections::HashMap<&'a str, Vec<&'a str>> = Default::default();
+    for (word, ids) in owners {
+        if ids.len() == 1 && !shortcut_words.contains(word) {
+            continue;
+        }
+        for id in ids {
+            out.entry(id).or_default().push(word);
+        }
+    }
+    for words in out.values_mut() {
+        words.sort_unstable();
+    }
+    out
 }
 
 /// 插件并行执行：总延迟从"串行求和"变"最慢一路"（files 的 HTTP 超时 250ms 与
@@ -533,6 +624,8 @@ pub struct PluginInfo {
     pub enabled: bool,
     /// 搜索入口词（声明化，设置页插件卡展示）
     pub entries: Vec<String>,
+    /// 入口词冲突（与其他插件或搜索捷径关键词重合，设置页标红提示）
+    pub conflicts: Vec<String>,
 }
 
 /// 空面板呼出的结果组装：插件对最新剪贴板的识别置顶，其后是最近剪贴板若干条。
@@ -705,6 +798,21 @@ mod plugin_tests {
                 score: 0.0,
             }]
         }
+        fn fallback_entry(&self) -> Vec<SearchItem> {
+            if self.switch.load(std::sync::atomic::Ordering::Relaxed) {
+                vec![SearchItem {
+                    id: format!("{}:fallback", self.tag),
+                    title: self.tag.to_string(),
+                    subtitle: String::new(),
+                    kind: "info".into(),
+                    target: String::new(),
+                    icon: None,
+                    score: 0.0,
+                }]
+            } else {
+                Vec::new()
+            }
+        }
     }
 
     #[test]
@@ -727,6 +835,54 @@ mod plugin_tests {
         assert_eq!(items[0].id, "qa:任意内容");
         assert_eq!(items[0].target, "q");
         PROBE_Q_B.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn 兜底入口按注册序拼接且跳过停用插件() {
+        let _serial = CLIP_ENABLED_LOCK.lock().unwrap();
+        PROBE_Q_A.store(true, std::sync::atomic::Ordering::Relaxed);
+        PROBE_Q_B.store(true, std::sync::atomic::Ordering::Relaxed);
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
+            std::sync::Arc::new(ProbeQPlugin {
+                tag: "qa",
+                switch: &PROBE_Q_A,
+            }),
+            std::sync::Arc::new(ProbeQPlugin {
+                tag: "qb",
+                switch: &PROBE_Q_B,
+            }),
+        ];
+        let items = fallback_all(&plugins);
+        assert_eq!(
+            items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            vec!["qa:fallback", "qb:fallback"],
+            "兜底入口应按注册序拼接"
+        );
+        PROBE_Q_B.store(false, std::sync::atomic::Ordering::Relaxed);
+        let items = fallback_all(&plugins);
+        assert_eq!(
+            items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            vec!["qa:fallback"],
+            "停用插件的兜底入口应被跳过"
+        );
+        PROBE_Q_B.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn 入口词冲突_插件间重合与捷径重合() {
+        let decls = [("a", &["alpha", "beta"][..]), ("b", &["beta", "gamma"][..])];
+        // 插件间重合：beta 归 a 与 b；独占词不算冲突
+        let no_shortcuts: std::collections::HashSet<String> = Default::default();
+        let c = entry_conflicts(decls, &no_shortcuts);
+        assert_eq!(c.get("a"), Some(&vec!["beta"]));
+        assert_eq!(c.get("b"), Some(&vec!["beta"]));
+        assert!(!c.contains_key("alpha") && !c.contains_key("gamma"));
+        // 与捷径关键词重合：唯一认领方 gamma 也算冲突
+        let mut sw = std::collections::HashSet::new();
+        sw.insert("gamma".to_string());
+        let c = entry_conflicts(decls, &sw);
+        assert_eq!(c.get("b"), Some(&vec!["beta", "gamma"]));
+        assert_eq!(c.get("a"), Some(&vec!["beta"]));
     }
 
     /// 带延迟的探针源：并行执行与保序断言用
