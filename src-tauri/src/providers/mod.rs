@@ -3,6 +3,7 @@ pub mod appconfig;
 pub mod apps;
 pub mod backup;
 pub mod clipboard;
+pub mod clipimage;
 pub mod diag;
 pub mod dpapi;
 pub mod everything;
@@ -12,6 +13,7 @@ pub mod plugin;
 pub mod recent;
 pub mod settings;
 pub mod shortcuts;
+pub mod superpanel;
 pub mod sysutil;
 pub mod texttools;
 pub mod totp;
@@ -242,6 +244,18 @@ impl SearchEngine {
         clipboard::get_by_id(&conn, id)
     }
 
+    /// 最近一条剪贴板内容（快速粘贴直达热键用）
+    pub fn latest_clip(&self) -> Option<String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipboard::latest(&conn).map(|(_, text)| text)
+    }
+
+    /// 按行号取剪贴板图片全图（clipimg 条目回贴用）
+    pub fn clip_image(&self, id: i64) -> Option<(u32, u32, Vec<u8>)> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipimage::get(&conn, id)
+    }
+
     /// 后台重建应用索引（面板呼出时调用）。10 秒内已扫过则跳过，
     /// 避免连续呼出反复走目录树 + UWP 枚举；false = 本次跳过或上次未完成
     pub fn refresh_apps(&self) -> bool {
@@ -372,6 +386,7 @@ impl SearchEngine {
                     title: m.title.to_string(),
                     hint: m.hint.to_string(),
                     enabled: m.state.load(std::sync::atomic::Ordering::Relaxed),
+                    entries: m.entries.iter().map(|w| w.to_string()).collect(),
                 })
             })
             .collect()
@@ -455,6 +470,8 @@ pub struct PluginInfo {
     pub title: String,
     pub hint: String,
     pub enabled: bool,
+    /// 搜索入口词（声明化，设置页插件卡展示）
+    pub entries: Vec<String>,
 }
 
 /// 空面板呼出的结果组装：插件对最新剪贴板的识别置顶，其后是最近剪贴板若干条。
@@ -613,6 +630,7 @@ mod plugin_tests {
                 key: "",
                 default_on: true,
                 state: self.switch,
+                entries: &[],
             })
         }
         fn probe(&self, text: &str) -> Vec<SearchItem> {

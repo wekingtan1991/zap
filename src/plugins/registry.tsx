@@ -33,20 +33,64 @@ export interface KindUi {
   external?: boolean;
   /// 行尾动作区（如 vault 的置顶按钮）
   rowAction?: (it: SearchItem, act: ItemActions) => ReactNode;
+  /// 右键菜单动作（[action, label]，按序渲染）：动作由 App.tsx 的
+  /// secondaryAction / clipPin 执行；缺省只压掉 WebView 默认菜单
+  ctxActions?: [string, string][];
 }
 
 const REGISTRY: Record<string, KindUi> = {
-  app: { label: "应用", badge: "app" },
+  app: {
+    label: "应用",
+    badge: "app",
+    ctxActions: [
+      ["reveal", "打开所在文件夹"],
+      ["admin", "管理员运行"],
+      ["copy_path", "复制路径"],
+    ],
+  },
   clip: {
     label: "剪贴板",
     badge: "clip",
     rowAction: (it, act) => (
       <VaultRowPin pinned={isPinned(it)} onPin={() => act.clipPin(it)} />
     ),
+    ctxActions: [
+      ["clip_copy", "仅复制（不粘贴）"],
+      ["clip_pin", "固定 / 取消固定"],
+    ],
   },
-  file: { label: "文件", badge: "file" },
-  win: { label: "窗口", badge: "win" },
-  recent: { label: "最近", badge: "recent" },
+  // 剪贴板图片条目：Enter=回贴（external 落 open_item 的 clipimg 分支），
+  // 无文本语义所以没有「仅复制」；固定与文本条目共用
+  clipimg: {
+    label: "图片",
+    badge: "clip",
+    rowAction: (it, act) => (
+      <VaultRowPin pinned={isPinned(it)} onPin={() => act.clipPin(it)} />
+    ),
+    ctxActions: [["clip_pin", "固定 / 取消固定"]],
+  },
+  file: {
+    label: "文件",
+    badge: "file",
+    ctxActions: [
+      ["reveal", "打开所在文件夹"],
+      ["copy_path", "复制路径"],
+    ],
+  },
+  win: {
+    label: "窗口",
+    badge: "win",
+    ctxActions: [["close_window", "关闭窗口"]],
+  },
+  // recent 是 .lnk 指针：reveal/copy_path 由后端解析真实目标，定位/复制才有意义
+  recent: {
+    label: "最近",
+    badge: "recent",
+    ctxActions: [
+      ["reveal", "打开所在文件夹"],
+      ["copy_path", "复制路径"],
+    ],
+  },
   settings: { label: "设置", badge: "settings" },
   vault: {
     label: "账号",
@@ -56,8 +100,16 @@ const REGISTRY: Record<string, KindUi> = {
       <VaultRowPin pinned={isPinned(it)} onPin={() => act.vaultPin(it)} />
     ),
   },
-  web: { label: "搜索", badge: "web" },
-  url: { label: "网址", badge: "url" },
+  web: {
+    label: "搜索",
+    badge: "web",
+    ctxActions: [["copy_path", "复制链接"]],
+  },
+  url: {
+    label: "网址",
+    badge: "url",
+    ctxActions: [["copy_path", "复制链接"]],
+  },
   json: {
     label: "JSON",
     badge: "json",

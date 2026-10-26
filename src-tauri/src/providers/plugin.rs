@@ -25,6 +25,9 @@ pub struct PluginMeta {
     pub key: &'static str,
     pub default_on: bool,
     pub state: &'static AtomicBool,
+    /// 搜索入口词（声明化）：插件声明自己能被哪些词搜到（entry_hit 匹配），
+    /// 设置页插件卡据此展示「入口」——新增插件的入口无需再改前端
+    pub entries: &'static [&'static str],
 }
 
 /// 统一插件协议。

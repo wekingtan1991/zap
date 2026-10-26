@@ -60,4 +60,32 @@ describe("kindUi 注册表", () => {
     expect(kindUi("clip")?.rowAction).toBeTruthy();
     expect(kindUi("app")?.rowAction).toBeUndefined();
   });
+
+  it("右键动作按 kind 收敛：路径类/剪贴板/窗口/链接各有其菜单", () => {
+    // 应用保持三动作（管理员运行仅 app）
+    expect(kindUi("app")?.ctxActions).toEqual([
+      ["reveal", "打开所在文件夹"],
+      ["admin", "管理员运行"],
+      ["copy_path", "复制路径"],
+    ]);
+    // recent 是 lnk 指针，复用路径类动作（后端解析真实目标）
+    expect(kindUi("recent")?.ctxActions).toEqual([
+      ["reveal", "打开所在文件夹"],
+      ["copy_path", "复制路径"],
+    ]);
+    expect(kindUi("file")?.ctxActions).toEqual(kindUi("recent")?.ctxActions);
+    // 剪贴板：仅复制（不粘贴）+ 固定；窗口：关闭
+    expect(kindUi("clip")?.ctxActions).toEqual([
+      ["clip_copy", "仅复制（不粘贴）"],
+      ["clip_pin", "固定 / 取消固定"],
+    ]);
+    expect(kindUi("win")?.ctxActions).toEqual([["close_window", "关闭窗口"]]);
+    // 网页/捷径结果（kind=web）与网址：仅复制链接
+    expect(kindUi("web")?.ctxActions).toEqual([["copy_path", "复制链接"]]);
+    expect(kindUi("url")?.ctxActions).toEqual([["copy_path", "复制链接"]]);
+    // 工具/状态/功能/设置/账号无右键菜单（undefined = 只压默认菜单）
+    for (const kind of ["json", "tool", "cmd", "info", "settings", "vault"]) {
+      expect(kindUi(kind)?.ctxActions, kind).toBeUndefined();
+    }
+  });
 });

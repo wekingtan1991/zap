@@ -44,7 +44,7 @@ import { JsonWorkbench } from "@/plugins/json/JsonWorkbench";
 import { ToolWorkbench } from "@/plugins/text/ToolWorkbench";
 import { SettingsView } from "@/views/SettingsView";
 import { useUpdater } from "@/views/useUpdater";
-import { applyAppearance, type Appearance } from "@/lib/appearance";
+import { applyAppearance, applyPanelTransparency, type Appearance } from "@/lib/appearance";
 
 /// 工作台内容源：入口进入 = 空文本等待粘贴；输入识别（万能输入框）= 携带
 /// 进入时刻的搜索词全文；剪贴板识别 = 按行号回查呼出时刻的内容
@@ -188,10 +188,10 @@ function AppView() {
   const isVault = query.trim().toLowerCase().startsWith("pw");
   const vaultTerm = isVault ? query.trim().slice(2).trim() : "";
 
-  // 外观随设置刷新（设置页改主题即时预览）：挂载与设置页关闭后重拉一次。
+  // 外观与透明面板随设置刷新（设置页改主题即时预览）：挂载与设置页关闭后重拉。
   // 插件开关的门控已收敛到后端（probe/入口条目按 plugin_off 跳过），前端不再缓存
   const refreshAppearance = useCallback(() => {
-    invoke<{ appearance: string }>("get_app_settings")
+    invoke<{ appearance: string; panelTransparency: boolean }>("get_app_settings")
       .then((s) => {
         const mode = (["dark", "light", "system"] as const).includes(
           s.appearance as Appearance
@@ -199,6 +199,7 @@ function AppView() {
           ? (s.appearance as Appearance)
           : "dark";
         applyAppearance(mode);
+        applyPanelTransparency(s.panelTransparency ?? true);
       })
       .catch(() => {});
   }, []);
@@ -276,6 +277,17 @@ function AppView() {
     };
   }, []);
 
+  // 直达热键预设词：Rust 在 shown 之后追加发出（顺序即生效顺序），
+  // 据此让面板直接落在账号库等保护域
+  useEffect(() => {
+    const un = listen<string>("zap://preset", (e) => {
+      setQuery(e.payload);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
   // 普通域搜索（账号库保护域下不生效；万能输入框识别与工具入口条目
   // 由后端 probe/entry 在 search 结果里置顶返回，前端无感知）
   useEffect(() => {
@@ -299,20 +311,37 @@ function AppView() {
     });
   }, []);
 
-  /// 条目次级操作（键盘触发）：admin=管理员运行 / reveal=所在文件夹 / copy_path=复制路径。
-  /// 按 kind 限权：窗口/剪贴板/账号库等没有路径语义，按键不响应
+  /// 条目次级操作（键盘触发与右键菜单共用）：
+  /// admin=管理员运行 / reveal=所在文件夹 / copy_path=复制路径或链接 /
+  /// clip_copy=剪贴板条目仅复制 / close_window=关闭窗口。
+  /// 按 kind 限权；后端 .lnk 解析对 recent 同样生效（指针→真实目标）
   const secondaryAction = useCallback(
-    async (action: "admin" | "reveal" | "copy_path", it: SearchItem | undefined) => {
+    async (
+      action:
+        | "admin"
+        | "reveal"
+        | "copy_path"
+        | "clip_copy"
+        | "close_window",
+      it: SearchItem | undefined
+    ) => {
       if (!it) return;
       const allow: Record<typeof action, string[]> = {
         admin: ["app"],
-        reveal: ["app", "file"],
-        copy_path: ["app", "file"],
+        reveal: ["app", "file", "recent"],
+        copy_path: ["app", "file", "recent", "web", "url"],
+        clip_copy: ["clip"],
+        close_window: ["win"],
       };
       if (!allow[action].includes(it.kind)) return;
       try {
-        await invoke("secondary_action", { action, target: it.target });
-        if (action === "copy_path") toast.success("路径已复制");
+        const target =
+          action === "clip_copy"
+            ? it.id.replace(/^clip:/, "")
+            : it.target;
+        await invoke("secondary_action", { action, target });
+        if (action === "copy_path" || action === "clip_copy")
+          toast.success("已复制");
       } catch (e) {
         toast.error(String(e));
       }
@@ -572,9 +601,10 @@ function AppView() {
     );
   }, []);
 
-  /// 剪贴板固定/取消固定：成功后按当前词重拉列表（固定项置顶/取消复位）
+  /// 剪贴板固定/取消固定（文本与图片条目共用，id 前缀两表寻址）：
+  /// 成功后按当前词重拉列表（固定项置顶/取消复位）
   const clipPin = useCallback(async (item: SearchItem) => {
-    const id = Number(item.id.replace(/^clip:/, ""));
+    const id = Number(item.id.replace(/^(clip|clipimg):/, ""));
     if (Number.isNaN(id)) return;
     try {
       await invoke<boolean>("clip_pin", { id });
@@ -951,6 +981,11 @@ function AppView() {
                 ? "换个关键词，或清空后按 Enter 新增账号"
                 : "应用 · 文件 · 窗口 · 剪贴板 · 最近使用"}
             </span>
+            {!isVault && (
+              <span className="zap-empty-sub">
+                试试 pw 账号库 · 右键条目有更多操作 · Ctrl+, 设置
+              </span>
+            )}
           </div>
         ) : (
           items.map((it, i) => {
@@ -963,9 +998,9 @@ function AppView() {
               onMouseEnter={() => setActive(i)}
               onClick={() => runItem(it)}
               onContextMenu={(e) => {
-                // 应用/文件条目弹次级操作菜单；其余 kind 只压掉 WebView 默认菜单
+                // 有右键动作的 kind 弹次级操作菜单；其余只压掉 WebView 默认菜单
                 e.preventDefault();
-                if (it.kind === "app" || it.kind === "file") {
+                if ((kindUi(it.kind)?.ctxActions?.length ?? 0) > 0) {
                   setCtxMenu({ x: e.clientX, y: e.clientY, item: it });
                 }
               }}
@@ -1007,29 +1042,25 @@ function AppView() {
               top: Math.min(ctxMenu.y, 480 - 132),
             }}
           >
-            {(ctxMenu.item.kind === "app"
-              ? ([
-                  ["reveal", "打开所在文件夹"],
-                  ["admin", "管理员运行"],
-                  ["copy_path", "复制路径"],
-                ] as const)
-              : ([
-                  ["reveal", "打开所在文件夹"],
-                  ["copy_path", "复制路径"],
-                ] as const)
-            ).map(([act, label]) => (
-              <button
-                key={act}
-                type="button"
-                className="zap-ctx-item"
-                onClick={() => {
-                  setCtxMenu(null);
-                  void secondaryAction(act, ctxMenu.item);
-                }}
-              >
-                {label}
-              </button>
-            ))}
+            {(kindUi(ctxMenu.item.kind)?.ctxActions ?? []).map(
+              ([act, label]) => (
+                <button
+                  key={act}
+                  type="button"
+                  className="zap-ctx-item"
+                  onClick={() => {
+                    setCtxMenu(null);
+                    if (act === "clip_pin") void clipPin(ctxMenu.item);
+                    else void secondaryAction(
+                      act as "admin" | "reveal" | "copy_path" | "clip_copy" | "close_window",
+                      ctxMenu.item
+                    );
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            )}
           </div>
         </>
       )}

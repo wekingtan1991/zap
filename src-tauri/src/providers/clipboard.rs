@@ -24,24 +24,24 @@ pub fn begin_self_copy() {
     SUPPRESS_CLIP_UNTIL.store(now_ms() as u64 + 1500, Ordering::Relaxed);
 }
 
-/// 打开剪贴板（含退避重试）。OpenClipboard 是全局独占资源，其他进程
-/// （IM/浏览器常驻监听、本机运行的另一 zap 实例及其监听线程）可能瞬时占用，
-/// arboard 自带 5×5ms 重试窗口太窄——这里 5 次递进退避（合计约 370ms 上限）。
-/// 与 vault.rs 焚除的 6 次重试同源教训；写路径（复制）是同步用户操作，
-/// 退避刻意比焚除的 200ms×6 短，避免卡手感
-pub fn open_retrying() -> Result<arboard::Clipboard, String> {
+/// 剪贴板写入重试（open + set 整操作退避）。OpenClipboard 是全局独占资源，
+/// IM/浏览器常驻监听或运行中的另一 zap 可能瞬时占用；arboard 内部仅 5×5ms
+/// 重试窗口太窄——这里 5 次递进退避（合计约 370ms）。与 vault.rs 焚除的
+/// 6 次重试同源教训；写路径是同步用户操作，退避刻意短，不卡手感。
+/// op 内部自行 Clipboard::new()——每次重试全新打开，比持有句柄更稳
+pub fn retrying<T>(mut op: impl FnMut() -> Result<T, arboard::Error>) -> Result<T, String> {
     const BACKOFF_MS: [u64; 5] = [0, 20, 50, 100, 200];
-    let mut last: Option<arboard::Error> = None;
+    let mut last = String::new();
     for ms in BACKOFF_MS {
         if ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
-        match arboard::Clipboard::new() {
-            Ok(cb) => return Ok(cb),
-            Err(e) => last = Some(e),
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) => last = e.to_string(),
         }
     }
-    Err(last.expect("5 次尝试必有错误").to_string())
+    Err(last)
 }
 
 /// 剪贴板历史总开关（设置页/托盘切换），关闭时监听仍运行但不入库
@@ -80,6 +80,7 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
     let _ = conn.execute_batch(
         "ALTER TABLE clipboard_history ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
     );
+    super::clipimage::init_table(&conn);
     Ok(conn)
 }
 
@@ -124,6 +125,14 @@ pub fn spawn_watcher(db_path: PathBuf) {
                             params![RETENTION_LIMIT.load(Ordering::Relaxed)],
                         );
                     }
+                } else if let Ok(img) = self.cb.get_image() {
+                    // 无文本可取时尝试图片（截图类）。入库失败静默（超限/编码异常不打扰）
+                    let _ = super::clipimage::store(
+                        &self.conn,
+                        &img.bytes,
+                        img.width as u32,
+                        img.height as u32,
+                    );
                 }
                 CallbackResult::Next
             }
@@ -198,13 +207,29 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
     let rows: Vec<(i64, i64, i64, String)> = rows.flatten().collect();
 
     if query.is_empty() {
-        return rows
+        // 图片与文本条目按 固定 > 新旧 合并（两表各自已按该序取回）；
+        // 图片上限取一半，避免连串截图挤掉文本常用项
+        let mut merged: Vec<(i64, i64, SearchItem)> = rows
             .iter()
             .take(limit)
-            .enumerate()
-            .filter_map(|(i, (id, t, pinned, _))| {
+            .filter_map(|(id, t, pinned, _)| {
                 let content = get_by_id(conn, *id)?;
-                Some(build_item(*id, content, *t, now, i, *pinned == 1))
+                Some((
+                    *pinned,
+                    *t,
+                    build_item(*id, content, *t, now, 0, *pinned == 1),
+                ))
+            })
+            .collect();
+        merged.extend(super::clipimage::search_recent(conn, limit - limit / 2));
+        merged.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+        return merged
+            .into_iter()
+            .take(limit)
+            .enumerate()
+            .map(|(i, (_, _, mut it))| {
+                it.score = 60.0 - i as f32;
+                it
             })
             .collect();
     }
@@ -277,24 +302,30 @@ fn build_item(
     }
 }
 
-/// 固定/取消固定（返回操作后的状态）：固定条目列表置顶，且不参与保留条数淘汰
+/// 固定/取消固定（返回操作后的状态）：固定条目列表置顶，且不参与保留条数淘汰。
+/// 文本表未命中（id 属于图片表）时落到图片表——前端两表共用同一 id 寻址约定
 pub fn pin_toggle(conn: &Connection, id: i64) -> Result<bool, String> {
-    conn.execute(
-        "UPDATE clipboard_history SET pinned = 1 - pinned WHERE id=?1",
-        params![id],
-    )
-    .map_err(|e| e.to_string())?;
-    let pinned: i64 = conn
-        .query_row(
-            "SELECT pinned FROM clipboard_history WHERE id=?1",
+    let changed = conn
+        .execute(
+            "UPDATE clipboard_history SET pinned = 1 - pinned WHERE id=?1",
             params![id],
-            |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    Ok(pinned == 1)
+    if changed > 0 {
+        let pinned: i64 = conn
+            .query_row(
+                "SELECT pinned FROM clipboard_history WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        return Ok(pinned == 1);
+    }
+    super::clipimage::pin_toggle(conn, id)
 }
 
-fn ago(then: i64, now: i64) -> String {
+/// 相对时间文案（图片条目副标题复用）
+pub(crate) fn ago(then: i64, now: i64) -> String {
     let secs = (now - then).max(0) / 1000;
     if secs < 60 {
         "刚刚".into()

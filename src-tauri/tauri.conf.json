@@ -23,6 +23,20 @@
         "skipTaskbar": true,
         "resizable": false,
         "shadow": true
+      },
+      {
+        "label": "superpanel",
+        "title": "zap-actions",
+        "width": 264,
+        "height": 240,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": true,
+        "focus": false
       }
     ],
     "security": {
