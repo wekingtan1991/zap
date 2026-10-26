@@ -1,6 +1,7 @@
 mod hotkey_capture;
 mod providers;
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -21,10 +22,21 @@ const WINDOW_LABEL: &str = "main";
 const PANEL_WIDTH: f64 = 720.0;
 const PANEL_HEIGHT: f64 = 480.0;
 
+/// 直达热键的动作：账号库 = 呼出面板并进入 pw 保护域；快速粘贴 = 不经面板，
+/// 把最近一条剪贴板内容粘贴到当前前台窗口；超级面板 = 抓取选中文本出动作菜单
+#[derive(Clone, Copy)]
+enum DirectKind {
+    Vault,
+    QuickPaste,
+    SuperPanel,
+}
+
 struct AppState {
     engine: std::sync::Arc<SearchEngine>,
     /// 当前生效的呼出热键（设置保存时热切换）
     hotkey: Mutex<String>,
+    /// 直达热键表：规范化热键串 → 动作（设置保存时热更新）
+    direct_hotkeys: Mutex<HashMap<String, DirectKind>>,
     /// 托盘「记录剪贴板历史」勾选项，设置页改动时同步勾选态
     clip_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
     /// 面板最近一次显示的时间，用于忽略显示瞬间的焦点抖动
@@ -196,6 +208,12 @@ async fn vault_update(
 #[serde(rename_all = "camelCase")]
 struct AppSettingsDto {
     hotkey: String,
+    /// 账号库直达热键（空串 = 未绑定）
+    vault_hotkey: String,
+    /// 快速粘贴直达热键（空串 = 未绑定）
+    clip_hotkey: String,
+    /// 超级面板直达热键（空串 = 未绑定）
+    superpanel_hotkey: String,
     clip_enabled: bool,
     clip_max: i64,
     /// 剪贴板条目选中后自动粘贴到原窗口
@@ -205,6 +223,8 @@ struct AppSettingsDto {
     everything_autostart: bool,
     /// 外观模式（dark/light/system）
     appearance: String,
+    /// 透明面板（亚克力窗口特效）
+    panel_transparency: bool,
     /// 可开关插件清单（仅工具插件；核心搜索源不列）
     plugins: Vec<providers::PluginInfo>,
 }
@@ -213,6 +233,18 @@ struct AppSettingsDto {
 fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSettingsDto {
     AppSettingsDto {
         hotkey: state.hotkey.lock().expect("hotkey poisoned").clone(),
+        vault_hotkey: state
+            .engine
+            .get_setting(providers::appconfig::KEY_VAULT_HOTKEY)
+            .unwrap_or_default(),
+        clip_hotkey: state
+            .engine
+            .get_setting(providers::appconfig::KEY_CLIP_HOTKEY)
+            .unwrap_or_default(),
+        superpanel_hotkey: state
+            .engine
+            .get_setting(providers::appconfig::KEY_SUPERPANEL_HOTKEY)
+            .unwrap_or_default(),
         clip_enabled: providers::clipboard::CLIP_ENABLED.load(Ordering::Relaxed),
         clip_max: providers::clipboard::RETENTION_LIMIT.load(Ordering::Relaxed),
         clip_autopaste: providers::clipboard::PASTE_TO_PREV.load(Ordering::Relaxed),
@@ -231,6 +263,11 @@ fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSetting
             .engine
             .get_setting(providers::appconfig::KEY_APPEARANCE)
             .unwrap_or_else(|| "dark".into()),
+        panel_transparency: state
+            .engine
+            .get_setting(providers::appconfig::KEY_PANEL_TRANSPARENCY)
+            .map(|v| v != "0")
+            .unwrap_or(providers::appconfig::DEFAULT_PANEL_TRANSPARENCY),
         plugins: state.engine.plugin_states(),
     }
 }
@@ -248,6 +285,8 @@ struct PluginSwitchDto {
 struct SaveOutcome {
     /// 热键保存失败的原因；None = 生效
     hotkey_error: Option<String>,
+    /// 直达热键保存失败的原因；None = 生效（保存其余设置不受影响）
+    direct_hotkey_error: Option<String>,
 }
 
 // Tauri 命令按字段平铺（前端 invoke 传同名参数），显式放行参数个数提示
@@ -257,9 +296,12 @@ fn save_settings(
     app: AppHandle,
     state: tauri::State<AppState>,
     hotkey: String,
+    // Option 容错：半新半旧的会话（前端未带上新键）保存时不再整单被拒
+    vault_hotkey: Option<String>,
+    clip_hotkey: Option<String>,
+    superpanel_hotkey: Option<String>,
     clip_enabled: bool,
     clip_max: i64,
-    // Option 容错：半新半旧的会话（前端未带上新键）保存时不再整单被拒
     clip_autopaste: Option<bool>,
     pwd_clear_secs: i64,
     everything_autostart: bool,
@@ -282,7 +324,7 @@ fn save_settings(
                     state
                         .engine
                         .set_setting(providers::appconfig::KEY_HOTKEY, &hotkey)?;
-                    *state.hotkey.lock().expect("hotkey poisoned") = hotkey;
+                    *state.hotkey.lock().expect("hotkey poisoned") = hotkey.clone();
                 }
                 Err(e) => {
                     eprintln!("zap: 热键 {hotkey} 注册失败: {e}");
@@ -298,6 +340,72 @@ fn save_settings(
                 if let Ok(old) = current.parse::<Shortcut>() {
                     let _ = gs.register(old);
                 }
+            }
+        }
+    }
+
+    // 直达热键槽位：None = 旧前端未带键跳过；空串 = 解绑；其余 = 注册
+    // （失败记 direct_hotkey_error 不阻塞其余保存，与主热键同口径）
+    let mut direct_hotkey_error: Option<String> = None;
+    {
+        let gs = app.global_shortcut();
+        for (raw, cfg_key, kind) in [
+            (
+                vault_hotkey,
+                providers::appconfig::KEY_VAULT_HOTKEY,
+                DirectKind::Vault,
+            ),
+            (
+                clip_hotkey,
+                providers::appconfig::KEY_CLIP_HOTKEY,
+                DirectKind::QuickPaste,
+            ),
+            (
+                superpanel_hotkey,
+                providers::appconfig::KEY_SUPERPANEL_HOTKEY,
+                DirectKind::SuperPanel,
+            ),
+        ] {
+            let Some(raw) = raw else { continue };
+            let norm = raw.trim().to_lowercase();
+            // 旧绑定先解绑（无论换成什么值）
+            let old = state
+                .engine
+                .get_setting(cfg_key)
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase();
+            if let Ok(old_sc) = old.parse::<Shortcut>() {
+                let _ = gs.unregister(old_sc);
+            }
+            if norm.is_empty() {
+                state.engine.set_setting(cfg_key, "")?;
+                continue;
+            }
+            if norm == hotkey {
+                direct_hotkey_error = Some("直达热键不能与呼出热键相同".into());
+                continue;
+            }
+            match norm.parse::<Shortcut>() {
+                Ok(sc) => match gs.register(sc) {
+                    Ok(_) => {
+                        state.engine.set_setting(cfg_key, &norm)?;
+                        state
+                            .direct_hotkeys
+                            .lock()
+                            .expect("direct poisoned")
+                            .insert(norm, kind);
+                    }
+                    Err(e) => {
+                        direct_hotkey_error =
+                            Some(format!("直达热键注册失败，可能已被其他程序占用：{e}"));
+                        // 恢复旧绑定
+                        if let Ok(old_sc) = old.parse::<Shortcut>() {
+                            let _ = gs.register(old_sc);
+                        }
+                    }
+                },
+                Err(e) => direct_hotkey_error = Some(format!("无法识别的按键组合：{e}")),
             }
         }
     }
@@ -341,7 +449,10 @@ fn save_settings(
     if let Some(item) = state.clip_item.lock().expect("clip_item poisoned").as_ref() {
         let _ = item.set_checked(clip_enabled);
     }
-    Ok(SaveOutcome { hotkey_error })
+    Ok(SaveOutcome {
+        hotkey_error,
+        direct_hotkey_error,
+    })
 }
 
 #[tauri::command]
@@ -352,6 +463,63 @@ fn autostart_set(app: AppHandle, enable: bool) -> Result<(), String> {
     } else {
         al.disable().map_err(|e| e.to_string())
     }
+}
+
+/// 透明面板（亚克力）：应用/清除窗口特效。系统不支持时返回 Err（调用方决定回退）。
+/// 特效只作用于桌面模糊底，面板自身透明度由前端 CSS（zap-trans 类）负责
+fn apply_window_effects(app: &AppHandle, on: bool) -> Result<(), String> {
+    use tauri::utils::config::WindowEffectsConfig;
+    use tauri::utils::{WindowEffect, WindowEffectState};
+    let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
+        return Err("面板窗口不存在".into());
+    };
+    let result = if on {
+        win.set_effects(Some(WindowEffectsConfig {
+            effects: vec![WindowEffect::Acrylic],
+            state: Some(WindowEffectState::Active),
+            ..Default::default()
+        }))
+    } else {
+        win.set_effects(None)
+    };
+    result.map_err(|e| e.to_string())
+}
+
+/// 透明面板开关：应用/清除亚克力并持久化偏好；失败（系统不支持）不落偏好，
+/// 前端据此回退为不透明并提示
+#[tauri::command]
+async fn transparency_set(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    enable: bool,
+) -> Result<(), String> {
+    apply_window_effects(&app, enable)?;
+    state.engine.set_setting(
+        providers::appconfig::KEY_PANEL_TRANSPARENCY,
+        if enable { "1" } else { "0" },
+    )
+}
+
+/// 超级面板动作执行（前端菜单点击；执行后由前端隐藏窗口）
+#[tauri::command]
+async fn superpanel_act(app: AppHandle, action: String, text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        providers::superpanel::run_action(&app, &action, &text)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 超级面板当前菜单内容（前端聚焦窗口时拉取；事件推送之外的兜底通道）
+#[tauri::command]
+fn superpanel_payload() -> Option<providers::superpanel::SuperActionsPayload> {
+    providers::superpanel::current_payload()
+}
+
+/// 收起超级面板（Esc / 点击项后调用）
+#[tauri::command]
+fn superpanel_hide(app: AppHandle) {
+    providers::superpanel::superpanel_hide(&app);
 }
 
 // ---------- 热键录制（低级键盘钩子，可捕获被输入法接管的组合如 Ctrl+Space） ----------
@@ -435,14 +603,15 @@ async fn clip_row(state: tauri::State<'_, AppState>, id: i64) -> Result<String, 
 }
 
 /// 通用文本复制（JSON 美化/压缩结果回填等）：
-/// 走自身复制抑制窗，派生结果不重复进入剪贴板历史；打开剪贴板带退避重试
+/// 走自身复制抑制窗，派生结果不重复进入剪贴板历史；写入带退避重试
 #[tauri::command]
 async fn copy_text(text: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         providers::clipboard::begin_self_copy();
-        providers::clipboard::open_retrying()?
-            .set_text(text)
-            .map_err(|e| e.to_string())?;
+        providers::clipboard::retrying(|| {
+            arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text.clone()))
+        })
+        .map_err(|e| e.to_string())?;
         Ok("已复制".to_string())
     })
     .await
@@ -521,8 +690,9 @@ async fn vault_backup_restore(
     .map_err(|e| e.to_string())?
 }
 
-/// 条目次级操作：admin=管理员运行 / reveal=所在文件夹定位 / copy_path=复制路径。
-/// .lnk 先解析为真实目标（要的是 exe 而不是开始菜单快捷方式）；商店应用（shell:）不支持
+/// 条目次级操作：admin=管理员运行 / reveal=所在文件夹定位 / copy_path=复制路径或链接 /
+/// clip_copy=剪贴板条目仅复制（不粘贴） / close_window=关闭窗口。
+/// .lnk（含 recent 的指针）先解析为真实目标；商店应用（shell:）不支持路径类操作
 #[tauri::command]
 async fn secondary_action(
     state: tauri::State<'_, AppState>,
@@ -531,29 +701,51 @@ async fn secondary_action(
 ) -> Result<(), String> {
     let engine = state.engine.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if target.starts_with("shell:") {
-            return Err("商店应用不支持该操作".to_string());
-        }
-        let resolved =
-            providers::apps::resolve_lnk_target(&target).unwrap_or_else(|| target.clone());
+        // 非路径类操作先行：不参与 shell: 拦截与 lnk 解析
         match action.as_str() {
-            "admin" => {
-                engine.record_app_launch(&target);
-                // 解析目标不存在时回退 lnk 本体：ShellExecute 由 shell 自行解析快捷方式，
-                // 能兜住自解析拿不到有效路径的情形
-                let exe = if std::path::Path::new(&resolved).exists() {
-                    resolved.clone()
-                } else {
-                    target.clone()
-                };
-                providers::sysutil::run_as_admin(&exe)
+            // 历史条目按 rowid 回查全文回填（与选中即粘贴同口径：监听去重自动置顶），
+            // 不交还原窗口、不注入 Ctrl+V
+            "clip_copy" => {
+                let id: i64 = target.parse().map_err(|_| "无效条目".to_string())?;
+                let text = engine
+                    .clip_row(id)
+                    .ok_or_else(|| "该条剪贴板已被清理".to_string())?;
+                providers::clipboard::retrying(|| {
+                    arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text.clone()))
+                })
+                .map(|_| ())
             }
-            "reveal" => providers::sysutil::reveal_in_explorer(&resolved),
-            "copy_path" => arboard::Clipboard::new()
-                .map_err(|e| e.to_string())?
-                .set_text(resolved)
-                .map_err(|e| e.to_string()),
-            _ => Err("未知操作".into()),
+            "close_window" => {
+                let hwnd: isize = target.parse().map_err(|_| "无效窗口".to_string())?;
+                providers::sysutil::close_window(hwnd)
+            }
+            _ => {
+                if target.starts_with("shell:") {
+                    return Err("商店应用不支持该操作".to_string());
+                }
+                let resolved =
+                    providers::apps::resolve_lnk_target(&target).unwrap_or_else(|| target.clone());
+                match action.as_str() {
+                    "admin" => {
+                        engine.record_app_launch(&target);
+                        // 解析目标不存在时回退 lnk 本体：ShellExecute 由 shell 自行解析快捷方式，
+                        // 能兜住自解析拿不到有效路径的情形
+                        let exe = if std::path::Path::new(&resolved).exists() {
+                            resolved.clone()
+                        } else {
+                            target.clone()
+                        };
+                        providers::sysutil::run_as_admin(&exe)
+                    }
+                    "reveal" => providers::sysutil::reveal_in_explorer(&resolved),
+                    "copy_path" => providers::clipboard::retrying(|| {
+                        let resolved = resolved.clone();
+                        arboard::Clipboard::new().and_then(|mut cb| cb.set_text(resolved))
+                    })
+                    .map(|_| ()),
+                    _ => Err("未知操作".into()),
+                }
+            }
         }
     })
     .await
@@ -621,10 +813,30 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
             }
             Ok(())
         }
-        "clip" => {
-            // 回填剪贴板；我们的监听会把它移动到历史顶部（重复内容自动去重）
-            if let Ok(mut cb) = arboard::Clipboard::new() {
-                let _ = cb.set_text(item.target.clone());
+        "clip" | "clipimg" => {
+            // 回填剪贴板（文本=内容本体；图片=按行号点查全图并解码 RGBA）；
+            // 我们的监听会把它移动到历史顶部（重复内容自动去重）
+            if item.kind == "clip" {
+                providers::clipboard::retrying(|| {
+                    arboard::Clipboard::new().and_then(|mut cb| cb.set_text(item.target.clone()))
+                })
+                .ok();
+            } else if let Ok(rowid) = item.target.parse::<i64>()
+                && let Some((w, h, png)) = app.state::<AppState>().engine.clip_image(rowid)
+                && let Ok((_, _, rgba)) = providers::clipimage::decode_png(&png)
+            {
+                providers::clipboard::retrying(|| {
+                    arboard::Clipboard::new().and_then(|mut cb| {
+                        cb.set_image(arboard::ImageData {
+                            width: w as usize,
+                            height: h as usize,
+                            bytes: std::borrow::Cow::Owned(rgba.clone()),
+                        })
+                    })
+                })
+                .ok();
+            } else {
+                return Err("该条剪贴板图片已被清理".into());
             }
             // 选中即粘贴：焦点交还呼出前的窗口并注入 Ctrl+V，省掉手动一步；
             // 设置关闭或无记录（呼出时前台就是面板/捕获失败）则退化为仅回填
@@ -712,8 +924,10 @@ fn capture_prev_foreground(_window: &tauri::WebviewWindow) -> Option<isize> {
     None
 }
 
-/// 呼出/隐藏面板：显示时定位到鼠标附近（多显示器内夹紧），并通知前端清空状态
-fn toggle_panel(app: &AppHandle) {
+/// 呼出/隐藏面板：显示时定位到鼠标附近（多显示器内夹紧），并通知前端清空状态。
+/// preset 非空时在 shown 事件后追加 zap://preset（直达热键/超级面板进保护域用），
+/// 前端在 shown 重置后再设置搜索词，顺序即生效顺序
+pub(crate) fn toggle_panel(app: &AppHandle, preset: Option<&str>) {
     let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
         return;
     };
@@ -745,6 +959,9 @@ fn toggle_panel(app: &AppHandle) {
     let _ = win.set_focus();
     *state.shown_at.lock().expect("shown_at poisoned") = Some(Instant::now());
     let _ = win.emit("zap://shown", ());
+    if let Some(p) = preset {
+        let _ = app.emit("zap://preset", p.to_string());
+    }
     // 面板呼出后台重建应用索引（10 秒节流）：新装/卸载的软件无需重启即可搜到
     let engine = state.engine.clone();
     drop(tauri::async_runtime::spawn_blocking(move || {
@@ -752,27 +969,89 @@ fn toggle_panel(app: &AppHandle) {
     }));
 }
 
+/// 直达热键·快速粘贴：不经面板，把最近一条剪贴板内容回填并粘贴到当前前台窗口。
+/// 无历史记录时静默不动（面板隐藏状态没有可用的反馈通道）
+fn quick_paste_latest(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let Some(text) = state.engine.latest_clip() else {
+        return;
+    };
+    let Some(hwnd) = foreground_hwnd() else {
+        return;
+    };
+    if providers::clipboard::retrying(|| {
+        let text = text.clone();
+        arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text))
+    })
+    .is_err()
+    {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(80));
+        providers::winsys::paste_to_prev(hwnd);
+    });
+}
+
+/// 当前前台窗口句柄（快速粘贴的注入目标）
+#[cfg(windows)]
+fn foreground_hwnd() -> Option<isize> {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    unsafe {
+        let fg = GetForegroundWindow();
+        (!fg.is_invalid()).then_some(fg.0 as isize)
+    }
+}
+
+#[cfg(not(windows))]
+fn foreground_hwnd() -> Option<isize> {
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 二次启动 = 呼出面板
-            toggle_panel(app);
+            toggle_panel(app, None);
         }))
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(
             GlobalShortcutBuilder::new()
                 .with_handler(|app, shortcut, event| {
-                    // 插件 2.4 起按下与松开都会回调，只在按下时切换面板；
-                    // 热键可被用户改，按当前生效值匹配
+                    // 插件 2.4 起按下与松开都会回调，只在按下时动作；
+                    // 呼出热键可被用户改，按当前生效值匹配；其余查直达热键表
                     if event.state() == ShortcutState::Pressed {
                         let state = app.state::<AppState>();
                         let current: Option<Shortcut> =
                             state.hotkey.lock().expect("hotkey poisoned").parse().ok();
                         if current.as_ref() == Some(shortcut) {
-                            toggle_panel(app);
-                        } else {
-                            eprintln!("zap: 收到热键事件但不匹配当前设置（当前 {current:?}）");
+                            toggle_panel(app, None);
+                            return;
+                        }
+                        // 直达热键按「存档串 parse 成 Shortcut 再比较结构体」匹配，
+                        // 与主呼出热键同一口径——不用 to_string() 做键：那是
+                        // global-hotkey 的规范形（如 alt+KeyS），与存档串永不相等
+                        let direct = state
+                            .direct_hotkeys
+                            .lock()
+                            .expect("direct poisoned")
+                            .iter()
+                            .find(|(k, _)| k.parse::<Shortcut>().ok().as_ref() == Some(shortcut))
+                            .map(|(_, v)| *v);
+                        match direct {
+                            Some(DirectKind::Vault) => toggle_panel(app, Some("pw")),
+                            Some(DirectKind::QuickPaste) => quick_paste_latest(app),
+                            Some(DirectKind::SuperPanel) => {
+                                // 抓取+识别+展示是重活（最长 ~400ms），压后台线程做
+                                let handle = app.clone();
+                                drop(tauri::async_runtime::spawn_blocking(move || {
+                                    providers::superpanel::trigger_from_hotkey(&handle)
+                                }));
+                            }
+                            None => {
+                                eprintln!("zap: 收到热键事件但不匹配当前设置（当前 {current:?}）")
+                            }
                         }
                     }
                 })
@@ -784,21 +1063,26 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .on_window_event(|window, event| {
             // 失焦即隐："毫无存在感"的核心；显示后 300ms 内的焦点抖动忽略
-            if let WindowEvent::Focused(false) = event
-                && window.label() == WINDOW_LABEL
-            {
-                let state = window.app_handle().state::<AppState>();
-                if state.hold_panel.load(std::sync::atomic::Ordering::Relaxed) {
-                    return; // 安装流程期间保持面板可见（UAC 会抢焦点）
+            if let WindowEvent::Focused(false) = event {
+                if window.label() == "superpanel" {
+                    // 超级面板：点空白/Esc 前焦点先掉，失焦即收
+                    providers::superpanel::superpanel_hide(window.app_handle());
+                    return;
                 }
-                let within_grace = state
-                    .shown_at
-                    .lock()
-                    .expect("shown_at poisoned")
-                    .is_some_and(|t| t.elapsed() < Duration::from_millis(300));
-                let fg_in_panel = foreground_belongs_to_panel(window);
-                if !within_grace && !fg_in_panel {
-                    hide_panel_window(window.app_handle());
+                if window.label() == WINDOW_LABEL {
+                    let state = window.app_handle().state::<AppState>();
+                    if state.hold_panel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return; // 安装流程期间保持面板可见（UAC 会抢焦点）
+                    }
+                    let within_grace = state
+                        .shown_at
+                        .lock()
+                        .expect("shown_at poisoned")
+                        .is_some_and(|t| t.elapsed() < Duration::from_millis(300));
+                    let fg_in_panel = foreground_belongs_to_panel(window);
+                    if !within_grace && !fg_in_panel {
+                        hide_panel_window(window.app_handle());
+                    }
                 }
             }
         })
@@ -835,6 +1119,10 @@ pub fn run() {
             get_app_settings,
             save_settings,
             autostart_set,
+            transparency_set,
+            superpanel_act,
+            superpanel_hide,
+            superpanel_payload,
             start_hotkey_capture,
             stop_hotkey_capture
         ])
@@ -888,6 +1176,46 @@ pub fn run() {
                 eprintln!("zap: 呼出热键注册失败，仅可通过托盘呼出面板");
             }
 
+            // 直达热键：账号库 / 快速粘贴 / 超级面板
+            // （未绑定 = 空串；注册失败仅落日志不影响启动）
+            let mut direct = HashMap::new();
+            for (cfg_key, kind) in [
+                (providers::appconfig::KEY_VAULT_HOTKEY, DirectKind::Vault),
+                (
+                    providers::appconfig::KEY_CLIP_HOTKEY,
+                    DirectKind::QuickPaste,
+                ),
+                (
+                    providers::appconfig::KEY_SUPERPANEL_HOTKEY,
+                    DirectKind::SuperPanel,
+                ),
+            ] {
+                let hk = engine
+                    .get_setting(cfg_key)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_lowercase();
+                if hk.is_empty() {
+                    continue;
+                }
+                match hk.parse::<Shortcut>() {
+                    Ok(sc) if gs.register(sc).is_ok() => {
+                        direct.insert(hk, kind);
+                    }
+                    _ => eprintln!("zap: 直达热键 {hk} 注册失败"),
+                }
+            }
+
+            // 透明面板（亚克力）：按存档偏好应用窗口特效；系统不支持仅落日志，
+            // 面板表面保持不透明（前端 zap-trans 类与该偏好同步）
+            let transparency_on = engine
+                .get_setting(providers::appconfig::KEY_PANEL_TRANSPARENCY)
+                .map(|v| v != "0")
+                .unwrap_or(providers::appconfig::DEFAULT_PANEL_TRANSPARENCY);
+            if let Err(e) = apply_window_effects(app.handle(), transparency_on) {
+                eprintln!("zap: 透明效果应用失败（面板保持不透明）: {e}");
+            }
+
             // Everything 自动检测：未运行且已安装则自动拉起（UAC 会弹一次）。
             // 未安装不自动下载——面板里仍保留手动入口。设置里可关掉。
             let ev_auto = engine
@@ -905,6 +1233,7 @@ pub fn run() {
             app.manage(AppState {
                 engine: std::sync::Arc::new(engine),
                 hotkey: Mutex::new(hotkey_now),
+                direct_hotkeys: Mutex::new(direct),
                 clip_item: Mutex::new(None),
                 shown_at: Mutex::new(None),
                 hold_panel: AtomicBool::new(false),
@@ -955,14 +1284,14 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => toggle_panel(app),
+                    "show" => toggle_panel(app, None),
                     "open-settings" => {
                         let visible = app
                             .get_webview_window(WINDOW_LABEL)
                             .map(|w| w.is_visible().unwrap_or(false))
                             .unwrap_or(false);
                         if !visible {
-                            toggle_panel(app);
+                            toggle_panel(app, None);
                         }
                         let _ = app.emit("zap://open-settings", ());
                     }
@@ -992,7 +1321,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        toggle_panel(tray.app_handle());
+                        toggle_panel(tray.app_handle(), None);
                     }
                 })
                 .build(app)?;

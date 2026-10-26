@@ -19,6 +19,16 @@ pub const KEY_PWD_CLEAR_SECS: &str = "pwd_clear_secs";
 pub const KEY_EVERYTHING_AUTOSTART: &str = "everything_autostart";
 /// 外观模式（dark/light/system），非法值前端按 dark 回退
 pub const KEY_APPEARANCE: &str = "appearance";
+/// 透明面板（亚克力窗口特效），系统不支持时面板保持不透明
+pub const KEY_PANEL_TRANSPARENCY: &str = "panel_transparency";
+pub const DEFAULT_PANEL_TRANSPARENCY: bool = true;
+/// 账号库直达热键（空串 = 未绑定）：呼出面板并进入 pw 保护域
+pub const KEY_VAULT_HOTKEY: &str = "vault_hotkey";
+/// 快速粘贴直达热键（空串 = 未绑定）：最近一条剪贴板直接粘贴到前台窗口
+pub const KEY_CLIP_HOTKEY: &str = "clip_hotkey";
+/// 超级面板直达热键（空串 = 未绑定）：抓取选中文本出动作菜单。
+/// 早版用长按右键手势，因与各应用右键菜单冲突风险大改为热键触发
+pub const KEY_SUPERPANEL_HOTKEY: &str = "superpanel_hotkey";
 
 pub fn init_table(conn: &Connection) {
     let _ = conn.execute_batch(

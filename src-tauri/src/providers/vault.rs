@@ -45,9 +45,11 @@ fn now_ms() -> i64 {
 // ---------- 剪贴板 ----------
 
 fn copy_text(text: &str) -> Result<(), String> {
-    super::clipboard::open_retrying()?
-        .set_text(text.to_string())
-        .map_err(|e| e.to_string())
+    let owned = text.to_string();
+    super::clipboard::retrying(|| {
+        arboard::Clipboard::new().and_then(|mut cb| cb.set_text(owned.clone()))
+    })
+    .map(|_| ())
 }
 
 /// 敏感内容专用复制：排除 Windows 剪贴板历史（Win+V）与云剪贴板同步。
@@ -56,12 +58,16 @@ fn copy_text(text: &str) -> Result<(), String> {
 #[cfg(windows)]
 fn copy_text_private(text: &str) -> Result<(), String> {
     use arboard::SetExtWindows;
-    super::clipboard::open_retrying()?
-        .set()
-        .exclude_from_history()
-        .exclude_from_cloud()
-        .text(text.to_string())
-        .map_err(|e| e.to_string())
+    let owned = text.to_string();
+    super::clipboard::retrying(|| {
+        arboard::Clipboard::new().and_then(|mut cb| {
+            cb.set()
+                .exclude_from_history()
+                .exclude_from_cloud()
+                .text(owned.clone())
+        })
+    })
+    .map(|_| ())
 }
 
 #[cfg(not(windows))]

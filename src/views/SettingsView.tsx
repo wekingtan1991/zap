@@ -29,6 +29,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -41,17 +42,29 @@ import {
 } from "@/components/ui/select";
 import type { Updater } from "./useUpdater";
 import { useEscCapture } from "@/hooks/useEscCapture";
-import { applyAppearance, type Appearance } from "@/lib/appearance";
+import {
+  applyAppearance,
+  applyPanelTransparency,
+  type Appearance,
+} from "@/lib/appearance";
 
 export interface PluginState {
   id: string;
   title: string;
   hint: string;
   enabled: boolean;
+  /// 搜索入口词（后端 PluginMeta.entries 声明化下发）
+  entries: string[];
 }
 
 export interface AppSettings {
   hotkey: string;
+  /// 账号库直达热键（空串 = 未绑定）
+  vaultHotkey: string;
+  /// 快速粘贴直达热键（空串 = 未绑定）
+  clipHotkey: string;
+  /// 超级面板直达热键（空串 = 未绑定）
+  superpanelHotkey: string;
   clipEnabled: boolean;
   clipMax: number;
   /// 剪贴板条目选中后自动粘贴到原窗口
@@ -61,6 +74,8 @@ export interface AppSettings {
   everythingAutostart: boolean;
   /// 外观模式（dark/light/system）
   appearance: string;
+  /// 透明面板（亚克力窗口特效）
+  panelTransparency: boolean;
   /// 可开关插件清单（后端 meta 下发，设置页「插件」分区渲染）
   plugins: PluginState[];
 }
@@ -96,6 +111,60 @@ const formatHotkey = (hk: string) =>
     .map((p) => (p ? p.charAt(0).toUpperCase() + p.slice(1) : p))
     .join(" + ");
 
+/// 录制中的槽位：main = 呼出热键，vault/clip/superpanel = 直达热键
+type HkSlot = "main" | "vault" | "clip" | "superpanel";
+
+/// 热键录制键帽（呼出与直达共用）：点击录制、Esc 取消；带 onClear 的槽位可解绑
+function HotkeyButton({
+  value,
+  recording,
+  onRecord,
+  onClear,
+}: {
+  value: string;
+  recording: boolean;
+  onRecord: () => void;
+  onClear?: () => void;
+}) {
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {onClear && value && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 text-muted-foreground hover:text-destructive"
+          aria-label="解绑热键"
+          title="解绑热键"
+          onClick={onClear}
+        >
+          <X className="size-3.5" />
+        </Button>
+      )}
+      <button
+        type="button"
+        className={
+          "flex h-[30px] shrink-0 items-center gap-2 rounded-md border px-2.5 transition-colors " +
+          (recording
+            ? "animate-pulse-ring border-primary/80 bg-primary/15"
+            : "cursor-pointer border-primary/45 bg-primary/10 hover:bg-primary/20")
+        }
+        onClick={onRecord}
+      >
+        {recording ? (
+          <span className="text-[12.5px]">按下新组合…（Esc 取消）</span>
+        ) : (
+          <>
+            <b className="font-mono text-[12.5px] font-medium">
+              {value ? formatHotkey(value) : "未绑定"}
+            </b>
+            <span className="text-[11px] text-muted-foreground">点击录制</span>
+          </>
+        )}
+      </button>
+    </span>
+  );
+}
+
 interface Props {
   updater: Updater;
   focusRef: (el: HTMLDivElement | null) => void;
@@ -105,8 +174,11 @@ interface Props {
 export function SettingsView({ updater, focusRef, onClose }: Props) {
   const [st, setSt] = useState<AppSettings | null>(null);
   const [appVersion, setAppVersion] = useState("");
-  const [hkRecording, setHkRecording] = useState(false);
+  /// 正在录制的热键槽位（null = 未在录制）
+  const [hkSlot, setHkSlot] = useState<HkSlot | null>(null);
   const [hkError, setHkError] = useState("");
+  /// 直达热键保存错误（与主热键错误分开呈现）
+  const [directErr, setDirectErr] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
   /// 搜索捷径清单：随「保存」整单提交（校验失败留页修正）
   const [scList, setScList] = useState<Shortcut[]>([]);
@@ -232,6 +304,14 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           ...res,
           clipAutoPaste: res.clipAutoPaste ?? true,
           appearance: res.appearance ?? "dark",
+          panelTransparency: res.panelTransparency ?? true,
+          superpanelHotkey: res.superpanelHotkey ?? "",
+          vaultHotkey: res.vaultHotkey ?? "",
+          clipHotkey: res.clipHotkey ?? "",
+          plugins: (res.plugins ?? []).map((p) => ({
+            ...p,
+            entries: p.entries ?? [],
+          })),
         })
       )
       .catch(() => {});
@@ -253,19 +333,33 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
     invoke("stop_hotkey_capture").catch(() => {});
   }, []);
 
-  // ---------- 热键录制（原 App.tsx 机制原样迁入） ----------
+  // ---------- 热键录制（原 App.tsx 机制迁入，槽位泛化到呼出+直达三处） ----------
   // 组合由 Rust 低级键盘钩子经 zap://hk-capture 事件送达——连被输入法接管的
   // Ctrl+Space（中英切换）也能捕获；页面只负责 Esc 取消与钩子启停
+  const startRecording = (slot: HkSlot) => {
+    invoke("start_hotkey_capture")
+      .then(() => setHkSlot(slot))
+      .catch((e) => setHkError("启动录制失败：" + e));
+  };
+
   useEffect(() => {
     const un = listen<string>("zap://hk-capture", (e) => {
-      setSt((s) => (s ? { ...s, hotkey: e.payload } : s));
-      setHkRecording(false);
+      if (!hkSlot) return;
+      const key = e.payload;
+      setSt((s) => {
+        if (!s) return s;
+        if (hkSlot === "main") return { ...s, hotkey: key };
+        if (hkSlot === "vault") return { ...s, vaultHotkey: key };
+        if (hkSlot === "superpanel") return { ...s, superpanelHotkey: key };
+        return { ...s, clipHotkey: key };
+      });
+      setHkSlot(null);
       stopHkCapture();
     });
     return () => {
       un.then((f) => f());
     };
-  }, [stopHkCapture]);
+  }, [hkSlot, stopHkCapture]);
 
   // 物理按键码 → 热键键名（不受输入法/键盘布局影响；e.key 在中文输入法下常为 "Process"）
   const codeToKeyName = (code: string): string | null => {
@@ -276,14 +370,14 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   };
 
   useEffect(() => {
-    if (!hkRecording) return;
+    if (!hkSlot) return;
     // 页面级快速路径：捕获普通组合（焦点在面板内即可）；被输入法接管的组合由
     // Rust 侧轮询兜底（zap://hk-capture 事件）
     const onWinKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
-        setHkRecording(false);
+        setHkSlot(null);
         stopHkCapture();
         return;
       }
@@ -297,13 +391,20 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
       if (mods.length === 0) return; // 必须带修饰键
       e.preventDefault();
       e.stopPropagation();
-      setSt((s) => (s ? { ...s, hotkey: [...mods, key].join("+") } : s));
-      setHkRecording(false);
+      const combo = [...mods, key].join("+");
+      setSt((s) => {
+        if (!s) return s;
+        if (hkSlot === "main") return { ...s, hotkey: combo };
+        if (hkSlot === "vault") return { ...s, vaultHotkey: combo };
+        if (hkSlot === "superpanel") return { ...s, superpanelHotkey: combo };
+        return { ...s, clipHotkey: combo };
+      });
+      setHkSlot(null);
       stopHkCapture();
     };
     window.addEventListener("keydown", onWinKey, true);
     return () => window.removeEventListener("keydown", onWinKey, true);
-  }, [hkRecording, stopHkCapture]);
+  }, [hkSlot, stopHkCapture]);
 
   // 窗口捕获兜 Esc 关设置页（焦点掉 body 后面板 onKeyDown 收不到）。
   // 录制态让位（enabled=false，录制监听自己管 Esc=取消录制）；备份弹窗存活时
@@ -321,7 +422,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
       }
       onClose();
     },
-    !hkRecording
+    hkSlot === null
   );
 
   // ---------- 搜索捷径（增删改排序，本地编辑、随「保存」整单提交） ----------
@@ -350,8 +451,14 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
       return;
     }
     try {
-      const res = await invoke<{ hotkeyError: string | null }>("save_settings", {
+      const res = await invoke<{
+        hotkeyError: string | null;
+        directHotkeyError: string | null;
+      }>("save_settings", {
         hotkey: st.hotkey,
+        vaultHotkey: st.vaultHotkey ?? "",
+        clipHotkey: st.clipHotkey ?? "",
+        superpanelHotkey: st.superpanelHotkey ?? "",
         clipEnabled: st.clipEnabled,
         clipMax: st.clipMax,
         clipAutoPaste: st.clipAutoPaste ?? true,
@@ -360,6 +467,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         appearance: st.appearance ?? "dark",
         plugins: st.plugins.map((p) => ({ id: p.id, enabled: p.enabled })),
       });
+      setDirectErr(res.directHotkeyError ?? "");
       if (res.hotkeyError) {
         setHkError(res.hotkeyError);
         setSt(await invoke<AppSettings>("get_app_settings")); // 回显实际生效值
@@ -415,33 +523,60 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         </div>
         <div className="flex min-h-[38px] items-center justify-between gap-3">
           <span className="text-[13px]">呼出热键</span>
-          <button
-            type="button"
-            className={
-              "flex h-[30px] shrink-0 items-center gap-2 rounded-md border px-2.5 transition-colors " +
-              (hkRecording
-                ? "animate-pulse-ring border-primary/80 bg-primary/15"
-                : "cursor-pointer border-primary/45 bg-primary/10 hover:bg-primary/20")
+          <HotkeyButton
+            value={st.hotkey}
+            recording={hkSlot === "main"}
+            onRecord={() => startRecording("main")}
+          />
+        </div>
+        <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <span className="flex min-w-0 flex-col gap-px">
+            <span className="text-[13px]">账号库直达</span>
+            <span className="text-[11px] leading-snug text-muted-foreground">
+              呼出面板并进入账号库
+            </span>
+          </span>
+          <HotkeyButton
+            value={st.vaultHotkey ?? ""}
+            recording={hkSlot === "vault"}
+            onRecord={() => startRecording("vault")}
+            onClear={() =>
+              setSt((s) => (s ? { ...s, vaultHotkey: "" } : s))
             }
-            onClick={() => {
-              invoke("start_hotkey_capture")
-                .then(() => setHkRecording(true))
-                .catch((e) => setHkError("启动录制失败：" + e));
-            }}
-          >
-            {hkRecording ? (
-              <span className="text-[12.5px]">按下新组合…（Esc 取消）</span>
-            ) : (
-              <>
-                <b className="font-mono text-[12.5px] font-medium">
-                  {formatHotkey(st.hotkey)}
-                </b>
-                <span className="text-[11px] text-muted-foreground">
-                  点击录制
-                </span>
-              </>
-            )}
-          </button>
+          />
+        </div>
+        <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <span className="flex min-w-0 flex-col gap-px">
+            <span className="text-[13px]">快速粘贴</span>
+            <span className="text-[11px] leading-snug text-muted-foreground">
+              最近一条剪贴板直接粘贴到当前窗口（不经面板）
+            </span>
+          </span>
+          <HotkeyButton
+            value={st.clipHotkey ?? ""}
+            recording={hkSlot === "clip"}
+            onRecord={() => startRecording("clip")}
+            onClear={() => setSt((s) => (s ? { ...s, clipHotkey: "" } : s))}
+          />
+        </div>
+        {directErr && (
+          <div className="pb-1 text-[11px] text-destructive">{directErr}</div>
+        )}
+        <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <span className="flex min-w-0 flex-col gap-px">
+            <span className="text-[13px]">超级面板</span>
+            <span className="text-[11px] leading-snug text-muted-foreground">
+              按热键抓取当前选中的文字，光标旁弹出换算/复制/搜索菜单
+            </span>
+          </span>
+          <HotkeyButton
+            value={st.superpanelHotkey ?? ""}
+            recording={hkSlot === "superpanel"}
+            onRecord={() => startRecording("superpanel")}
+            onClear={() =>
+              setSt((s) => (s ? { ...s, superpanelHotkey: "" } : s))
+            }
+          />
         </div>
         {hkError && (
           <div className="animate-shake pb-1 text-[11px] text-destructive">
@@ -590,6 +725,34 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                 <SelectItem value="system">跟随系统</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div className="flex min-h-[38px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <Label
+                htmlFor="set-transparency"
+                className="text-[13px] font-normal text-foreground"
+              >
+                透明效果
+              </Label>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                亚克力质感，桌面透过面板隐约可见；系统不支持时保持不透明
+              </span>
+            </span>
+            <Checkbox
+              id="set-transparency"
+              checked={st.panelTransparency}
+              onCheckedChange={async (v) => {
+                const on = v === true;
+                try {
+                  // 即时应用并持久化：失败（系统不支持）不落偏好、控件回弹
+                  await invoke("transparency_set", { enable: on });
+                  setSt((s) => (s ? { ...s, panelTransparency: on } : s));
+                  applyPanelTransparency(on);
+                } catch (e) {
+                  toast.error("当前系统不支持透明效果：" + String(e));
+                }
+              }}
+            />
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">
@@ -748,6 +911,16 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                   <span className="text-[11px] leading-snug text-muted-foreground">
                     {p.hint}
                   </span>
+                  {(p.entries?.length ?? 0) > 0 && (
+                    <span className="flex flex-wrap items-center gap-1 pt-0.5">
+                      <span className="text-[11px] text-muted-foreground">
+                        入口
+                      </span>
+                      {(p.entries ?? []).map((w) => (
+                        <Kbd key={w}>{w}</Kbd>
+                      ))}
+                    </span>
+                  )}
                 </span>
                 <Checkbox
                   id={"set-plugin-" + p.id}

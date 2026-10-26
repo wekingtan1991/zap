@@ -27,27 +27,10 @@ fn ensure_enabled() -> Result<(), String> {
 
 pub struct TextToolsPlugin;
 
-/// 入口词：query 装进任一词（前缀/包含/子序列 + 拼音）即出「文本工具」入口条目。
-/// tool 前缀域已退役——toolkit 等更长的词不再被劫持
-const ENTRY_WORDS: &[&str] = &[
-    "tool",
-    "文本工具",
-    "时间戳",
-    "base64",
-    "uuid",
-    "哈希",
-    "hash",
-    "编码",
-    "解码",
-    "md5",
-    "sha1",
-    "sha256",
-    "url",
-];
-
 impl super::plugin::Plugin for TextToolsPlugin {
     fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
-        if ensure_enabled().is_err() || !super::plugin::entry_hit(query, ENTRY_WORDS) {
+        let words = self.meta().map(|m| m.entries).unwrap_or(&[]);
+        if ensure_enabled().is_err() || !super::plugin::entry_hit(query, words) {
             return Vec::new();
         }
         vec![SearchItem {
@@ -66,10 +49,26 @@ impl super::plugin::Plugin for TextToolsPlugin {
         Some(super::plugin::PluginMeta {
             id: "text-tools",
             title: "文本工具",
-            hint: "粘贴/键入时间戳/Base64/URL/UUID/哈希即时换算，搜索 tool 等词进入",
+            hint: "粘贴/键入时间戳/Base64/URL/UUID/哈希即时换算，搜索入口词进入",
             key: "plugin_text_tools",
             default_on: true,
             state: &TEXT_TOOLS_ON,
+            // 入口词声明化：搜索能命中的词都在这里，设置页据此展示
+            entries: &[
+                "tool",
+                "文本工具",
+                "时间戳",
+                "base64",
+                "uuid",
+                "哈希",
+                "hash",
+                "编码",
+                "解码",
+                "md5",
+                "sha1",
+                "sha256",
+                "url",
+            ],
         })
     }
 

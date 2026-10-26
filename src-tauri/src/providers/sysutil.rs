@@ -109,3 +109,18 @@ pub fn reveal_in_explorer(path: &str) -> Result<(), String> {
     cmd.spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// 向窗口投递 WM_CLOSE：走窗口自身的关闭流程（未保存的文档会弹确认），不是强杀进程。
+/// 窗口此时可能已被用户关掉——投递失败报错，成功（含静默吞掉的窗口）即返回
+#[cfg(windows)]
+pub fn close_window(hwnd_val: isize) -> Result<(), String> {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    let hwnd = HWND(hwnd_val as *mut core::ffi::c_void);
+    unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).map_err(|e| e.to_string()) }
+}
+
+#[cfg(not(windows))]
+pub fn close_window(_hwnd_val: isize) -> Result<(), String> {
+    Err("仅支持 Windows".into())
+}

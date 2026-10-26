@@ -29,13 +29,10 @@ fn ensure_enabled() -> Result<(), String> {
 
 pub struct JsonToolsPlugin;
 
-/// 入口词：query 装进任一词（前缀/包含/子序列 + 拼音）即出「JSON 工具」入口条目。
-/// json 前缀域已退役——工具靠搜索命中进入，jsonview 等更长的词不再被劫持
-const ENTRY_WORDS: &[&str] = &["json", "json工具", "格式化", "美化", "压缩", "校验", "yaml"];
-
 impl super::plugin::Plugin for JsonToolsPlugin {
     fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
-        if ensure_enabled().is_err() || !super::plugin::entry_hit(query, ENTRY_WORDS) {
+        let words = self.meta().map(|m| m.entries).unwrap_or(&[]);
+        if ensure_enabled().is_err() || !super::plugin::entry_hit(query, words) {
             return Vec::new();
         }
         vec![SearchItem {
@@ -54,10 +51,12 @@ impl super::plugin::Plugin for JsonToolsPlugin {
         Some(super::plugin::PluginMeta {
             id: "json-tools",
             title: "JSON 工具",
-            hint: "粘贴/键入 JSON 即时识别（美化/压缩/校验/YAML/TS），搜索 json 等词进入",
+            hint: "粘贴/键入 JSON 即时识别（美化/压缩/校验/YAML/TS），搜索入口词进入",
             key: "plugin_json_tools",
             default_on: true,
             state: &JSON_TOOLS_ON,
+            // 入口词声明化：搜索能命中的词都在这里，设置页据此展示
+            entries: &["json", "json工具", "格式化", "美化", "压缩", "校验", "yaml"],
         })
     }
 

@@ -145,6 +145,37 @@
   --zap-json-str: #7e22ce;
 }
 
+/* ---------- 透明面板（亚克力）：documentElement 挂 zap-trans（src/lib/appearance.ts）。
+   窗口特效由后端 apply_window_effects 负责；这里只把表面切半透明让桌面透出。
+   alpha 下限刻意不低（0.72+）：特效失败时无模糊底，靠自身底色保可读性 ---------- */
+:root.zap-trans {
+  --zap-panel-grad: linear-gradient(
+    180deg,
+    rgba(29, 32, 39, 0.78) 0%,
+    rgba(21, 23, 27, 0.83) 100%
+  );
+  --zap-dialog-grad: linear-gradient(
+    180deg,
+    rgba(35, 38, 46, 0.88) 0%,
+    rgba(26, 29, 34, 0.9) 100%
+  );
+}
+:root.zap-trans body {
+  background: transparent;
+}
+:root.zap-light.zap-trans {
+  --zap-panel-grad: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.74) 0%,
+    rgba(251, 252, 254, 0.8) 100%
+  );
+  --zap-dialog-grad: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.82) 0%,
+    rgba(248, 249, 251, 0.86) 100%
+  );
+}
+
 @theme inline {
   --font-sans: system-ui, "Microsoft YaHei", "PingFang SC", sans-serif;
   --font-mono: Consolas, "Courier New", monospace;

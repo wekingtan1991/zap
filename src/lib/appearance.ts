@@ -29,3 +29,10 @@ export function applyAppearance(mode: Appearance) {
     mediaListener = null;
   }
 }
+
+/// 透明面板：documentElement 挂 zap-trans 类，CSS 侧把面板/弹层表面切半透明
+/// （窗口特效=后端亚克力，本类只管网页表面；特效失败时后端不落偏好，
+/// 前端以偏好为准挂类——特效失败的场景面板表面仍半透明但无模糊底，可读性靠 alpha 下限保底）
+export function applyPanelTransparency(on: boolean) {
+  document.documentElement.classList.toggle("zap-trans", on);
+}
