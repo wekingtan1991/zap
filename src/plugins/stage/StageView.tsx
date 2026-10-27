@@ -216,19 +216,20 @@ export function StageView({ focusRef, onClose }: Props) {
     [load]
   );
 
-  /// 撤销恢复：按快照原样插回（含固定态与时间戳，排序位不变；
-  /// 路径已被重新放入时后端幂等忽略）
+  /// 撤销恢复：快照整批一次调用（含固定态与时间戳，排序位不变；
+  /// 路径已被重新放入的条目后端幂等跳过，返回恢复条数）
   const restoreRows = useCallback(
     async (snapshot: StageRow[]) => {
+      if (snapshot.length === 0) return;
       try {
-        for (const r of snapshot) {
-          await invoke("stage_restore", {
+        await invoke<number>("stage_restore_batch", {
+          items: snapshot.map((r) => ({
             path: r.path,
             isDir: r.isDir,
             pinned: r.pinned,
             addedAt: r.addedAt,
-          });
-        }
+          })),
+        });
         await load();
       } catch (e) {
         toast.error(String(e));

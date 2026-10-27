@@ -355,16 +355,14 @@ impl SearchEngine {
         stage::commit_relocate(&conn, id, &p, is_dir)
     }
 
-    /// 撤销恢复：原样插回刚移出/清空的条目（返回是否落库，false = 路径已重新放入）
-    pub fn stage_restore(
+    /// 批量撤销恢复（清空/移出撤销共用）：逐条幂等插回（已重新放入的路径
+    /// 跳过），返回恢复条数
+    pub fn stage_restore_batch(
         &self,
-        path: &str,
-        is_dir: bool,
-        pinned: bool,
-        added_at: i64,
-    ) -> Result<bool, String> {
+        items: Vec<(String, bool, bool, i64)>,
+    ) -> Result<usize, String> {
         let conn = self.clip.lock().expect("clip db poisoned");
-        stage::restore(&conn, path, is_dir, pinned, added_at)
+        Ok(stage::restore_batch(&conn, &items))
     }
 
     pub fn vault_add(

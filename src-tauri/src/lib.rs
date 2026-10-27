@@ -1088,18 +1088,30 @@ pub(crate) fn handle_stage_drop(app: &AppHandle, paths: Vec<String>) {
     }));
 }
 
-/// 撤销恢复：原样插回刚移出/清空的条目（含固定态与时间戳；路径已被重新放入则忽略）
-#[tauri::command]
-async fn stage_restore(
-    state: tauri::State<'_, AppState>,
+/// 批量撤销恢复：原样插回刚移出/清空的条目（含固定态与时间戳；路径已被
+/// 重新放入的幂等跳过），返回恢复条数
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StageRestoreItem {
     path: String,
     is_dir: bool,
     pinned: bool,
     added_at: i64,
-) -> Result<bool, String> {
+}
+
+#[tauri::command]
+async fn stage_restore_batch(
+    state: tauri::State<'_, AppState>,
+    items: Vec<StageRestoreItem>,
+) -> Result<usize, String> {
     let engine = state.engine.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        engine.stage_restore(&path, is_dir, pinned, added_at)
+        engine.stage_restore_batch(
+            items
+                .into_iter()
+                .map(|i| (i.path, i.is_dir, i.pinned, i.added_at))
+                .collect(),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1367,7 +1379,7 @@ pub fn run() {
             stage_clear,
             stage_pin,
             stage_relocate,
-            stage_restore,
+            stage_restore_batch,
             stage_copy_file,
             stagedrop_feedback_state,
             everything_status,
