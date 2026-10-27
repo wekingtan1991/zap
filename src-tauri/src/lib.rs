@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use providers::{SearchEngine, SearchItem};
 use tauri::{
     AppHandle, Emitter, Manager, WindowEvent,
@@ -813,6 +814,90 @@ async fn copy_text(text: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// 图片预览面板数据：全图 PNG（base64）+ 元信息。历史保留期内行号恒有效，
+/// 已清理返回错误（面板内呈现，不收面板）
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipImagePreview {
+    width: u32,
+    height: u32,
+    size: i64,
+    created_at: i64,
+    pinned: bool,
+    png_base64: String,
+}
+
+/// 图片条目预览：预览面板进入时点查一次（与回贴同一行号寻址）
+#[tauri::command]
+async fn clipimg_preview(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<ClipImagePreview, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (w, h, size, created_at, pinned, png) = engine
+            .clip_image_meta(id)
+            .ok_or_else(|| "该条剪贴板图片已被清理".to_string())?;
+        Ok(ClipImagePreview {
+            width: w,
+            height: h,
+            size,
+            created_at,
+            pinned,
+            png_base64: base64::engine::general_purpose::STANDARD.encode(png),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 图片仅复制不粘贴：历史原图放回剪贴板。走自身复制抑制窗——图已在历史，
+/// 监听不应重复收录（与 copy_text 同口径）；解码与写入在后台线程
+#[tauri::command]
+async fn clipimg_copy(state: tauri::State<'_, AppState>, id: i64) -> Result<(), String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (w, h, png) = engine
+            .clip_image(id)
+            .ok_or_else(|| "该条剪贴板图片已被清理".to_string())?;
+        let (_, _, rgba) = providers::clipimage::decode_png(&png)?;
+        providers::clipboard::begin_self_copy();
+        providers::clipboard::retrying(|| {
+            let rgba = rgba.clone();
+            arboard::Clipboard::new().and_then(|mut cb| {
+                cb.set_image(arboard::ImageData {
+                    width: w as usize,
+                    height: h as usize,
+                    bytes: std::borrow::Cow::Owned(rgba),
+                })
+            })
+        })
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 图片另存为 PNG：路径由前端 plugin-dialog save() 选定（与备份导出同模式），
+/// 后端只负责把历史里的原始 PNG 落盘
+#[tauri::command]
+async fn clipimg_export(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    path: String,
+) -> Result<(), String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (_, _, png) = engine
+            .clip_image(id)
+            .ok_or_else(|| "该条剪贴板图片已被清理".to_string())?;
+        std::fs::write(&path, png).map_err(|e| format!("写入失败：{e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 搜索捷径清单（设置页「搜索捷径」分区）：纯缓存读，无库访问
 #[tauri::command]
 fn shortcuts_list(state: tauri::State<AppState>) -> Vec<providers::shortcuts::Shortcut> {
@@ -1116,6 +1201,16 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
 async fn clip_pin(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
     let engine = state.engine.clone();
     tauri::async_runtime::spawn_blocking(move || engine.clip_pin(id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 图片条目固定/取消固定：直连图片表——clip_pin 的「文本表先命中」兜底链路
+/// 在两表自增行号撞号时会固定到同号的文本行，图片条目必须按 kind 分流到此
+#[tauri::command]
+async fn clipimg_pin(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.clip_image_pin(id))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1562,6 +1657,10 @@ pub fn run() {
             tool_uuid,
             clip_row,
             clip_merge_paste,
+            clipimg_preview,
+            clipimg_copy,
+            clipimg_export,
+            clipimg_pin,
             copy_text,
             shortcuts_list,
             shortcuts_save,

@@ -22,6 +22,8 @@ export interface ItemActions {
   clipPin: (it: SearchItem) => void;
   /// 切到中转站视图（stage 入口条目激活）
   openStage: () => void;
+  /// 打开剪贴板图片预览面板（二段式：列表 → 预览 → Esc 回列表）
+  openClipImagePreview: (it: SearchItem) => void;
 }
 
 export interface KindUi {
@@ -70,15 +72,19 @@ const REGISTRY: Record<string, KindUi> = {
       ["clip_pin", "固定 / 取消固定"],
     ],
   },
-  // 剪贴板图片条目：Enter=回贴（external 落 open_item 的 clipimg 分支），
-  // 无文本语义所以没有「仅复制」；固定与文本条目共用
+  // 剪贴板图片条目：Enter=回贴（external 落 open_item 的 clipimg 分支，
+  // 与文本条目同口径——粘贴是图片的第一动作）；预览走右键「预览大图」
+  // 进专属面板（面板内含粘贴/仅复制/另存为），固定与文本条目共用
   clipimg: {
     label: "图片",
     badge: "clip",
     rowAction: (it, act) => (
       <VaultRowPin pinned={isPinned(it)} onPin={() => act.clipPin(it)} />
     ),
-    ctxActions: [["clip_pin", "固定 / 取消固定"]],
+    ctxActions: [
+      ["clipimg_preview", "预览大图"],
+      ["clip_pin", "固定 / 取消固定"],
+    ],
   },
   file: {
     label: "文件",

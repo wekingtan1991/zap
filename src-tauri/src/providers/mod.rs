@@ -294,6 +294,20 @@ impl SearchEngine {
         clipimage::get(&conn, id)
     }
 
+    /// 按行号取剪贴板图片全图与元信息（预览面板用）：pinned 是固定按钮初始态
+    pub fn clip_image_meta(&self, id: i64) -> Option<(u32, u32, i64, i64, bool, Vec<u8>)> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipimage::get_full(&conn, id)
+    }
+
+    /// 图片表固定/取消固定：clip_pin 走「文本表先命中」的兜底链路，两表
+    /// 自增行号会撞号（文本 id=5 存在时图片行号 5 永远轮不到）——图片条目
+    /// 必须经此直连图片表，前端按 kind 分流
+    pub fn clip_image_pin(&self, id: i64) -> Result<bool, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipimage::pin_toggle(&conn, id)
+    }
+
     /// 剪贴板图片行号是否仍存在：open_item 的同步错误路径用，不拖 PNG 大字段
     pub fn clip_image_exists(&self, id: i64) -> bool {
         let conn = self.clip.lock().expect("clip db poisoned");

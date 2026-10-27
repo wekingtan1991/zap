@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clipRowId, isPinned, type SearchItem } from "../types";
+import { clipImageRowId, clipRowId, isPinned, type SearchItem } from "../types";
 
 const item = (over: Partial<SearchItem>): SearchItem => ({
   id: "clip:7",
@@ -20,6 +20,17 @@ describe("types 契约", () => {
     expect(Number.isNaN(clipRowId(item({ id: "recent:1", kind: "recent" })))).toBe(
       true
     );
+  });
+
+  it("clipImageRowId 与 clip 相反：行号在 target，两种 kind 寻址键不互套", () => {
+    // 图片条目后端按 target 寻址（open_item/预览同源），id 只是标识
+    expect(clipImageRowId(item({ kind: "clipimg", target: "42" }))).toBe(42);
+    expect(
+      clipImageRowId(item({ kind: "clipimg", id: "clipimg:999", target: "42" }))
+    ).toBe(42);
+    // 文本 clip 与其余 kind 一律 NaN（防两套寻址键互相误用）
+    expect(Number.isNaN(clipImageRowId(item({})))).toBe(true);
+    expect(Number.isNaN(clipImageRowId(item({ kind: "app" })))).toBe(true);
   });
 
   it("isPinned 结构化字段优先，标题前缀兜底", () => {
