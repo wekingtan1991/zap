@@ -29,10 +29,12 @@ pub struct AppIndex {
     entries: RwLock<Arc<Vec<AppEntry>>>,
 }
 
+#[derive(Clone)]
 struct AppEntry {
     name: String,
     path: String,
-    /// 应用图标 PNG data URL；提取失败为 None，前端退回文字角标
+    /// 应用图标 PNG data URL；未提取/提取失败为 None，前端退回文字角标。
+    /// 冷启动首扫只查缓存不现场提取，缺失的由 spawn_icon_backfill 后台补齐
     icon: Option<String>,
     /// 图标缓存键（路径+mtime 哈希）；内存复用与缓存清理共用，省去重算的 stat
     icon_key: u64,
@@ -117,6 +119,54 @@ impl AppIndex {
         self.refresh()
     }
 
+    /// 后台补齐缺失图标：快照当前缺图标条目 → 逐个提取（UWP 走
+    /// extract_uwp_icon，普通路径走 extract_icon_png）→ 成功的按
+    /// 「索引 + 路径比对」回写并热替换条目表，磁盘缓存同步落盘（下次扫描
+    /// 即为暖路径）。提取不出（None）的条目跳过不重试，与既有语义一致。
+    /// 搜索不受影响：缺图标条目照常参与匹配，前端退回文字角标
+    pub fn spawn_icon_backfill(self: &std::sync::Arc<Self>) {
+        let this = std::sync::Arc::clone(self);
+        std::thread::spawn(move || {
+            let pending: Vec<(usize, String, u64)> = {
+                let es = this.entries.read().expect("app index poisoned");
+                es.iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.icon.is_none())
+                    .map(|(i, e)| (i, e.path.clone(), e.icon_key))
+                    .collect()
+            };
+            if pending.is_empty() {
+                return;
+            }
+            let mut fills: Vec<(usize, String, Option<String>)> = Vec::new();
+            for (i, path, key) in pending {
+                let png = if path.starts_with("shell:") {
+                    extract_uwp_icon(&path)
+                } else {
+                    extract_icon_png(&path)
+                };
+                if let Some(png) = png {
+                    if let Some(dir) = &this.cache {
+                        let _ = fs::write(dir.join(format!("{:016x}.png", key)), &png);
+                    }
+                    fills.push((i, path, Some(to_data_url(&png))));
+                }
+            }
+            if fills.is_empty() {
+                return;
+            }
+            let mut guard = this.entries.write().expect("app index poisoned");
+            // 路径比对防串版本：提取期间 refresh 可能已热替换条目表，
+            // 同索引不同路径（应用已卸载）的条目不回写
+            let latest = Arc::make_mut(&mut guard);
+            for (i, path, icon) in fills {
+                if latest.get(i).is_some_and(|e| e.path == path) {
+                    latest[i].icon = icon;
+                }
+            }
+        });
+    }
+
     /// 清掉已卸载应用遗留的图标缓存文件
     fn prune_cache(dir: &Path, entries: &[AppEntry]) {
         let keep: HashSet<String> = entries
@@ -175,7 +225,46 @@ impl AppIndex {
                     kind: "app".into(),
                     target: e.path.clone(),
                     icon: e.icon.clone(),
+                    pinned: false,
                     score,
+                }
+            })
+            .collect()
+    }
+
+    /// 最常用应用条目（空面板呼出的「呼出 → Enter 即启动」路径）：只收真实
+    /// 启动过的（launches>0），按启动次数降序、同数次序稳定（索引序）。
+    /// 展示顺序即数组序，score 仅作标记
+    pub fn top_launch_items(
+        &self,
+        launches: &HashMap<String, i64>,
+        limit: usize,
+    ) -> Vec<SearchItem> {
+        let entries = self.entries.read().expect("app index poisoned").clone();
+        let mut scored: Vec<(i64, usize)> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                let n = launches.get(&e.path).copied().unwrap_or(0);
+                (n > 0).then_some((n, i))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.truncate(limit);
+        scored
+            .into_iter()
+            .enumerate()
+            .map(|(rank, (_, i))| {
+                let e = &entries[i];
+                SearchItem {
+                    id: format!("app:{:016x}", super::stable_key(&e.path)),
+                    title: e.name.clone(),
+                    subtitle: e.path.clone(),
+                    kind: "app".into(),
+                    target: e.path.clone(),
+                    icon: e.icon.clone(),
+                    pinned: false,
+                    score: 55.0 - rank as f32,
                 }
             })
             .collect()
@@ -211,7 +300,7 @@ pub fn record_launch(conn: &Connection, target: &str) {
 }
 
 /// 全量加载启动计数（表里只有真实启动过的应用，通常几十行）
-fn load_launch_counts(conn: &Connection) -> HashMap<String, i64> {
+pub(crate) fn load_launch_counts(conn: &Connection) -> HashMap<String, i64> {
     let Ok(mut stmt) = conn.prepare("SELECT target, launches FROM app_stats") else {
         return HashMap::new();
     };
@@ -244,7 +333,7 @@ fn walk(dir: &Path, depth: u8, cache: Option<&Path>, mem: &MemIcons, out: &mut V
             }
             let path = p.to_string_lossy().to_string();
             let icon_key = cache_key(&path);
-            let icon = icon_data_url(cache, &path, icon_key, mem);
+            let icon = icon_cached(cache, icon_key, mem);
             let forms = super::MatchForms::new(&name);
             out.push(AppEntry {
                 name,
@@ -257,23 +346,16 @@ fn walk(dir: &Path, depth: u8, cache: Option<&Path>, mem: &MemIcons, out: &mut V
     }
 }
 
-/// 图标 data URL：内存复用 → 磁盘缓存 → 现场提取（写失败只影响下次启动速度）
-fn icon_data_url(cache: Option<&Path>, lnk: &str, key: u64, mem: &MemIcons) -> Option<String> {
+/// 图标取数（仅缓存）：内存复用 → 磁盘缓存；未命中返回 None 交由
+/// spawn_icon_backfill 后台补齐，首扫不再现场提取——首次运行冷提取数百
+/// 图标可达秒级，会拖慢 setup 与热键/托盘就绪
+fn icon_cached(cache: Option<&Path>, key: u64, mem: &MemIcons) -> Option<String> {
     if let Some(hit) = mem.get(&key) {
         return Some(hit.clone());
     }
-    match cache {
-        Some(dir) => {
-            let file = dir.join(format!("{:016x}.png", key));
-            if let Ok(bytes) = fs::read(&file) {
-                return Some(to_data_url(&bytes));
-            }
-            let png = extract_icon_png(lnk)?;
-            let _ = fs::write(&file, &png);
-            Some(to_data_url(&png))
-        }
-        None => extract_icon_png(lnk).map(|png| to_data_url(&png)),
-    }
+    let dir = cache?;
+    let file = dir.join(format!("{:016x}.png", key));
+    fs::read(&file).ok().map(|bytes| to_data_url(&bytes))
 }
 
 /// FNV-1a(路径 + lnk mtime)：mtime 入键，应用更新后图标缓存自动失效
@@ -307,17 +389,41 @@ fn wide(s: &str) -> Vec<u16> {
 
 /// UWP/商店应用：枚举 shell:AppsFolder，补齐开始菜单 .lnk 覆盖不到的部分
 /// （如 Windows 计算器）。target 存 `shell:AppsFolder\<AUMID>`，打开时经 explorer。
-fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
+/// UWP（shell:AppsFolder\<AUMID>）条目图标：向条目请求图像工厂接口提取。
+/// 供 spawn_icon_backfill 在后台线程调用（scan_uwp 首扫不再现场提取）
+fn extract_uwp_icon(target: &str) -> Option<Vec<u8>> {
     use std::iter::once;
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::DeleteObject;
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, IBindCtx};
+    use windows::Win32::UI::Shell::{
+        IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK,
+    };
+    use windows::core::PCWSTR;
+
+    let app_path: Vec<u16> = target.encode_utf16().chain(once(0)).collect();
+    unsafe {
+        // COM 按线程初始化；已是其他模式时忽略错误继续用现有初始化
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let factory: IShellItemImageFactory =
+            SHCreateItemFromParsingName(PCWSTR(app_path.as_ptr()), None::<&IBindCtx>).ok()?;
+        let hbm = factory
+            .GetImage(SIZE { cx: 64, cy: 64 }, SIIGBF_BIGGERSIZEOK)
+            .ok()?;
+        let png = bitmap_to_rgba(hbm).and_then(|(w, h, buf)| bitmap_to_png(w, h, buf));
+        let _ = DeleteObject(hbm.into());
+        png
+    }
+}
+
+fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
+    use std::iter::once;
     use windows::Win32::System::Com::{
         COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, IBindCtx,
     };
     use windows::Win32::UI::Shell::{
-        BHID_EnumItems, IEnumShellItems, IShellItem, IShellItemImageFactory,
-        SHCreateItemFromParsingName, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY,
-        SIIGBF_BIGGERSIZEOK,
+        BHID_EnumItems, IEnumShellItems, IShellItem, SHCreateItemFromParsingName,
+        SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY,
     };
     use windows::core::PCWSTR;
 
@@ -382,40 +488,8 @@ fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
                 }
                 let target = format!("shell:AppsFolder\\{aumid}");
                 let icon_key = cache_key(&target);
-                let icon = if let Some(hit) = mem.get(&icon_key) {
-                    Some(hit.clone())
-                } else {
-                    (|| -> Option<String> {
-                        if let Some(dir) = cache {
-                            let file = dir.join(format!("{:016x}.png", icon_key));
-                            if let Ok(bytes) = fs::read(&file) {
-                                return Some(to_data_url(&bytes));
-                            }
-                        }
-                        let png = (|| -> Option<Vec<u8>> {
-                            let app_path: Vec<u16> =
-                                target.encode_utf16().chain(std::iter::once(0)).collect();
-                            // 直接向条目请求图像工厂接口
-                            let factory: IShellItemImageFactory = SHCreateItemFromParsingName(
-                                PCWSTR(app_path.as_ptr()),
-                                None::<&IBindCtx>,
-                            )
-                            .ok()?;
-                            let hbm = factory
-                                .GetImage(SIZE { cx: 64, cy: 64 }, SIIGBF_BIGGERSIZEOK)
-                                .ok()?;
-                            let png = bitmap_to_rgba(hbm)
-                                .and_then(|(w, h, buf)| bitmap_to_png(w, h, buf));
-                            let _ = DeleteObject(hbm.into());
-                            png
-                        })()?;
-                        if let Some(dir) = cache {
-                            let file = dir.join(format!("{:016x}.png", icon_key));
-                            let _ = fs::write(&file, &png);
-                        }
-                        Some(to_data_url(&png))
-                    })()
-                };
+                // 只查缓存不现场提取：冷提取交由 spawn_icon_backfill 后台补齐
+                let icon = icon_cached(cache, icon_key, mem);
                 let forms = super::MatchForms::new(&title);
                 out.push(AppEntry {
                     name: title,
@@ -635,9 +709,11 @@ pub fn resolve_lnk_target(path: &str) -> Option<String> {
 }
 
 /// 应用源插件适配。引擎另持 `Arc<AppsPlugin>` 具体句柄：
-/// 呼出时的 refresh_if_stale 要走具体类型，不经过 trait 对象
+/// 呼出时的 refresh_if_stale 要走具体类型，不经过 trait 对象。
+/// index 为 Arc：SearchEngine::new 装配时对 AppIndex 调 spawn_icon_backfill
+/// （&Arc<Self> 接收者，后台线程持 Arc 存活）
 pub struct AppsPlugin {
-    pub index: AppIndex,
+    pub index: std::sync::Arc<AppIndex>,
 }
 
 impl super::plugin::Plugin for AppsPlugin {
@@ -696,22 +772,33 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// 本机真实开始菜单的图标提取产出观察（CI/无图标环境不适用，故 ignore）
+    /// 本机真实开始菜单的图标提取产出观察（CI/无图标环境不适用，故 ignore）。
+    /// 首扫只查缓存不现场提取：冷提取耗时含后台补齐轮询
     #[test]
     #[ignore = "机器相关冒烟：cargo test --lib -- --ignored --nocapture"]
     fn 真实开始菜单图标提取冒烟() {
         let cache = std::env::temp_dir().join("zap_icon_cache_smoke");
         let _ = fs::remove_dir_all(&cache);
         let t0 = std::time::Instant::now();
-        let idx = AppIndex::scan(Some(&cache));
-        let (total, with_icon) = idx.stats();
+        let idx = std::sync::Arc::new(AppIndex::scan(Some(&cache)));
+        idx.spawn_icon_backfill();
+        // 轮询到「全有图标」或「本轮无新进展」（不可提取的条目就到这里）
+        let mut last = idx.stats();
+        let (total, with_icon) = loop {
+            std::thread::sleep(Duration::from_millis(400));
+            let s = idx.stats();
+            if s.1 == s.0 || s.1 == last.1 {
+                break s;
+            }
+            last = s;
+        };
         let cold = t0.elapsed();
         let t1 = std::time::Instant::now();
         let idx2 = AppIndex::scan(Some(&cache));
         let warm = t1.elapsed();
         let cached = fs::read_dir(&cache).map(|rd| rd.count()).unwrap_or(0);
         println!(
-            "图标提取 {with_icon}/{total} 条 · 冷提取 {cold:?} · 缓存重扫 {warm:?} · 缓存文件 {cached} 个"
+            "图标提取 {with_icon}/{total} 条 · 冷提取（含后台补齐）{cold:?} · 缓存重扫 {warm:?} · 缓存文件 {cached} 个"
         );
         assert!(total > 0, "开始菜单为空？");
         assert_eq!(total, idx2.stats().0);
@@ -781,6 +868,44 @@ mod tests {
         }
         let boosted = idx.search("a", 5, &load_launch_counts(&conn));
         assert_eq!(boosted[0].title, "AB", "常用应用应靠前");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn 最常用应用按启动次数排序且只收启动过的() {
+        let dir = std::env::temp_dir().join("zap_app_index_top_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("AA.lnk"), "").unwrap();
+        fs::write(dir.join("AB.lnk"), "").unwrap();
+        fs::write(dir.join("AC.lnk"), "").unwrap();
+
+        let idx = AppIndex::new(vec![dir.clone()], None, false);
+        let conn = Connection::open_in_memory().unwrap();
+        init_stats(&conn);
+        let pa = dir.join("AA.lnk").to_string_lossy().to_string();
+        let pb = dir.join("AB.lnk").to_string_lossy().to_string();
+        let pc = dir.join("AC.lnk").to_string_lossy().to_string();
+        for _ in 0..3 {
+            record_launch(&conn, &pb);
+        }
+        for _ in 0..1 {
+            record_launch(&conn, &pa);
+        }
+        // 按次数降序；从未启动过的 AC 不出现
+        let items = idx.top_launch_items(&load_launch_counts(&conn), 4);
+        let titles: Vec<&str> = items.iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(titles, vec!["AB", "AA"]);
+        assert!(items.iter().all(|i| i.kind == "app" && !i.pinned));
+
+        // limit 生效：只取最常用的一条
+        for _ in 0..1 {
+            record_launch(&conn, &pc);
+        }
+        let items = idx.top_launch_items(&load_launch_counts(&conn), 1);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "AB");
 
         fs::remove_dir_all(&dir).unwrap();
     }

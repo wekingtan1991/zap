@@ -184,20 +184,17 @@ fn totp_plain(totp_enc: &str) -> Result<String, String> {
     dpapi::decrypt(totp_enc)
 }
 
-/// 行 → 展示条目（置顶带 📌 标记）。列表只呈现标题，详情页才展开各行内容
+/// 行 → 展示条目（置顶走结构化 pinned 字段）。列表只呈现标题，详情页才展开各行内容
 fn row_to_item(row: &(i64, String, String, String, String, i64)) -> SearchItem {
     let (id, title, _, _, _, pinned) = row; // 用户名/网址在详情页逐行呈现，不进列表
     SearchItem {
         id: format!("vault:{id}"),
-        title: if *pinned == 1 {
-            format!("📌 {title}")
-        } else {
-            title.clone()
-        },
+        title: title.clone(),
         subtitle: String::new(),
         kind: "vault".into(),
         target: id.to_string(),
         icon: None,
+        pinned: *pinned == 1,
         score: 70.0,
     }
 }
@@ -736,13 +733,16 @@ mod crud_tests {
 
         let items = search(&conn, "账号");
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].title, "📌 甲账号", "置顶条目应带标记且排在最前");
+        assert!(
+            items[0].pinned && items[0].title == "甲账号",
+            "置顶条目应带结构化标记且排在最前"
+        );
         assert_eq!(items[1].title, "乙账号");
 
         // 再 pin 一次 = 取消置顶
         action(&conn, 1, "pin", 0).unwrap();
         let items = search(&conn, "账号");
-        assert!(!items[0].title.starts_with("📌"));
+        assert!(!items[0].pinned);
     }
 
     #[test]
@@ -798,7 +798,7 @@ mod crud_tests {
         assert_eq!(totp, "", "未配置 TOTP 恢复为空");
         let items = search(&conn2, "");
         assert_eq!(items.len(), 2);
-        assert!(items[0].title.starts_with("📌"), "恢复后置顶仍排最前");
+        assert!(items[0].pinned, "恢复后置顶仍排最前");
     }
 
     #[test]

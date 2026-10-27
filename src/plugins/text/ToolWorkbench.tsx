@@ -139,8 +139,10 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
     };
   }, [awaitPaste]);
 
-  // 转换防抖：前缀域每击键触发；行号源加载后只触发一次
+  // 转换防抖：前缀域每击键触发；行号源加载后只触发一次。
+  // cancelled 守卫：在途响应无法取消，快速编辑时旧内容的转换不得覆盖新内容
   useEffect(() => {
+    let cancelled = false;
     const timer = setTimeout(async () => {
       if (!active.trim()) {
         setBundle(null);
@@ -151,14 +153,19 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
         const b = await invoke<ToolBundle>("tool_convert_all", {
           text: active,
         });
+        if (cancelled) return;
         setCmdErr("");
         setBundle(b);
       } catch (e) {
+        if (cancelled) return;
         setCmdErr(String(e));
         setBundle(null);
       }
     }, 150);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [active]);
 
   // UUID 与输入无关：挂载即生成一枚

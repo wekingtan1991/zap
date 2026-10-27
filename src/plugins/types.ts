@@ -7,8 +7,11 @@ export interface SearchItem {
   kind: string;
   target: string;
   icon?: string | null;
+  /// 置顶标记（结构化）：旧后端以「标题加 📌 前缀」表达，缺省时兜底解析
+  pinned?: boolean;
   score: number;
 }
 
-/// 是否已置顶：后端给置顶条目的标题加了 📌 前缀（列表与详情共用该约定）
-export const isPinned = (it: SearchItem) => it.title.startsWith("📌");
+/// 是否已置顶：优先读结构化字段；标题前缀是旧后端的 📌 约定，半新半旧
+/// 会话兜底
+export const isPinned = (it: SearchItem) => it.pinned ?? it.title.startsWith("📌");

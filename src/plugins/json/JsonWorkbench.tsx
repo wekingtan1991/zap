@@ -90,8 +90,10 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
     };
   }, [awaitPaste]);
 
-  // 分析防抖：前缀域每击键触发；行号源加载后只触发一次
+  // 分析防抖：前缀域每击键触发；行号源加载后只触发一次。
+  // cancelled 守卫：在途响应无法取消，快速编辑时旧内容的分析不得覆盖新内容
   useEffect(() => {
+    let cancelled = false;
     const timer = setTimeout(async () => {
       if (!active.trim()) {
         setReport(null);
@@ -102,6 +104,7 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
       }
       try {
         const rep = await invoke<JsonReport>("json_analyze", { text: active });
+        if (cancelled) return;
         setCmdErr("");
         setReport(rep);
         if (rep.valid) {
@@ -109,18 +112,23 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
             invoke<string>("json_format", { text: active, pretty: true }),
             invoke<string>("json_format", { text: active, pretty: false }),
           ]);
+          if (cancelled) return;
           setPretty(p);
           setCompact(c);
         }
       } catch (e) {
         // 命令级失败（插件停用等）：状态条呈现，不残留旧内容
+        if (cancelled) return;
         setCmdErr(String(e));
         setReport(null);
         setPretty("");
         setCompact("");
       }
     }, 120);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [active]);
 
   const treeRoot = useMemo(() => {
@@ -339,6 +347,8 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
 
 /// 大文本展示防线：树/文本模式行数截断（渲染帧率优先，完整内容走复制）
 const MAX_DISPLAY_LINES = 3000;
+/// 单节点子项渲染上限：顶层大数组默认展开两层，上万元素会一次铺满 DOM
+const MAX_NODE_CHILDREN = 500;
 
 /// 标量值渲染（按类型着色）
 function JsonScalar({ value }: { value: unknown }) {
@@ -411,9 +421,14 @@ function JsonNode({
       </button>
       {open && (
         <div className="zap-json-node">
-          {entries.map(([k, v], i) => (
+          {entries.slice(0, MAX_NODE_CHILDREN).map(([k, v], i) => (
             <JsonNode key={`${depth}:${i}`} name={k} value={v} depth={depth + 1} />
           ))}
+          {entries.length > MAX_NODE_CHILDREN && (
+            <div className="zap-json-count">
+              …已截断展示前 {MAX_NODE_CHILDREN} 项，完整内容请复制
+            </div>
+          )}
         </div>
       )}
       {open && (

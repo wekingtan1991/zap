@@ -19,6 +19,7 @@ pub fn fallback(query: &str) -> Vec<SearchItem> {
             kind: "url".into(),
             target: url,
             icon: None,
+            pinned: false,
             score: 95.0,
         });
     }
@@ -37,6 +38,7 @@ pub fn fallback(query: &str) -> Vec<SearchItem> {
             kind: "web".into(),
             target: url.clone(),
             icon: None,
+            pinned: false,
             score: 10.0 - i as f32,
         });
     }

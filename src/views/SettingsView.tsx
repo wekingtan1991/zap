@@ -1,4 +1,4 @@
-﻿/// 设置页（从 App.tsx 迁出的自包含视图）：设置加载/保存、热键录制、
+/// 设置页（从 App.tsx 迁出的自包含视图）：设置加载/保存、热键录制、
 /// 各分区渲染。更新区消费 AppView 传入的 useUpdater 状态机。
 /// 挂载即拉取设置，卸载即停热键钩子——开关状态由父级 view 状态机决定
 import { useCallback, useEffect, useState } from "react";
@@ -375,6 +375,18 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
     };
   }, [hkSlot, stopHkCapture]);
 
+  // 录制中的组合按在了面板之外：Rust 侧丢弃时通知（只在确有组合被丢弃时发），
+  // 退出录制态并停钩子——否则 UI 永远停在「按下新组合…」
+  useEffect(() => {
+    const un = listen("zap://hk-capture-reset", () => {
+      setHkSlot(null);
+      stopHkCapture();
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [stopHkCapture]);
+
   // 物理按键码 → 热键键名（不受输入法/键盘布局影响；e.key 在中文输入法下常为 "Process"）
   const codeToKeyName = (code: string): string | null => {
     if (code.startsWith("Key")) return code.slice(3).toLowerCase(); // KeyJ → j
@@ -537,12 +549,12 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           返回（Esc）
         </Button>
       </div>
-      <div className="flex-1 overflow-y-auto px-[22px] pb-1.5 pt-2.5">
-        <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+      <div className="flex-1 overflow-y-auto px-[22px] pb-3 pt-2.5">
+        <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
           <Zap className="size-3 text-primary/75" />
           启动
         </div>
-        <div className="flex min-h-[38px] items-center justify-between gap-3">
+        <div className="flex min-h-[42px] items-center justify-between gap-3">
           <span className="text-[13px]">呼出热键</span>
           <HotkeyButton
             value={st.hotkey}
@@ -550,7 +562,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             onRecord={() => startRecording("main")}
           />
         </div>
-        <div className="flex min-h-[38px] items-center justify-between gap-3">
+        <div className="flex min-h-[42px] items-center justify-between gap-3">
           <span className="flex min-w-0 flex-col gap-px">
             <span className="text-[13px]">账号库直达</span>
             <span className="text-[11px] leading-snug text-muted-foreground">
@@ -566,7 +578,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             }
           />
         </div>
-        <div className="flex min-h-[38px] items-center justify-between gap-3">
+        <div className="flex min-h-[42px] items-center justify-between gap-3">
           <span className="flex min-w-0 flex-col gap-px">
             <span className="text-[13px]">快速粘贴</span>
             <span className="text-[11px] leading-snug text-muted-foreground">
@@ -583,7 +595,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         {directErr && (
           <div className="pb-1 text-[11px] text-destructive">{directErr}</div>
         )}
-        <div className="flex min-h-[38px] items-center justify-between gap-3">
+        <div className="flex min-h-[42px] items-center justify-between gap-3">
           <span className="flex min-w-0 flex-col gap-px">
             <span className="text-[13px]">超级面板</span>
             <span className="text-[11px] leading-snug text-muted-foreground">
@@ -599,7 +611,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             }
           />
         </div>
-        <div className="flex min-h-[38px] items-center justify-between gap-3">
+        <div className="flex min-h-[42px] items-center justify-between gap-3">
           <span className="flex min-w-0 flex-col gap-px">
             <span className="text-[13px]">中转站直达</span>
             <span className="text-[11px] leading-snug text-muted-foreground">
@@ -618,7 +630,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             {hkError}
           </div>
         )}
-        <div className="flex min-h-[38px] items-center justify-between gap-3">
+        <div className="flex min-h-[42px] items-center justify-between gap-3">
           <Label
             htmlFor="set-autostart"
             className="text-[13px] font-normal text-foreground"
@@ -640,11 +652,11 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           />
         </div>
         <div className="mt-3 border-t border-border pt-3">
-          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Clipboard className="size-3 text-primary/75" />
             剪贴板
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <Label
               htmlFor="set-clip"
               className="text-[13px] font-normal text-foreground"
@@ -659,7 +671,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
               }
             />
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <Label className="text-[13px] font-normal text-foreground">
               保留条数
             </Label>
@@ -681,7 +693,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
               </SelectContent>
             </Select>
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <span className="flex min-w-0 flex-col gap-px">
               <Label
                 htmlFor="set-autopaste"
@@ -703,11 +715,11 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">
-          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Inbox className="size-3 text-primary/75" />
             中转站
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <span className="flex min-w-0 flex-col gap-px">
               <Label className="text-[13px] font-normal text-foreground">
                 未固定条目容量
@@ -733,7 +745,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
               </SelectContent>
             </Select>
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <span className="flex min-w-0 flex-col gap-px">
               <Label
                 htmlFor="set-stagedrop"
@@ -755,11 +767,11 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">
-          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <KeyRound className="size-3 text-primary/75" />
             密码安全
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <Label className="text-[13px] font-normal text-foreground">
               复制后清空剪贴板
             </Label>
@@ -782,11 +794,11 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">
-          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Palette className="size-3 text-primary/75" />
             外观
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <span className="flex min-w-0 flex-col gap-px">
               <Label className="text-[13px] font-normal text-foreground">
                 主题
@@ -813,7 +825,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
               </SelectContent>
             </Select>
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <span className="flex min-w-0 flex-col gap-px">
               <Label
                 htmlFor="set-transparency"
@@ -843,11 +855,11 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">
-          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Database className="size-3 text-primary/75" />
             账号库
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <span className="flex min-w-0 flex-col gap-px">
               <span className="text-[13px] text-foreground">备份与恢复</span>
               <span className="text-[11px] leading-snug text-muted-foreground">
@@ -869,11 +881,11 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">
-          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Search className="size-3 text-primary/75" />
             Everything
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <span className="flex min-w-0 flex-col gap-px">
               <Label
                 htmlFor="set-ev"
@@ -897,7 +909,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">
-          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Globe className="size-3 text-primary/75" />
             搜索捷径
           </div>
@@ -907,7 +919,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             代表内容，如 gh rust clap
           </div>
           {scList.map((s, i) => (
-            <div key={i} className="flex min-h-[38px] items-center gap-1.5">
+            <div key={i} className="flex min-h-[42px] items-center gap-1.5">
               <Input
                 className="h-[30px] w-[64px] shrink-0 px-2 font-mono text-xs"
                 placeholder="关键词"
@@ -974,7 +986,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">
-          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <Puzzle className="size-3 text-primary/75" />
             插件
           </div>
@@ -986,7 +998,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             st.plugins.map((p) => (
               <div
                 key={p.id}
-                className="flex min-h-[38px] items-center justify-between gap-3"
+                className="flex min-h-[42px] items-center justify-between gap-3"
               >
                 <span className="flex min-w-0 flex-col gap-px">
                   <Label
@@ -1036,11 +1048,11 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           )}
         </div>
         <div className="mt-3 border-t border-border pt-3">
-          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
             <RefreshCw className="size-3 text-primary/75" />
             软件更新
           </div>
-          <div className="flex min-h-[38px] items-center justify-between gap-3">
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <span className="flex min-w-0 items-center gap-2.5">
               <span className="shrink-0 text-[13px]">当前版本</span>
               <b className="shrink-0 text-[13px] font-medium text-primary/90">

@@ -242,24 +242,25 @@ struct AppSettingsDto {
     plugins: Vec<providers::PluginInfo>,
 }
 
-#[tauri::command]
-fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSettingsDto {
+/// 组装设置快照：注册表读（autostart）与 SQLite 读都属磁盘 IO，抽出来给
+/// 异步命令在阻塞线程池执行
+fn build_app_settings(
+    app: &AppHandle,
+    engine: &std::sync::Arc<SearchEngine>,
+    hotkey: &str,
+) -> AppSettingsDto {
     AppSettingsDto {
-        hotkey: state.hotkey.lock().expect("hotkey poisoned").clone(),
-        vault_hotkey: state
-            .engine
+        hotkey: hotkey.to_string(),
+        vault_hotkey: engine
             .get_setting(providers::appconfig::KEY_VAULT_HOTKEY)
             .unwrap_or_default(),
-        clip_hotkey: state
-            .engine
+        clip_hotkey: engine
             .get_setting(providers::appconfig::KEY_CLIP_HOTKEY)
             .unwrap_or_default(),
-        superpanel_hotkey: state
-            .engine
+        superpanel_hotkey: engine
             .get_setting(providers::appconfig::KEY_SUPERPANEL_HOTKEY)
             .unwrap_or_default(),
-        stage_hotkey: state
-            .engine
+        stage_hotkey: engine
             .get_setting(providers::appconfig::KEY_STAGE_HOTKEY)
             .unwrap_or_default(),
         clip_enabled: providers::clipboard::CLIP_ENABLED.load(Ordering::Relaxed),
@@ -267,28 +268,38 @@ fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSetting
         clip_autopaste: providers::clipboard::PASTE_TO_PREV.load(Ordering::Relaxed),
         stage_max: providers::stage::CAP.load(Ordering::Relaxed),
         stagedrop_enabled: providers::stagedrop::STAGEDROP_ENABLED.load(Ordering::Relaxed),
-        pwd_clear_secs: state
-            .engine
+        pwd_clear_secs: engine
             .get_setting(providers::appconfig::KEY_PWD_CLEAR_SECS)
             .and_then(|v| v.parse().ok())
             .unwrap_or(providers::appconfig::DEFAULT_PWD_CLEAR_SECS),
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
-        everything_autostart: state
-            .engine
+        everything_autostart: engine
             .get_setting(providers::appconfig::KEY_EVERYTHING_AUTOSTART)
             .map(|v| v != "0")
             .unwrap_or(providers::appconfig::DEFAULT_EVERYTHING_AUTOSTART),
-        appearance: state
-            .engine
+        appearance: engine
             .get_setting(providers::appconfig::KEY_APPEARANCE)
             .unwrap_or_else(|| "dark".into()),
-        panel_transparency: state
-            .engine
+        panel_transparency: engine
             .get_setting(providers::appconfig::KEY_PANEL_TRANSPARENCY)
             .map(|v| v != "0")
             .unwrap_or(providers::appconfig::DEFAULT_PANEL_TRANSPARENCY),
-        plugins: state.engine.plugin_states(),
+        plugins: engine.plugin_states(),
     }
+}
+
+/// 设置读取：注册表 + SQLite 读不占主线程（async 命令带 State 须返回
+/// Result，Tauri 约定；前端调用方本就带 catch 兜底）
+#[tauri::command]
+async fn get_app_settings(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<AppSettingsDto, String> {
+    let engine = state.engine.clone();
+    let hotkey = state.hotkey.lock().expect("hotkey poisoned").clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(build_app_settings(&app, &engine, &hotkey)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 插件开关（save_settings 入参）
@@ -308,7 +319,11 @@ struct SaveOutcome {
     direct_hotkey_error: Option<String>,
 }
 
-// Tauri 命令按字段平铺（前端 invoke 传同名参数），显式放行参数个数提示
+// Tauri 命令按字段平铺（前端 invoke 传同名参数），显式放行参数个数提示。
+// 刻意保持同步命令（主线程执行）：global-shortcut 的注册/注销与创建它的主
+// 线程消息队列绑定（RegisterHotKey 线程亲和），挪进 spawn_blocking 会让
+// 热键静默失效。其中的 SQLite 写是 WAL 毫秒级操作，不构成 lib.rs 顶部军规
+// 针对的"卡消息泵"量级
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn save_settings(
@@ -375,23 +390,27 @@ fn save_settings(
     let mut taken = vec![hotkey.clone()];
     {
         let gs = app.global_shortcut();
-        for (raw, cfg_key, kind) in [
+        for (name, raw, cfg_key, kind) in [
             (
+                "账号库直达",
                 vault_hotkey,
                 providers::appconfig::KEY_VAULT_HOTKEY,
                 DirectKind::Vault,
             ),
             (
+                "快速粘贴",
                 clip_hotkey,
                 providers::appconfig::KEY_CLIP_HOTKEY,
                 DirectKind::QuickPaste,
             ),
             (
+                "超级面板",
                 superpanel_hotkey,
                 providers::appconfig::KEY_SUPERPANEL_HOTKEY,
                 DirectKind::SuperPanel,
             ),
             (
+                "中转站直达",
                 stage_hotkey,
                 providers::appconfig::KEY_STAGE_HOTKEY,
                 DirectKind::Stage,
@@ -417,7 +436,9 @@ fn save_settings(
             }
             // 同键冲突：拒绝并恢复原绑定（旧绑定已解绑，不恢复就丢了）
             if taken.contains(&norm) {
-                direct_errors.push("直达热键不能与呼出热键相同，各直达热键之间也不能相同".into());
+                direct_errors.push(format!(
+                    "「{name}」热键不能与呼出热键相同，各直达热键之间也不能相同"
+                ));
                 if let Ok(old_sc) = old.parse::<Shortcut>() {
                     let _ = gs.register(old_sc);
                 }
@@ -432,7 +453,8 @@ fn save_settings(
                         taken.push(norm);
                     }
                     Err(e) => {
-                        direct_errors.push(format!("直达热键注册失败，可能已被其他程序占用：{e}"));
+                        direct_errors
+                            .push(format!("「{name}」热键注册失败，可能已被其他程序占用：{e}"));
                         // 恢复旧绑定
                         if let Ok(old_sc) = old.parse::<Shortcut>() {
                             let _ = gs.register(old_sc);
@@ -440,7 +462,7 @@ fn save_settings(
                     }
                 },
                 Err(e) => {
-                    direct_errors.push(format!("无法识别的按键组合：{e}"));
+                    direct_errors.push(format!("「{name}」：无法识别的按键组合：{e}"));
                     if let Ok(old_sc) = old.parse::<Shortcut>() {
                         let _ = gs.register(old_sc);
                     }
@@ -1161,10 +1183,12 @@ pub(crate) fn toggle_panel(app: &AppHandle, preset: Option<&str>) {
     if let Some(p) = preset {
         let _ = app.emit("zap://preset", p.to_string());
     }
-    // 面板呼出后台重建应用索引（10 秒节流）：新装/卸载的软件无需重启即可搜到
+    // 面板呼出后台重建应用与最近文件索引（各自 10 秒节流）：新装/卸载的软件
+    // 与刚打开过的文件无需重启即可搜到
     let engine = state.engine.clone();
     drop(tauri::async_runtime::spawn_blocking(move || {
-        engine.refresh_apps()
+        engine.refresh_apps();
+        engine.refresh_recents();
     }));
 }
 
@@ -1578,6 +1602,13 @@ pub fn run() {
                         let now = !providers::clipboard::CLIP_ENABLED.load(Ordering::Relaxed);
                         providers::clipboard::CLIP_ENABLED.store(now, Ordering::Relaxed);
                         let st = app.state::<AppState>();
+                        // 显式回写勾选态：不押注 muda 在 MenuEvent 前自动翻转
+                        // （各平台行为不一），与 save_settings 路径的 set_checked 同口径
+                        if let Some(item) =
+                            st.clip_item.lock().expect("clip_item poisoned").as_ref()
+                        {
+                            let _ = item.set_checked(now);
+                        }
                         let _ = st.engine.set_setting(
                             providers::appconfig::KEY_CLIP_ENABLED,
                             if now { "1" } else { "0" },

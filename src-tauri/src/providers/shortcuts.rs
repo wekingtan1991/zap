@@ -134,6 +134,7 @@ impl super::plugin::Plugin for ShortcutsPlugin {
                 kind: "info".into(),
                 target: String::new(),
                 icon: None,
+                pinned: false,
                 score: 0.0,
             }];
         }
@@ -145,6 +146,7 @@ impl super::plugin::Plugin for ShortcutsPlugin {
             kind: "web".into(),
             target: url,
             icon: None,
+            pinned: false,
             score: 0.0,
         }]
     }

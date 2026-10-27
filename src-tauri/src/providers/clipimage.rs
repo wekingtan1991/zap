@@ -157,11 +157,7 @@ fn build_item(
     now: i64,
     pinned: bool,
 ) -> SearchItem {
-    let title = if pinned {
-        format!("📌 图片 {w}×{h}")
-    } else {
-        format!("图片 {w}×{h}")
-    };
+    let title = format!("图片 {w}×{h}");
     SearchItem {
         id: format!("clipimg:{rowid}"),
         title,
@@ -177,6 +173,7 @@ fn build_item(
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(thumb)
         )),
+        pinned,
         score: 0.0,
     }
 }

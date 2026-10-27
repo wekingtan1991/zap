@@ -42,6 +42,11 @@ pub struct SearchItem {
     pub target: String,
     /// 应用图标 data URL（PNG），仅应用类有值；其余为 None
     pub icon: Option<String>,
+    /// 置顶标记（剪贴板文本/图片、账号库共用）：结构化字段取代旧「标题加
+    /// 📌 前缀」的字符串协议。serde(default) 容半新半旧会话——前端构造的
+    /// 条目（打开中转站等）不带此键
+    #[serde(default)]
+    pub pinned: bool,
     pub score: f32,
 }
 
@@ -161,6 +166,8 @@ pub struct SearchEngine {
     /// 应用源具体句柄：呼出时 refresh_if_stale 要走具体类型，不经过 trait 对象；
     /// 同一 Arc 也注册在 plugins 里，搜索时与其他源一视同仁
     apps: std::sync::Arc<apps::AppsPlugin>,
+    /// 最近文件源具体句柄：呼出时节流重扫要走具体类型（同 apps 的理由）
+    recents: std::sync::Arc<recent::RecentsPlugin>,
     /// 搜索捷径源具体句柄：设置页读写清单要走具体类型（同 apps 的理由）
     shortcuts: std::sync::Arc<shortcuts::ShortcutsPlugin>,
     /// 插件注册表：搜索贡献 + 剪贴板识别；顺序即结果顺序，勿随意调整
@@ -174,12 +181,15 @@ impl SearchEngine {
         appconfig::init_table(&conn);
         apps::init_stats(&conn);
         stage::init_table(&conn);
-        // 图标缓存随库存放，键 = lnk 路径+mtime 哈希
+        // 图标缓存随库存放，键 = lnk 路径+mtime 哈希。
+        // 先建 Arc 再补图标：冷启动首扫只查缓存不现场提取（见
+        // spawn_icon_backfill），首次运行不再拖慢 setup 与热键/托盘就绪
         let icon_cache = db_path.parent().map(|p| p.join("icons"));
-        let apps = std::sync::Arc::new(apps::AppsPlugin {
-            index: apps::AppIndex::scan(icon_cache.as_deref()),
-        });
+        let index = std::sync::Arc::new(apps::AppIndex::scan(icon_cache.as_deref()));
+        index.spawn_icon_backfill();
+        let apps = std::sync::Arc::new(apps::AppsPlugin { index });
         let shortcuts = std::sync::Arc::new(shortcuts::ShortcutsPlugin::new(&conn));
+        let recents = std::sync::Arc::new(recent::RecentsPlugin::new());
         // 注册顺序 = 结果展示顺序（JSON 工具识别 / apps / files / winsys /
         // 剪贴板 / 最近 / 设置 / 搜索捷径 / 网页兜底）。JSON 工具只贡献识别条目、
         // 不参与常规搜索，放最前是识别条目之间的展示顺序；其余与插件化前的拼接
@@ -192,9 +202,7 @@ impl SearchEngine {
             std::sync::Arc::new(files::FilesPlugin),
             std::sync::Arc::new(winsys::WinsysPlugin),
             std::sync::Arc::new(clipboard::ClipboardPlugin),
-            std::sync::Arc::new(recent::RecentsPlugin {
-                entries: recent::scan(),
-            }),
+            recents.clone(),
             std::sync::Arc::new(settings::SettingsPlugin),
             shortcuts.clone(),
             std::sync::Arc::new(web::WebPlugin),
@@ -227,6 +235,7 @@ impl SearchEngine {
         Self {
             clip: Mutex::new(conn),
             apps,
+            recents,
             shortcuts,
             plugins,
         }
@@ -286,6 +295,12 @@ impl SearchEngine {
     /// 避免连续呼出反复走目录树 + UWP 枚举；false = 本次跳过或上次未完成
     pub fn refresh_apps(&self) -> bool {
         self.apps.index.refresh_if_stale(apps::REFRESH_MIN_INTERVAL)
+    }
+
+    /// 后台重建「最近文件」索引（面板呼出时调用，10 秒节流与 apps 同窗）：
+    /// 启动器常驻数日，只靠启动快照会越来越陈旧
+    pub fn refresh_recents(&self) -> bool {
+        self.recents.refresh_if_stale(apps::REFRESH_MIN_INTERVAL)
     }
 
     /// open_item 记一次应用启动（frecency 排序依据，按 target 路径计数）
@@ -446,6 +461,10 @@ impl SearchEngine {
         if q.is_empty() {
             let conn = self.clip.lock().expect("clip db poisoned");
             let mut items = assemble_opening(&self.plugins, &conn);
+            // 空面板即启动台：最近剪贴板之后附最常用应用（frecency，仅真实
+            // 启动过的），呼出 → Enter 即启动，不必先打字
+            let launches = apps::load_launch_counts(&conn);
+            items.extend(self.apps.index.top_launch_items(&launches, 4));
             // 空面板即功能首页：识别与最近剪贴板之后附上插件入口清单，
             // 呼出即可见，可发现性不依赖记住入口词
             items.extend(fallback_all(&self.plugins));
@@ -701,6 +720,7 @@ mod plugin_tests {
                 kind: "info".into(),
                 target: String::new(),
                 icon: None,
+                pinned: false,
                 score: 0.0,
             }]
         }
@@ -796,6 +816,7 @@ mod plugin_tests {
                 kind: "info".into(),
                 target: "q".into(),
                 icon: None,
+                pinned: false,
                 score: 0.0,
             }]
         }
@@ -808,6 +829,7 @@ mod plugin_tests {
                     kind: "info".into(),
                     target: String::new(),
                     icon: None,
+                    pinned: false,
                     score: 0.0,
                 }]
             } else {
@@ -903,6 +925,7 @@ mod plugin_tests {
                 kind: "info".into(),
                 target: String::new(),
                 icon: None,
+                pinned: false,
                 score: 0.0,
             }]
         }
@@ -925,6 +948,7 @@ mod plugin_tests {
                 kind: "info".into(),
                 target: String::new(),
                 icon: None,
+                pinned: false,
                 score: 0.0,
             }]
         }

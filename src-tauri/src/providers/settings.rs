@@ -174,6 +174,7 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
                 kind: "settings".into(),
                 target: e.uri.to_string(),
                 icon: None,
+                pinned: false,
                 score,
             }
         })

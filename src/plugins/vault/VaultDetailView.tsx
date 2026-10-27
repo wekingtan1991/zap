@@ -72,6 +72,14 @@ export function VaultDetailView({
   const [confirmDelete, setConfirmDelete] = useState(initialConfirmDelete);
   const [copiedField, setCopiedField] = useState<CopyableField | null>(null);
 
+  // 明文展示 30 秒自动掩码：焚除只清剪贴板，屏幕上的明文也要有兜底
+  // （手动「隐藏」随时可用；每次点亮重新计时）
+  useEffect(() => {
+    if (!showPw) return;
+    const timer = setTimeout(() => setShowPw(false), 30_000);
+    return () => clearTimeout(timer);
+  }, [showPw]);
+
   const rows: { label: string; value: string; field: CopyableField }[] = [
     { label: "用户名", value: detail.username, field: "username" },
     { label: "密码", value: detail.password, field: "password" },

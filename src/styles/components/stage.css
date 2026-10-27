@@ -11,6 +11,35 @@
   flex-shrink: 0;
 }
 
+/* 过滤行：列表非空时出现的轻量过滤输入（本地过滤，不走后端） */
+.zap-stage-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--zap-w-04);
+  flex-shrink: 0;
+}
+
+.zap-stage-filter svg {
+  color: var(--zap-fg-dim);
+}
+
+.zap-stage-filter input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--zap-fg);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.zap-stage-filter input::placeholder {
+  color: var(--zap-fg-ph);
+}
+
 /* 落区：results 容器自身作为拖放高亮面与提示层的定位基准 */
 .zap-stage {
   position: relative;

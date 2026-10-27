@@ -1,6 +1,9 @@
 //! 最近文件：扫描系统"最近使用"目录的 .lnk，按修改时间排序
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use super::SearchItem;
 
@@ -74,19 +77,55 @@ pub fn search(entries: &[RecentEntry], query: &str, limit: usize) -> Vec<SearchI
                 kind: "recent".into(),
                 target: e.path.clone(),
                 icon: None,
+                pinned: false,
                 score: score * 0.5 - 0f32,
             }
         })
         .collect()
 }
 
-/// 最近文件源插件适配：启动时 scan() 一次的长驻索引，随插件注册进引擎
+/// 最近文件源插件适配：启动时 scan() 一次的长驻索引，随插件注册进引擎。
+/// 面板呼出时经 refresh_if_stale 后台热替换（启动器常驻数日，启动快照会
+/// 越来越陈旧）；RwLock<Arc> + 节流 + 防重入与 apps::AppIndex 同一模式
 pub struct RecentsPlugin {
-    pub entries: Vec<RecentEntry>,
+    entries: RwLock<Arc<Vec<RecentEntry>>>,
+    /// 上次完成重扫的时刻（构造首扫计入），节流判断用
+    last_refresh: Mutex<Option<Instant>>,
+    /// 防止重扫并发叠加：上次未完成时跳过本次
+    refreshing: AtomicBool,
+}
+
+impl RecentsPlugin {
+    pub fn new() -> Self {
+        Self {
+            entries: RwLock::new(Arc::new(scan())),
+            refreshing: AtomicBool::new(false),
+            last_refresh: Mutex::new(Some(Instant::now())),
+        }
+    }
+
+    /// 后台热替换最近文件索引。返回 false = 节流窗口内跳过，或上一次未完成
+    pub fn refresh_if_stale(&self, min_interval: Duration) -> bool {
+        {
+            let last = self.last_refresh.lock().expect("recents poisoned");
+            if last.is_some_and(|t| t.elapsed() < min_interval) {
+                return false;
+            }
+        }
+        if self.refreshing.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        let fresh = scan();
+        *self.entries.write().expect("recents poisoned") = Arc::new(fresh);
+        self.refreshing.store(false, Ordering::SeqCst);
+        *self.last_refresh.lock().expect("recents poisoned") = Some(Instant::now());
+        true
+    }
 }
 
 impl super::plugin::Plugin for RecentsPlugin {
     fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
-        search(&self.entries, query, 5)
+        let entries = self.entries.read().expect("recents poisoned").clone();
+        search(&entries, query, 5)
     }
 }
