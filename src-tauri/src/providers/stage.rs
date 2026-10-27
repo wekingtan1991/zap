@@ -355,14 +355,24 @@ pub fn restore_batch(conn: &Connection, items: &[(String, bool, bool, i64)]) -> 
 
 /// 批量移出（清理失效条目用）：逐条删除已存在的 id，返回实际移出条数。
 /// 失效判定由调用方在锁外完成（exists 是磁盘 IO，见模块头锁纪律），
-/// 这里只收 id 纯库操作
+/// 这里只收 id 纯库操作。整批包一个事务：上限 CAP=500 条死链一次清时，
+/// 逐条 autocommit = 500 次锁内 WAL fsync 可达秒级（与 restore_batch
+/// 同一成本模型）；事务内语句级失败只回滚当前语句，逐条容错语义不变
 pub fn remove_batch(conn: &Connection, ids: &[i64]) -> usize {
-    ids.iter()
+    let Ok(tx) = conn.unchecked_transaction() else {
+        return 0;
+    };
+    let n = ids
+        .iter()
         .filter(|id| {
-            conn.execute("DELETE FROM stage_items WHERE id=?1", params![id])
+            tx.execute("DELETE FROM stage_items WHERE id=?1", params![id])
                 .is_ok_and(|n| n > 0)
         })
-        .count()
+        .count();
+    if tx.commit().is_err() {
+        return 0;
+    }
+    n
 }
 
 /// 立即执行容量淘汰（设置调小容量时收敛已有超容条目；平时由放入路径
