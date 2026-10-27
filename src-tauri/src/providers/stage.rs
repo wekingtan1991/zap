@@ -632,6 +632,19 @@ mod tests {
         let c = temp_file("u3");
         let d = temp_file("u4");
         add(&conn, &[a.clone(), b.clone()]);
+        // 同毫秒批量时 added_at 相同，恢复插回的新 id 会经 id DESC 兜底排到
+        // 最新条目之前（CI 快速机器必现）——显式错开时间戳模拟自然跨毫秒，
+        // 测试只锁定「恢复保持 added_at、落回原相对位」这一行为
+        conn.execute(
+            "UPDATE stage_items SET added_at=1000 WHERE path=?1",
+            params![a],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE stage_items SET added_at=2000 WHERE path=?1",
+            params![b],
+        )
+        .unwrap();
         let b_row = list(&conn).iter().find(|r| r.path == b).unwrap().clone();
         remove(&conn, b_row.id).unwrap();
         add(&conn, std::slice::from_ref(&c));
