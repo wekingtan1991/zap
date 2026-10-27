@@ -231,6 +231,26 @@ pub fn get(conn: &Connection, id: i64) -> Option<(u32, u32, Vec<u8>)> {
     .ok()
 }
 
+/// 预览面板取全图 + 元信息：一条查询带回（pinned 供固定按钮呈现初始态，
+/// created_at 前端格式化「复制于」）。已被清理返回 None
+pub fn get_full(conn: &Connection, id: i64) -> Option<(u32, u32, i64, i64, bool, Vec<u8>)> {
+    conn.query_row(
+        "SELECT width, height, size, created_at, pinned, data FROM clipboard_images WHERE id=?1",
+        params![id],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u32,
+                r.get::<_, i64>(1)? as u32,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)? == 1,
+                r.get::<_, Vec<u8>>(5)?,
+            ))
+        },
+    )
+    .ok()
+}
+
 /// 行号是否仍有图片：open_item 的同步错误路径用，只探存在性不拖 PNG 大字段
 pub fn exists(conn: &Connection, id: i64) -> bool {
     conn.query_row(
@@ -241,7 +261,9 @@ pub fn exists(conn: &Connection, id: i64) -> bool {
     .is_ok()
 }
 
-/// 图片表固定/取消固定（pin_toggle 在文本表未命中时落到这里，返回操作后状态）
+/// 图片表固定/取消固定（返回操作后状态）：由 engine.clip_image_pin 直连，
+/// 前端图片条目按 kind 分流到 clipimg_pin——不经过 clip_pin 的文本表兜底
+/// （撞号时会固定到同号文本行）
 pub fn pin_toggle(conn: &Connection, id: i64) -> Result<bool, String> {
     let changed = conn
         .execute(
@@ -350,6 +372,53 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pinned, 1);
+    }
+
+    #[test]
+    fn 预览元信息一条带回() {
+        let conn = mem_conn();
+        let (id, w, h) = store(&conn, &sample(6, 3), 6, 3).expect("入库");
+        let (gw, gh, size, created_at, pinned, png) = get_full(&conn, id).expect("取全图");
+        assert_eq!((gw, gh), (w, h));
+        assert_eq!(png.len(), size as usize, "size 应等于 PNG 字节数");
+        assert!(created_at > 0);
+        assert!(!pinned);
+        // 不存在行号返回 None（已被清理的预览路径据此报错）
+        assert!(get_full(&conn, id + 999).is_none());
+        // 固定态随行读取（预览面板固定按钮的初始态）
+        super::super::clipboard::pin_toggle(&conn, id).unwrap();
+        let (_, _, _, _, pinned2, _) = get_full(&conn, id).unwrap();
+        assert!(pinned2);
+    }
+
+    #[test]
+    fn 图片表固定不带动同号文本行() {
+        // 两表自增序列独立，同号在真实库里必然出现；撞号时文本表先命中的
+        // 兜底链路会固定到文本行——图片表路径必须只动图片表
+        let conn = mem_conn();
+        let (img_id, _, _) = store(&conn, &sample(4, 2), 4, 2).expect("入库");
+        conn.execute(
+            "INSERT INTO clipboard_history(id, content, created_at) VALUES(?1, '同号文本行', 1)",
+            params![img_id],
+        )
+        .unwrap();
+        assert!(pin_toggle(&conn, img_id).unwrap());
+        let text_pinned: i64 = conn
+            .query_row(
+                "SELECT pinned FROM clipboard_history WHERE id=?1",
+                params![img_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(text_pinned, 0, "同号文本行不得被带动");
+        let img_pinned: i64 = conn
+            .query_row(
+                "SELECT pinned FROM clipboard_images WHERE id=?1",
+                params![img_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(img_pinned, 1);
     }
 
     #[test]

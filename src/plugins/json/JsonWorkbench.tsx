@@ -12,6 +12,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useEscCapture } from "@/hooks/useEscCapture";
+import type { PanelProps } from "@/plugins/panel";
 
 /// 后端 jsontools::JsonReport 的线协议镜像
 interface JsonReport {
@@ -21,15 +22,12 @@ interface JsonReport {
   error: string | null;
 }
 
-interface Props {
+interface Props extends PanelProps {
   /// 初始文本（万能输入框识别 = 进入时的搜索词全文 / 搜索入口 = 空串），
   /// 仅挂载时生效；后续换内容走「粘贴替换」
   text?: string;
   /// 剪贴板行号源：进入时回查一次，以识别时刻的内容为准（与 text 互斥）
   clipRow?: number;
-  onBack: () => void;
-  /// 子页面焦点接管（防 Esc 失效，见 AppView 同名约定）
-  focusRef?: (el: HTMLDivElement | null) => void;
 }
 
 /// JSON 工作台（独立面板）：状态条 + 树/文本双视图 + 复制美化/压缩。

@@ -1,0 +1,54 @@
+/* ============================================================
+   图片预览面板：大图舞台（棋盘格衬透明 PNG）+ 元信息行 + 动作行。
+   状态条复用 json.css 的 zap-json-status / zap-json-bad（与工作台同款）
+   ============================================================ */
+
+.zap-imgprev-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  flex: 1;
+}
+
+/* 大图舞台：棋盘格衬底让带透明通道的截图可辨认；恒等比缩进卡内不拉伸
+   （面板 720×480） */
+.zap-imgprev-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  border-radius: 10px;
+  background:
+    conic-gradient(
+        rgba(127, 127, 127, 0.18) 25%,
+        transparent 0 50%,
+        rgba(127, 127, 127, 0.18) 0 75%,
+        transparent 0
+      )
+      0 0 / 16px 16px,
+    var(--zap-w-03);
+  border: 1px solid var(--zap-w-07);
+}
+
+.zap-imgprev-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.zap-imgprev-meta {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--zap-fg-mute2);
+  font-variant-numeric: tabular-nums;
+}
+
+.zap-imgprev-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}

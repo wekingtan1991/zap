@@ -8,6 +8,7 @@ describe("kindUi 注册表", () => {
     const expectations: Record<string, string> = {
       app: "应用",
       clip: "剪贴板",
+      clipimg: "图片",
       file: "文件",
       win: "窗口",
       recent: "最近",
@@ -30,6 +31,7 @@ describe("kindUi 注册表", () => {
     const withoutActivate = [
       "app",
       "clip",
+      "clipimg",
       "file",
       "win",
       "recent",
@@ -80,6 +82,11 @@ describe("kindUi 注册表", () => {
     // 剪贴板：仅复制（不粘贴）+ 固定；窗口：关闭
     expect(kindUi("clip")?.ctxActions).toEqual([
       ["clip_copy", "仅复制（不粘贴）"],
+      ["clip_pin", "固定 / 取消固定"],
+    ]);
+    // 剪贴板图片：预览大图排首位（右键专属入口，Enter 保留回贴）+ 固定
+    expect(kindUi("clipimg")?.ctxActions).toEqual([
+      ["clipimg_preview", "预览大图"],
       ["clip_pin", "固定 / 取消固定"],
     ]);
     expect(kindUi("win")?.ctxActions).toEqual([["close_window", "关闭窗口"]]);

@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useEscCapture } from "@/hooks/useEscCapture";
+import type { PanelProps } from "@/plugins/panel";
 
 /// 后端 texttools::ToolBundle 的线协议镜像
 interface ToolBundle {
@@ -32,15 +33,12 @@ interface ToolBundle {
   sha256: string;
 }
 
-interface Props {
+interface Props extends PanelProps {
   /// 初始文本（万能输入框识别 = 进入时的搜索词全文 / 搜索入口 = 空串），
   /// 仅挂载时生效；后续换内容走「粘贴替换」
   text?: string;
   /// 剪贴板行号源：进入时回查一次，以识别时刻的内容为准（与 text 互斥）
   clipRow?: number;
-  onBack: () => void;
-  /// 子页面焦点接管（防 Esc 失效，见 AppView 同名约定）
-  focusRef?: (el: HTMLDivElement | null) => void;
 }
 
 /// 结果行：标签 + 值（悬停全文）+ 复制；值为 null 显示"不适用"

@@ -21,3 +21,9 @@ export const isPinned = (it: SearchItem) => it.pinned ?? it.title.startsWith("�
 /// 仅对 kind="clip" 有意义，其余条目返回 NaN
 export const clipRowId = (it: SearchItem): number =>
   it.kind === "clip" ? Number(it.id.replace(/^clip:/, "")) : Number.NaN;
+
+/// 图片剪贴板条目的行号：与文本 clip 相反，行号在 target（回贴/预览按 target
+/// 寻址），id 是 clipimg:{rowid} 标识。两种 kind 寻址键不同是线协议事实，
+/// 各用各的助手取，别互相套
+export const clipImageRowId = (it: SearchItem): number =>
+  it.kind === "clipimg" ? Number(it.target) : Number.NaN;

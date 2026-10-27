@@ -299,7 +299,8 @@ fn build_item(
 }
 
 /// 固定/取消固定（返回操作后的状态）：固定条目列表置顶，且不参与保留条数淘汰。
-/// 文本表未命中（id 属于图片表）时落到图片表——前端两表共用同一 id 寻址约定
+/// 图片条目不走这里——文本表先命中的兜底链路在两表自增行号撞号时会固定到
+/// 同号的文本行；前端按 kind 分流到 clip_image_pin 直连，此兜底仅存防御
 pub fn pin_toggle(conn: &Connection, id: i64) -> Result<bool, String> {
     let changed = conn
         .execute(

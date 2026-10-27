@@ -29,6 +29,7 @@
 @import "./components/stage.css";
 @import "./components/tool.css";
 @import "./components/super.css";
+@import "./components/imgpreview.css";
 
 /* 变体注册：dark 供 shadcn 组件用；light 是本项目浅色主题（zap-light 类，
    见 src/lib/appearance.ts），badge 等固定色组件用它做浅色覆盖 */

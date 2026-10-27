@@ -21,7 +21,7 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { kindUi, type ItemActions } from "@/plugins/registry";
 import { routeItem } from "@/plugins/dispatch";
-import { isPinned, clipRowId, type SearchItem } from "@/plugins/types";
+import { isPinned, clipRowId, clipImageRowId, type SearchItem } from "@/plugins/types";
 import {
   kickEverythingEnsure,
   runCommand,
@@ -30,6 +30,7 @@ import {
 } from "@/plugins/commands";
 import { VaultDetailView, type VaultDetail } from "@/plugins/vault/VaultDetailView";
 import { StageView } from "@/plugins/stage/StageView";
+import { ClipImagePreview } from "@/plugins/clipimg/ClipImagePreview";
 import {
   EMPTY_FORM,
   VaultFormView,
@@ -65,7 +66,8 @@ type View =
   | { kind: "reveal"; data: RevealInfo }
   | { kind: "import" }
   | { kind: "json"; source: WorkbenchSource; backQuery: string }
-  | { kind: "tool"; source: WorkbenchSource; backQuery: string };
+  | { kind: "tool"; source: WorkbenchSource; backQuery: string }
+  | { kind: "clipimg"; rowid: number; backQuery: string };
 
 const VAULT_ADD_ENTRY: SearchItem = {
   id: "vault:add",
@@ -698,23 +700,37 @@ function AppView() {
     );
   }, []);
 
-  /// 剪贴板固定/取消固定（文本与图片条目共用，id 前缀两表寻址）：
-  /// 成功后按当前词重拉列表（固定项置顶/取消复位）
-  const clipPin = useCallback(async (item: SearchItem) => {
-    const id = Number(item.id.replace(/^(clip|clipimg):/, ""));
-    if (Number.isNaN(id)) return;
-    try {
-      await invoke<boolean>("clip_pin", { id });
-      const q = queryRef.current.trim();
-      const res = await invoke<SearchItem[]>("search", { query: q });
-      // 重拉期间词已变：丢弃本次响应，交还给搜索 effect
-      if (q !== queryRef.current.trim()) return;
-      setItems(res);
-      setActive(0);
-    } catch (e) {
-      toast.error("固定失败：" + String(e));
-    }
+  /// 固定后的列表重拉（clipPin 与图片预览面板共用）：按当前词重拉，
+  /// 重拉期间词已变则丢弃（交还给搜索 effect）
+  const repullClips = useCallback(() => {
+    const q = queryRef.current.trim();
+    invoke<SearchItem[]>("search", { query: q })
+      .then((res) => {
+        if (q !== queryRef.current.trim()) return;
+        setItems(res);
+        setActive(0);
+      })
+      .catch(() => {});
   }, []);
+
+  /// 剪贴板固定/取消固定（文本与图片条目共用）：
+  /// 固定项置顶/取消复位靠重拉。两套寻址键各走各的助手，且图片条目必须走
+  /// clipimg_pin 直连图片表——clip_pin 文本表先命中，两表自增行号撞号时
+  /// 会固定到同号的文本行
+  const clipPin = useCallback(
+    async (item: SearchItem) => {
+      const isImg = item.kind === "clipimg";
+      const id = isImg ? clipImageRowId(item) : clipRowId(item);
+      if (Number.isNaN(id)) return;
+      try {
+        await invoke<boolean>(isImg ? "clipimg_pin" : "clip_pin", { id });
+        repullClips();
+      } catch (e) {
+        toast.error("固定失败：" + String(e));
+      }
+    },
+    [repullClips]
+  );
 
   // ---------- 剪贴板合并粘贴 ----------
   /// 模式开关：退出即清勾选（重进从零开始，避免残留旧意图）
@@ -839,6 +855,16 @@ function AppView() {
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
 
+  // ---------- 图片预览面板 ----------
+  // 右键「预览大图」入口（Enter 保留回贴不占——粘贴是图片条目的第一动作）：
+  // 行号寻址在 target（clipImageRowId，与文本 clip 的 id 寻址相反）；
+  // 面板内粘贴/仅复制/另存为/固定，Esc 经 closeWorkbench 回列表恢复搜索词
+  const openClipImagePreview = useCallback((it: SearchItem) => {
+    const rowid = clipImageRowId(it);
+    if (Number.isNaN(rowid)) return;
+    setView({ kind: "clipimg", rowid, backQuery: queryRef.current });
+  }, []);
+
   // ---------- 中转站 ----------
   /// 搜索结果右键「放入中转站」：失败明细由 stage_add 返回，这里只报成败
   const stageAdd = useCallback(async (it: SearchItem) => {
@@ -877,6 +903,7 @@ function AppView() {
     vaultPin: (it) => void vaultAction(it, "pin"),
     clipPin: (it) => void clipPin(it),
     openStage: () => void openStage(),
+    openClipImagePreview: openClipImagePreview,
   };
 
   const runItem = useCallback(
@@ -1146,6 +1173,17 @@ function AppView() {
     );
   }
 
+  if (view.kind === "clipimg") {
+    return (
+      <ClipImagePreview
+        rowid={view.rowid}
+        onBack={() => closeWorkbench(view.backQuery)}
+        onPinned={repullClips}
+        focusRef={focusPanelRef}
+      />
+    );
+  }
+
   if (view.kind === "settings") {
     return (
       <SettingsView
@@ -1298,6 +1336,8 @@ function AppView() {
                     setCtxMenu(null);
                     if (act === "stage_add") void stageAdd(ctxMenu.item);
                     else if (act === "clip_pin") void clipPin(ctxMenu.item);
+                    else if (act === "clipimg_preview")
+                      openClipImagePreview(ctxMenu.item);
                     else void secondaryAction(
                       act as "admin" | "reveal" | "copy_path" | "clip_copy" | "close_window",
                       ctxMenu.item
