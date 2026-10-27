@@ -21,6 +21,13 @@
 //! 生命周期为 Rust 单写者状态机（评审 P0 修订）：反馈用「挂起到期自恢复」
 //! 而非前端通知解除；会话代际号防「反馈期内开始新一轮拖拽」的交织。落区
 //! 窗口绝不抢焦点——`focusable:false` 才产生 WS_EX_NOACTIVATE。
+//!
+//! **已知未解之谜（wry/WebView2 升级复核点）**：main 面板与本窗口同为 wry
+//! webview（同为 AllowExternalDrop(false) + wry 自有 IDropTarget 注册，见
+//! wry webview2/mod.rs 的 drag_drop_controller），但视图内拖入在 main 实测
+//! 可用、在本窗口恒被拒——两窗口可识别的差异只有 focusable:false 与
+//! shadow:false，均未证实为根因。升级任一依赖后两条路径的行为都可能漂移，
+//! 需真机复测两个窗口的拖放。
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -116,6 +123,57 @@ pub fn current_text() -> Option<String> {
     st.feedback.as_ref().map(|f| f.text.clone())
 }
 
+/// 单次轮询的决策结果：纯计算（无副作用），执行端只做状态落盘与窗口操作，
+/// 抖动/保活/反馈交织的可测性集中在这里（见 tests::轮询决策情形覆盖）
+enum Poll {
+    /// 新会话开始
+    Start,
+    /// 拖拽进行中且旧反馈文案已到期
+    ResetStale,
+    /// 信号消失但在去抖宽限内（抖动或左键保活），不动
+    Hold,
+    /// 宽限耗尽，会话结束
+    End,
+    /// 反馈/驻留未到期，保持展示
+    Settle,
+    /// 收条并清场
+    Hide,
+}
+
+/// 决策与原 if-else 链逐分支等价：dragging 分两种（新会话/进行中），
+/// 无信号且会话中分两种（宽限内/耗尽），无会话分三种（反馈未到期/到期但
+/// 驻留不足/到期且可收——反馈存在本身就是「到期即收」的充分条件）
+fn decide(st: &DropState, dragging: bool, now: Instant) -> Poll {
+    if dragging {
+        if !st.session_active {
+            Poll::Start
+        } else if st.feedback.as_ref().is_some_and(|f| now >= f.until) {
+            Poll::ResetStale
+        } else {
+            Poll::Settle
+        }
+    } else if st.session_active {
+        if st
+            .last_seen
+            .is_some_and(|t| now.duration_since(t) < Duration::from_millis(GONE_DEBOUNCE_MS))
+        {
+            Poll::Hold
+        } else {
+            Poll::End
+        }
+    } else {
+        let expired = st.feedback.as_ref().is_none_or(|f| now >= f.until);
+        if !expired {
+            return Poll::Settle;
+        }
+        let dwell_ok = st.feedback.is_some()
+            || st
+                .gone_since
+                .is_some_and(|t| now.duration_since(t) >= Duration::from_millis(HIDE_DWELL_MS));
+        if dwell_ok { Poll::Hide } else { Poll::Settle }
+    }
+}
+
 /// drop 接收时的可见性兜底：条子被收起后 Drop 才到达时补显（幂等，细条态）
 pub fn ensure_visible(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("stagedrop")
@@ -171,53 +229,43 @@ pub fn spawn(app: AppHandle) {
                 st.last_seen = Some(now);
             }
 
-            if dragging && !st.session_active {
-                // 新会话：代际递增作废旧反馈、按当前光标重新定位（细条态）。
-                // 只由图像可见性触发——左键按住（框选/普通点击）不得误开
-                st.session_active = true;
-                st.generation += 1;
-                st.feedback = None;
-                st.gone_since = None;
-                drop(st);
-                layout_bar(&app, false);
-                show(&app);
-                super::diag::log("stagedrop: drag session start");
-                let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", ());
-            } else if dragging {
-                // 拖拽进行中：旧反馈文案到期则复位（长拖拽不残留上一轮结果）
-                let stale = st.feedback.as_ref().is_some_and(|f| now >= f.until);
-                if stale {
+            match decide(&st, dragging, now) {
+                Poll::Start => {
+                    // 新会话：代际递增作废旧反馈、按当前光标重新定位（细条态）。
+                    // 只由图像可见性触发——左键按住（框选/普通点击）不得误开
+                    st.session_active = true;
+                    st.generation += 1;
+                    st.feedback = None;
+                    st.gone_since = None;
+                    drop(st);
+                    layout_bar(&app, false);
+                    show(&app);
+                    super::diag::log("stagedrop: drag session start");
+                    let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", ());
+                }
+                Poll::ResetStale => {
+                    // 拖拽进行中：旧反馈文案到期复位（长拖拽不残留上一轮结果）
                     st.feedback = None;
                     drop(st);
                     let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", ());
                 }
-            } else if st.session_active
-                && st.last_seen.is_some_and(|t| {
-                    now.duration_since(t) < Duration::from_millis(GONE_DEBOUNCE_MS)
-                })
-            {
-                // 宽限期内视作仍在拖（信号抖动或按键保活），不动条子
-                drop(st);
-            } else if st.session_active {
-                st.session_active = false;
-                st.gone_since = Some(now);
-                super::diag::log("stagedrop: drag session end");
-                drop(st);
-            } else {
-                // 拖拽已结束：反馈期内保持展示，到期或驻留过期即收
-                let expired = st.feedback.as_ref().is_none_or(|f| now >= f.until);
-                if expired {
-                    let dwell_ok = st.feedback.is_some()
-                        || st.gone_since.is_some_and(|t| {
-                            now.duration_since(t) >= Duration::from_millis(HIDE_DWELL_MS)
-                        });
-                    if dwell_ok {
-                        st.feedback = None;
-                        st.gone_since = None;
-                        st.last_seen = None;
-                        drop(st);
-                        hide(&app);
-                    }
+                Poll::Hold | Poll::Settle => {
+                    // 宽限期内视作仍在拖 / 反馈驻留未到期：不动条子
+                    drop(st);
+                }
+                Poll::End => {
+                    st.session_active = false;
+                    st.gone_since = Some(now);
+                    super::diag::log("stagedrop: drag session end");
+                    drop(st);
+                }
+                Poll::Hide => {
+                    // 反馈到期或驻留过期：清场收条
+                    st.feedback = None;
+                    st.gone_since = None;
+                    st.last_seen = None;
+                    drop(st);
+                    hide(&app);
                 }
             }
         }
@@ -365,15 +413,19 @@ use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::System::Ole::IDropTarget;
 
 /// 在 stagedrop 的 WebView2 子窗口上注册自有 IDropTarget（替换 wry 的注册）。
-/// WebView2 初始化异步、子窗口可能晚于 setup 就绪：后台线程每 300ms 经
-/// run_on_main_thread 尝试一次，成功或 10 次上限为止；结果落 diag 日志。
+/// WebView2 初始化异步、子窗口可能晚于 setup 就绪：后台线程经 run_on_main_thread
+/// 尝试，先 300ms×10 快速阶段（就绪等待），耗尽后转 60s 低频常驻重试——wry
+/// 兜底路径实测收不到 drop，慢机器上一次性耗尽即永久静默失效不可接受。
 /// 注册线程 = 窗口所属主线程（OLE STA 要求），故必须经 run_on_main_thread。
 #[cfg(windows)]
 pub fn register_drop_target(app: &AppHandle) {
     const PENDING: usize = usize::MAX; // 哨兵：闭包未完成（n=0 是合法完成值）
+    const FAST_ATTEMPTS: u32 = 10;
     let app = app.clone();
     std::thread::spawn(move || {
-        for attempt in 1..=10 {
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
             // run_on_main_thread 的闭包要求 'static，经 Arc 回传结果
             let done = std::sync::Arc::new(AtomicUsize::new(PENDING));
             {
@@ -400,12 +452,15 @@ pub fn register_drop_target(app: &AppHandle) {
                 ));
                 return;
             }
-            // 子窗口尚未就绪（WebView2 初始化异步）：稍后重试
-            std::thread::sleep(Duration::from_millis(300));
+            if attempt == FAST_ATTEMPTS {
+                super::diag::log(
+                    "stagedrop: drop target registration failed 10 fast attempts; retrying every 60s",
+                );
+            }
+            // 子窗口尚未就绪（WebView2 初始化异步）：快速阶段短间隔，之后低频常驻
+            let wait = if attempt < FAST_ATTEMPTS { 300 } else { 60_000 };
+            std::thread::sleep(Duration::from_millis(wait));
         }
-        super::diag::log(
-            "stagedrop: drop target registration failed after 10 attempts; wry path remains as fallback",
-        );
     });
 }
 
@@ -523,7 +578,13 @@ impl windows::Win32::System::Ole::IDropTarget_Impl for StageDropTarget_Impl {
         _pt: &windows::Win32::Foundation::POINTL,
         pdwEffect: *mut windows::Win32::System::Ole::DROPEFFECT,
     ) -> windows::core::Result<()> {
-        let (paths, _) = extract_drop_paths(pDataObj);
+        // DragEnter 只取「是否带文件」判定，HDROP 用完即释放——GetData 返回的
+        // STGMEDIUM 归调用方所有，不 DragFinish 即泄漏全局内存块（会话内反复
+        // 进出窗口会累积；Drop 路径同款处理见下）
+        let (paths, hdrop) = extract_drop_paths(pDataObj);
+        if let Some(hdrop) = hdrop {
+            unsafe { windows::Win32::UI::Shell::DragFinish(hdrop) };
+        }
         let has = !paths.is_empty();
         self.has_files.store(has, Ordering::Relaxed);
         unsafe {
@@ -645,5 +706,78 @@ mod tests {
         assert_eq!(current_text().as_deref(), Some("已放入 1 条 · 共 1 条"));
         // 清场（全局状态，勿影响其他测试）
         STATE.lock().unwrap().feedback = None;
+    }
+
+    /// 轮询决策纯函数的情形覆盖：抖动宽限/会话结束/反馈驻留/到期收条。
+    /// 时间字段以 now 为锚的毫秒偏移给出（负 = 过去）
+    #[test]
+    fn 轮询决策情形覆盖() {
+        let now = Instant::now();
+        let at = |ms: i64| {
+            if ms >= 0 {
+                now + Duration::from_millis(ms as u64)
+            } else {
+                now - Duration::from_millis((-ms) as u64)
+            }
+        };
+        let mk = |session: bool,
+                  last_seen: Option<i64>,
+                  gone: Option<i64>,
+                  fb_until: Option<i64>| DropState {
+            session_active: session,
+            last_seen: last_seen.map(at),
+            gone_since: gone.map(at),
+            feedback: fb_until.map(|u| Feedback {
+                text: "t".into(),
+                until: at(u),
+            }),
+            generation: 0,
+        };
+
+        // 拖拽信号出现且无会话 → 开新会话
+        assert!(matches!(
+            decide(&mk(false, None, None, None), true, now),
+            Poll::Start
+        ));
+        // 拖拽中反馈未到期 → 保持
+        assert!(matches!(
+            decide(&mk(true, Some(0), None, Some(1200)), true, now),
+            Poll::Settle
+        ));
+        // 拖拽中反馈已到期 → 复位文案（长拖拽不残留上一轮结果）
+        assert!(matches!(
+            decide(&mk(true, Some(0), None, Some(-1)), true, now),
+            Poll::ResetStale
+        ));
+        // 信号消失 0.5s（< 1.2s 去抖）→ 宽限不动（躲猫猫修复的核心）
+        assert!(matches!(
+            decide(&mk(true, Some(-500), None, None), false, now),
+            Poll::Hold
+        ));
+        // 信号消失 1.3s（≥ 1.2s）→ 会话结束
+        assert!(matches!(
+            decide(&mk(true, Some(-1300), None, None), false, now),
+            Poll::End
+        ));
+        // 无会话反馈未到期 → 保持展示
+        assert!(matches!(
+            decide(&mk(false, None, Some(-100), Some(600)), false, now),
+            Poll::Settle
+        ));
+        // 无会话反馈已过期 → 到期即收（反馈存在是「到期即收」的充分条件）
+        assert!(matches!(
+            decide(&mk(false, None, Some(-100), Some(-1)), false, now),
+            Poll::Hide
+        ));
+        // 无会话无反馈，驻留不足 200ms → 保持
+        assert!(matches!(
+            decide(&mk(false, None, Some(-100), None), false, now),
+            Poll::Settle
+        ));
+        // 无会话无反馈，驻留已过 → 收条
+        assert!(matches!(
+            decide(&mk(false, None, Some(-300), None), false, now),
+            Poll::Hide
+        ));
     }
 }

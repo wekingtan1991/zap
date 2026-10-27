@@ -189,33 +189,45 @@ pub fn rows(conn: &Connection) -> Vec<StageRowData> {
     mapped.flatten().collect()
 }
 
-/// 锁外补全：存在性点查（symlink 目标失效时 metadata 兜不住，exists 走真实解析）
+/// 单条补全：存在性点查（symlink 目标失效时 metadata 兜不住，exists 走真实解析）
 /// + 图标。missing 现场判定、不自动删
+fn finish_one(r: StageRowData) -> StageRecord {
+    let missing = !std::path::Path::new(&r.path).exists();
+    let name = std::path::Path::new(&r.path)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| r.path.clone());
+    let icon = if missing {
+        None
+    } else {
+        icon_for(&r.path, r.is_dir)
+    };
+    StageRecord {
+        id: r.id,
+        name,
+        path: r.path,
+        is_dir: r.is_dir,
+        pinned: r.pinned,
+        missing,
+        icon,
+        added_at: r.added_at,
+    }
+}
+
+/// 锁外补全：逐条并行点查。断开的网络路径单条 stat 可达秒级，串行时整屏
+/// 死链 = 打开视图分钟级白屏；并行后总耗时 = 最慢单条。条目上限 500，
+/// 线程一次性创建开销（微秒级）相对 stat 可忽略。输出保持入参顺序
 pub fn finish(rows: Vec<StageRowData>) -> Vec<StageRecord> {
-    rows.into_iter()
-        .map(|r| {
-            let missing = !std::path::Path::new(&r.path).exists();
-            let name = std::path::Path::new(&r.path)
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| r.path.clone());
-            let icon = if missing {
-                None
-            } else {
-                icon_for(&r.path, r.is_dir)
-            };
-            StageRecord {
-                id: r.id,
-                name,
-                path: r.path,
-                is_dir: r.is_dir,
-                pinned: r.pinned,
-                missing,
-                icon,
-                added_at: r.added_at,
-            }
-        })
-        .collect()
+    std::thread::scope(|s| {
+        let handles: Vec<_> = rows
+            .into_iter()
+            .map(|r| s.spawn(move || finish_one(r)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("stage finish worker panicked"))
+            .collect()
+    })
 }
 
 /// 图标缓存：文件图标只由扩展名决定（目录统一一份），按扩展名惰性提取——
@@ -244,7 +256,8 @@ fn icon_for(path: &str, is_dir: bool) -> Option<String> {
     }
     let icon = super::apps::extract_icon_png(path).map(|png| super::apps::to_data_url(&png));
     if let Ok(mut cache) = ICON_CACHE.lock() {
-        cache.insert(key, icon.clone());
+        // finish 并行下同扩展名可能同时 miss：保留先到者的结果，不覆盖
+        cache.entry(key).or_insert(icon.clone());
     }
     icon
 }
@@ -322,6 +335,15 @@ pub fn restore(
     Ok(n > 0)
 }
 
+/// 批量撤销恢复（清空撤销一次调用）：逐条幂等插回（已重新放入的路径跳过），
+/// 返回恢复条数。单条 SQL 失败跳过不拖垮整批；同样不触发容量淘汰
+pub fn restore_batch(conn: &Connection, items: &[(String, bool, bool, i64)]) -> usize {
+    items
+        .iter()
+        .filter(|(p, d, pin, at)| restore(conn, p, *d, *pin, *at).unwrap_or(false))
+        .count()
+}
+
 /// 复制文件到剪贴板（CF_HDROP）：粘贴到任意对话框/资源管理器即为复制原文件。
 /// 中转站「携带」语义的关键动作——arboard 不支持文件列表，直接写 Win32 剪贴板
 #[cfg(windows)]
@@ -347,7 +369,16 @@ pub fn copy_files_to_clipboard(paths: &[String]) -> Result<(), String> {
     wide.push(0);
 
     unsafe {
-        OpenClipboard(None).map_err(|e| format!("打开剪贴板失败：{e}"))?;
+        // OpenClipboard 单次调用常因其他进程短暂持有剪贴板而失败，小间隔重试
+        let mut opened = OpenClipboard(None);
+        for _ in 0..4 {
+            if opened.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            opened = OpenClipboard(None);
+        }
+        opened.map_err(|e| format!("打开剪贴板失败：{e}"))?;
         let result = (|| -> Result<(), String> {
             EmptyClipboard().map_err(|e| format!("清空剪贴板失败：{e}"))?;
             let header = std::mem::size_of::<DROPFILES>();
@@ -497,8 +528,13 @@ mod tests {
         let _ = std::fs::remove_file(b);
     }
 
+    /// CAP 是进程级原子量：容量类测试并行时 A 的 cap=2 会撞上 B 的恢复 50
+    /// （互删对方的判定前提），共用一把锁串行化
+    static CAP_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn 容量淘汰且固定豁免() {
+        let _g = CAP_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let conn = mem_conn();
         CAP.store(2, Ordering::Relaxed);
         let a = temp_file("c1");
@@ -584,6 +620,47 @@ mod tests {
         assert!(!restore(&conn, &b_row.path, false, false, 0).unwrap());
         let _ = std::fs::remove_file(a);
         let _ = std::fs::remove_file(b);
+    }
+
+    #[test]
+    fn 撤销恢复不触发容量淘汰_下次放入收敛() {
+        let _g = CAP_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = mem_conn();
+        CAP.store(2, Ordering::Relaxed);
+        let a = temp_file("u1");
+        let b = temp_file("u2");
+        let c = temp_file("u3");
+        let d = temp_file("u4");
+        add(&conn, &[a.clone(), b.clone()]);
+        let b_row = list(&conn).iter().find(|r| r.path == b).unwrap().clone();
+        remove(&conn, b_row.id).unwrap();
+        add(&conn, std::slice::from_ref(&c));
+        assert_eq!(count(&conn), 2, "b 让出的空位被 c 补上");
+        // 撤销恢复 b：超容（3 > 2）不淘汰，按原 added_at 落回原相对位
+        // （c 最新、b 次之、a 最旧——b 是后放入的，added_at 比 a 新）
+        let restored = restore_batch(
+            &conn,
+            &[(
+                b_row.path.clone(),
+                b_row.is_dir,
+                b_row.pinned,
+                b_row.added_at,
+            )],
+        );
+        assert_eq!(restored, 1);
+        assert_eq!(count(&conn), 3, "恢复不应立刻挤出条目");
+        let paths: Vec<String> = list(&conn).into_iter().map(|r| r.path).collect();
+        assert_eq!(paths, vec![c.clone(), b_row.path.clone(), a.clone()]);
+        // 上限在下次放入时收敛：未固定 4 条超 2，挤掉最旧的 a、b
+        add(&conn, std::slice::from_ref(&d));
+        assert_eq!(count(&conn), 2);
+        let paths: Vec<String> = list(&conn).into_iter().map(|r| r.path).collect();
+        assert!(!paths.contains(&b_row.path), "上限在下次放入时收敛");
+        CAP.store(50, Ordering::Relaxed);
+        let _ = std::fs::remove_file(a);
+        let _ = std::fs::remove_file(b);
+        let _ = std::fs::remove_file(c);
+        let _ = std::fs::remove_file(d);
     }
 
     #[test]
