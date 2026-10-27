@@ -273,6 +273,15 @@ impl SearchEngine {
         clipboard::get_by_id(&conn, id)
     }
 
+    /// 按给定顺序取多条剪贴板全文（合并粘贴用）：个别行号已被清理则跳过，
+    /// 返回按入参顺序的存留文本。锁内纯库操作
+    pub fn clip_texts(&self, ids: &[i64]) -> Vec<String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        ids.iter()
+            .filter_map(|id| clipboard::get_by_id(&conn, *id))
+            .collect()
+    }
+
     /// 最近一条剪贴板内容（快速粘贴直达热键用）
     pub fn latest_clip(&self) -> Option<String> {
         let conn = self.clip.lock().expect("clip db poisoned");

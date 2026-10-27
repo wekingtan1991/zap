@@ -8,7 +8,7 @@ import React, {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
-import { CircleHelp, Lock, Pin, Search, TriangleAlert, Zap } from "lucide-react";
+import { CircleHelp, Layers, Lock, Pin, Search, TriangleAlert, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Kbd } from "@/components/ui/kbd";
@@ -168,6 +168,10 @@ function AppView() {
     y: number;
     item: SearchItem;
   } | null>(null);
+  /// 剪贴板合并粘贴模式：mergeSel 收勾选的 rowid，数组保序（点选顺序 =
+  /// 拼接顺序）。仅普通域剪贴板条目可勾；面板隐藏/呼出/进保护域即清
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergeSel, setMergeSel] = useState<number[]>([]);
 
   // 子页面（设置/详情/表单/导入/查看密码）挂载时接管焦点：主面板卸载后焦点会掉到
   // body（React 根节点之外），面板上的 onKeyDown 收不到任何按键，Esc 将失效。
@@ -264,6 +268,9 @@ function AppView() {
     const un = listen("zap://hidden", () => {
       setQuery("");
       setActive(0);
+      // 合并勾选是即时意图：跨呼出保留没有意义，隐藏即清
+      setMergeMode(false);
+      setMergeSel([]);
     });
     return () => {
       un.then((f) => f());
@@ -701,6 +708,42 @@ function AppView() {
     }
   }, []);
 
+  // ---------- 剪贴板合并粘贴 ----------
+  /// 模式开关：退出即清勾选（重进从零开始，避免残留旧意图）
+  const toggleMerge = useCallback(() => {
+    setMergeMode((m) => !m);
+    setMergeSel([]);
+  }, []);
+
+  /// 执行合并：勾选顺序 = 拼接顺序。个别条目已被清理时后端跳过并返回实际
+  /// 条数；全部被清理则报错（面板不收，toast 可见）。成功且带走粘贴时面板
+  /// 已收起，合并产物本身即反馈——toast 主要服务「未启用自动粘贴」与失败路径
+  const performMergePaste = useCallback(async () => {
+    const ids = [...mergeSel];
+    setMergeMode(false);
+    setMergeSel([]);
+    if (ids.length === 0) return;
+    try {
+      const n = await invoke<number>("clip_merge_paste", { ids });
+      if (n < ids.length) {
+        toast.warning(`已合并粘贴 ${n} 条（${ids.length - n} 条已被清理，已跳过）`);
+      } else {
+        toast.success(`已合并 ${n} 条并粘贴`);
+      }
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }, [mergeSel]);
+
+  // 进入保护域（pw）即退合并模式：勾选只对普通域剪贴板列表有意义，
+  // 保护域下 Enter/Ctrl+Enter 另有语义，不能被合并分支截走
+  useEffect(() => {
+    if (isVault && mergeMode) {
+      setMergeMode(false);
+      setMergeSel([]);
+    }
+  }, [isVault, mergeMode]);
+
   /// 工作台进入：按条目 target 定内容源——q = 万能输入框识别（携带当前
   /// 搜索词全文）、entry = 搜索入口（空内容等待粘贴）、数字 = 剪贴板行号回查；
   /// backQuery 记下返回词，Esc 退出时恢复主搜索现场
@@ -770,6 +813,17 @@ function AppView() {
   const runItem = useCallback(
     (it: SearchItem | undefined) => {
       if (!it || busyRef.current) return;
+      // 合并粘贴模式：点击文本剪贴板条目 = 勾选/取消（保序），不打开、不触发
+      // 分发；放在同条目去重之前——快速二连点取消勾选不能被双击防抖吞掉
+      if (mergeMode && it.kind === "clip") {
+        const id = Number(it.target);
+        if (!Number.isNaN(id)) {
+          setMergeSel((s) =>
+            s.includes(id) ? s.filter((x) => x !== id) : [...s, id]
+          );
+        }
+        return;
+      }
       // 同一条目 300ms 内去重：双击行（Explorer 迁移习惯）= 两次 click，
       // 文件/应用类会 ShellExecute 两次开两份；Enter 连击同理
       const now = performance.now();
@@ -802,7 +856,7 @@ function AppView() {
     },
     // actions 引用稳定的 useState setter / useCallback 闭包，逐项列出即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activate, openDetail, vaultAction]
+    [activate, openDetail, vaultAction, mergeMode]
   );
 
   // 表单数据更新器：与旧 setForm 同签名（Dispatch<SetStateAction<AccountForm|null>>），
@@ -876,6 +930,35 @@ function AppView() {
       return;
     }
     if (view.kind !== "main") return;
+
+    // 合并粘贴模式的键盘面（与底栏按钮同权）：Enter 勾/取光标行、
+    // Ctrl+Enter 执行合并、Esc 先退模式再谈清词收面板。方向键落到下方通用导航
+    if (mergeMode) {
+      if (e.key === "Enter" && e.ctrlKey) {
+        e.preventDefault();
+        void performMergePaste();
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const it = items[active];
+        // 仅文本剪贴板条目可勾：图片行号在图片表，clip_texts 查不到会被跳过
+        if (it && it.kind === "clip") {
+          const id = Number(it.target);
+          if (!Number.isNaN(id)) {
+            setMergeSel((s) =>
+              s.includes(id) ? s.filter((x) => x !== id) : [...s, id]
+            );
+          }
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        toggleMerge();
+        return;
+      }
+    }
 
     // 条目次级操作（普通域）：Ctrl+Shift+Enter 管理员 / Ctrl+Enter 所在文件夹 /
     // Ctrl+Shift+C 复制路径。账号库域不响应，次级动作按 kind 限权
@@ -1134,6 +1217,18 @@ function AppView() {
                 </div>
                 {it.subtitle && <div className="zap-sub">{it.subtitle}</div>}
               </div>
+              {/* 合并模式：文本剪贴板条目行尾勾选框，点选顺序即拼接顺序 */}
+              {mergeMode && it.kind === "clip" && (
+                <span
+                  className={
+                    "zap-merge-check" +
+                    (mergeSel.includes(Number(it.target)) ? " on" : "")
+                  }
+                  aria-hidden="true"
+                >
+                  ✓
+                </span>
+              )}
               {ui?.rowAction?.(it, actions)}
             </div>
             );
@@ -1224,6 +1319,42 @@ function AppView() {
             </>
           ) : (
             <>
+              <span className="zap-footer-sep" />
+              {mergeMode ? (
+                <>
+                  <span className="zap-merge-status">
+                    合并模式 · 已选 {mergeSel.length} 条
+                  </span>
+                  <button
+                    type="button"
+                    className="zap-merge-go"
+                    disabled={mergeSel.length === 0}
+                    onClick={() => void performMergePaste()}
+                  >
+                    <Kbd>Ctrl</Kbd>
+                    <span>+</span>
+                    <Kbd>Enter</Kbd>
+                    <span>合并粘贴</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="zap-merge-exit"
+                    onClick={toggleMerge}
+                  >
+                    退出
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="zap-merge-enter"
+                  onClick={toggleMerge}
+                  title="连续点选多条剪贴板文本条目，按点选顺序合并成一条粘贴"
+                >
+                  <Layers className="size-3" />
+                  <span>合并粘贴</span>
+                </button>
+              )}
               <span className="zap-footer-sep" />
               <Kbd>pw</Kbd>
               <span>账号库</span>

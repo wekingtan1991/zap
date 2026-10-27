@@ -399,6 +399,15 @@ mod tests {
             .expect("rowid")
     }
 
+    /// 按行号取全文（合并粘贴 clip_texts 的根基）：存在给原文，已被清理给 None
+    #[test]
+    fn 按行号取全文命中与缺失() {
+        let conn = mem_db();
+        let a = insert(&conn, "第一条", 1000);
+        assert_eq!(get_by_id(&conn, a).as_deref(), Some("第一条"));
+        assert_eq!(get_by_id(&conn, 99999), None, "不存在的行号给 None");
+    }
+
     #[test]
     fn 重抄旧内容后最新一条按时间取() {
         let conn = mem_db();

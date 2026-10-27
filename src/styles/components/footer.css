@@ -45,6 +45,73 @@
   color: var(--zap-warn);
 }
 
+/* ---------- 剪贴板合并粘贴：底栏入口 chip、进行中状态与执行/退出按钮 ---------- */
+
+.zap-merge-enter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--zap-w-09);
+  background: transparent;
+  color: var(--zap-fg-dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease;
+}
+
+.zap-merge-enter:hover {
+  color: var(--zap-warn);
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+/* 进行中：计数弱化展示，操作按钮点亮 */
+.zap-merge-status {
+  color: var(--zap-warn);
+  white-space: nowrap;
+}
+
+.zap-merge-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--zap-warn);
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    background-color 0.14s ease,
+    opacity 0.14s ease;
+}
+
+.zap-merge-go:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.24);
+}
+
+.zap-merge-go:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.zap-merge-exit {
+  border: none;
+  background: transparent;
+  color: var(--zap-fg-dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.14s ease;
+}
+
+.zap-merge-exit:hover {
+  color: var(--zap-fg);
+}
+
 /* Alt 组合键说明浮层：键位一列、说明一列，左右对齐 */
 .zap-alt-help {
   display: flex;

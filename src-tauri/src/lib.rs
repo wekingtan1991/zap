@@ -756,6 +756,35 @@ async fn clip_row(state: tauri::State<'_, AppState>, id: i64) -> Result<String, 
     .map_err(|e| e.to_string())?
 }
 
+/// 多条合并粘贴：按前端给定的点选顺序取各条全文，换行拼接后走与单条
+/// 「选中即粘贴」同一套回填+注入流程（take_prev_foreground + paste_text_async）。
+/// 合并产物是新组合，刻意不进自身复制抑制窗——与单条粘贴同口径，会收录进
+/// 历史顶部。个别条目已被清理则跳过并返回实际条数（前端据此提示），
+/// 全部已清理才报错
+#[tauri::command]
+async fn clip_merge_paste(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    ids: Vec<i64>,
+) -> Result<usize, String> {
+    if ids.is_empty() {
+        return Err("没有选择要合并的条目".into());
+    }
+    let engine = state.engine.clone();
+    let texts = tauri::async_runtime::spawn_blocking(move || engine.clip_texts(&ids))
+        .await
+        .map_err(|e| e.to_string())?;
+    if texts.is_empty() {
+        return Err("所选条目都已被清理".into());
+    }
+    let prev = take_prev_foreground(&app);
+    if prev.is_some() {
+        hide_panel_window(&app);
+    }
+    paste_text_async(texts.join("\n"), prev);
+    Ok(texts.len())
+}
+
 /// 通用文本复制（JSON 美化/压缩结果回填等）：
 /// 走自身复制抑制窗，派生结果不重复进入剪贴板历史；写入带退避重试
 #[tauri::command]
@@ -915,6 +944,38 @@ async fn everything_setup() -> Result<String, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// 按开关取呼出前前台窗口（选中即粘贴的粘贴目标）；设置关闭或无记录
+/// （呼出时前台就是面板/捕获失败）返回 None
+fn take_prev_foreground(app: &AppHandle) -> Option<isize> {
+    if providers::clipboard::PASTE_TO_PREV.load(Ordering::Relaxed) {
+        let state = app.state::<AppState>();
+        state
+            .prev_foreground
+            .lock()
+            .expect("prev_foreground poisoned")
+            .take()
+    } else {
+        None
+    }
+}
+
+/// 后台回填文本到剪贴板；有呼出前前台则交还焦点并注入 Ctrl+V。
+/// open_item 的 clip 文本分支与 clip_merge_paste 共用；回填会被自家监听
+/// 收录进历史顶部（重复内容自动去重）。retrying 退避（最坏 ~370ms）与
+/// 粘贴前的等待不能占主线程消息泵，压后台线程
+fn paste_text_async(text: String, prev: Option<isize>) {
+    std::thread::spawn(move || {
+        let _ = providers::clipboard::retrying(|| {
+            let text = text.clone();
+            arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text))
+        });
+        if let Some(hwnd) = prev {
+            std::thread::sleep(Duration::from_millis(80));
+            providers::winsys::paste_to_prev(hwnd);
+        }
+    });
+}
+
 #[tauri::command]
 fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
     // 剪贴板「选中即粘贴」在后台线程完成焦点交还与按键注入：open_item 在主线程，
@@ -978,20 +1039,10 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
                     return Err("该条剪贴板图片已被清理".into());
                 }
             }
-            // 选中即粘贴：焦点交还呼出前的窗口并注入 Ctrl+V，省掉手动一步；
-            // 设置关闭或无记录（呼出时前台就是面板/捕获失败）则退化为仅回填
-            let prev = if providers::clipboard::PASTE_TO_PREV.load(Ordering::Relaxed) {
-                let state = app.state::<AppState>();
-                state
-                    .prev_foreground
-                    .lock()
-                    .expect("prev_foreground poisoned")
-                    .take()
-            } else {
-                None
-            };
-            // 回填与粘贴压后台线程：retrying 退避（最坏 ~370ms）与图片的
-            // 点查全图 + PNG 解码不能占主线程消息泵
+            // 选中即粘贴：焦点交还呼出前的窗口并注入 Ctrl+V，省掉手动一步
+            let prev = take_prev_foreground(&app);
+            // 图片的点查全图 + PNG 解码不能占主线程消息泵，压后台线程；
+            // 文本回填走共用 paste_text_async（内部自起线程）
             let engine = app.state::<AppState>().engine.clone();
             let target = item.target.clone();
             let is_img = item.kind == "clipimg";
@@ -999,10 +1050,9 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
             if prev.is_some() {
                 hide_panel_window(&app);
             }
-            std::thread::spawn(move || {
-                // 回填剪贴板（文本=内容本体；图片=按行号点查全图并解码 RGBA）；
-                // 我们的监听会把它移动到历史顶部（重复内容自动去重）
-                if is_img {
+            if is_img {
+                std::thread::spawn(move || {
+                    // 图片=按行号点查全图并解码 RGBA 后回填
                     if let Ok(rowid) = target.parse::<i64>()
                         && let Some((w, h, png)) = engine.clip_image(rowid)
                         && let Ok((_, _, rgba)) = providers::clipimage::decode_png(&png)
@@ -1018,17 +1068,14 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
                             })
                         });
                     }
-                } else {
-                    let _ = providers::clipboard::retrying(|| {
-                        let target = target.clone();
-                        arboard::Clipboard::new().and_then(|mut cb| cb.set_text(target))
-                    });
-                }
-                if let Some(hwnd) = prev {
-                    std::thread::sleep(Duration::from_millis(80));
-                    providers::winsys::paste_to_prev(hwnd);
-                }
-            });
+                    if let Some(hwnd) = prev {
+                        std::thread::sleep(Duration::from_millis(80));
+                        providers::winsys::paste_to_prev(hwnd);
+                    }
+                });
+            } else {
+                paste_text_async(target, prev);
+            }
             Ok(())
         }
         "win" => {
@@ -1502,6 +1549,7 @@ pub fn run() {
             tool_convert_all,
             tool_uuid,
             clip_row,
+            clip_merge_paste,
             copy_text,
             shortcuts_list,
             shortcuts_save,
