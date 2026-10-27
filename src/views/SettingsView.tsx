@@ -9,6 +9,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { toast } from "sonner";
 import {
+  Archive,
   ArrowLeft,
   ChevronDown,
   ChevronUp,
@@ -43,6 +44,11 @@ import {
 } from "@/components/ui/select";
 import type { Updater } from "./useUpdater";
 import { useEscCapture } from "@/hooks/useEscCapture";
+import {
+  countImportedSettings,
+  mergeImportedConfig,
+  type ConfigFilePayload,
+} from "@/lib/configfile";
 import {
   applyAppearance,
   applyPanelTransparency,
@@ -305,6 +311,54 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
     }
   };
 
+  // ---------- 配置文件（设置+插件开关+捷径打包导出；导入回填表单，随「保存」生效） ----------
+  const [cfgBusy, setCfgBusy] = useState(false);
+
+  const doConfigExport = async () => {
+    setCfgBusy(true);
+    await invoke("set_hold_panel", { hold: true }).catch(() => {});
+    try {
+      const path = await save({
+        defaultPath: `zap-config-${new Date().toISOString().slice(0, 10)}.json`,
+        filters: [{ name: "zap 配置文件", extensions: ["json"] }],
+      });
+      if (!path) return;
+      await invoke("config_export", { path });
+      toast.success("配置已导出（不含账号库数据）");
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      await invoke("set_hold_panel", { hold: false }).catch(() => {});
+      setCfgBusy(false);
+    }
+  };
+
+  const doConfigImport = async () => {
+    setCfgBusy(true);
+    await invoke("set_hold_panel", { hold: true }).catch(() => {});
+    try {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "zap 配置文件", extensions: ["json"] }],
+      });
+      if (!path || typeof path !== "string") return;
+      const file = await invoke<ConfigFilePayload>("config_import", { path });
+      setSt((s) => (s ? mergeImportedConfig(s, file) : s));
+      setScList(file.shortcuts ?? []);
+      const n = countImportedSettings(file);
+      toast.success(
+        n > 0
+          ? `已载入配置（设置 ${n} 项 · 捷径 ${(file.shortcuts ?? []).length} 条），核对后点「保存」生效`
+          : `已载入捷径 ${(file.shortcuts ?? []).length} 条，核对后点「保存」生效`
+      );
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      await invoke("set_hold_panel", { hold: false }).catch(() => {});
+      setCfgBusy(false);
+    }
+  };
+
   useEffect(() => {
     // 归一化：半新半旧会话里旧后端不下发新键，undefined 会导致保存时丢键
     invoke<AppSettings>("get_app_settings")
@@ -477,6 +531,12 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
       setScErr(String(e));
       return;
     }
+    // 开机自启随保存生效（注册表写；失败提示但不阻塞其余设置）
+    try {
+      await invoke("autostart_set", { enable: st.autostart });
+    } catch (e) {
+      toast.error("开机自启设置失败：" + String(e));
+    }
     try {
       const res = await invoke<{
         hotkeyError: string | null;
@@ -640,15 +700,9 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           <Checkbox
             id="set-autostart"
             checked={st.autostart}
-            onCheckedChange={async (v) => {
-              const on = v === true;
-              setSt((s) => (s ? { ...s, autostart: on } : s));
-              try {
-                await invoke("autostart_set", { enable: on });
-              } catch {
-                setSt((s) => (s ? { ...s, autostart: !on } : s));
-              }
-            }}
+            onCheckedChange={(v) =>
+              setSt((s) => (s ? { ...s, autostart: v === true } : s))
+            }
           />
         </div>
         <div className="mt-3 border-t border-border pt-3">
@@ -876,6 +930,38 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
               </Button>
               <Button variant="outline" size="sm" onClick={startImport}>
                 导入恢复
+              </Button>
+            </span>
+          </div>
+        </div>
+        <div className="mt-3 border-t border-border pt-3">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+            <Archive className="size-3 text-primary/75" />
+            配置文件
+          </div>
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <span className="text-[13px] text-foreground">导出与导入</span>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                打包全部设置、插件开关与搜索捷径；账号库走上方「备份与恢复」
+              </span>
+            </span>
+            <span className="flex shrink-0 items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={cfgBusy}
+                onClick={() => void doConfigExport()}
+              >
+                导出配置
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={cfgBusy}
+                onClick={() => void doConfigImport()}
+              >
+                导入配置
               </Button>
             </span>
           </div>

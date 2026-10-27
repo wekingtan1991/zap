@@ -545,6 +545,77 @@ fn autostart_set(app: AppHandle, enable: bool) -> Result<(), String> {
     }
 }
 
+// ---------- 配置文件导出/导入 ----------
+
+/// 设置快照 → 配置文件 settings 段（全量 Some：导出即当前生效值）
+fn config_settings_from(dto: &AppSettingsDto) -> providers::appconfig::ConfigSettings {
+    providers::appconfig::ConfigSettings {
+        hotkey: Some(dto.hotkey.clone()),
+        vault_hotkey: Some(dto.vault_hotkey.clone()),
+        clip_hotkey: Some(dto.clip_hotkey.clone()),
+        superpanel_hotkey: Some(dto.superpanel_hotkey.clone()),
+        stage_hotkey: Some(dto.stage_hotkey.clone()),
+        clip_enabled: Some(dto.clip_enabled),
+        clip_max: Some(dto.clip_max),
+        clip_autopaste: Some(dto.clip_autopaste),
+        stage_max: Some(dto.stage_max),
+        stagedrop_enabled: Some(dto.stagedrop_enabled),
+        pwd_clear_secs: Some(dto.pwd_clear_secs),
+        autostart: Some(dto.autostart),
+        everything_autostart: Some(dto.everything_autostart),
+        appearance: Some(dto.appearance.clone()),
+        panel_transparency: Some(dto.panel_transparency),
+    }
+}
+
+/// 导出配置文件：当前设置 + 插件开关 + 搜索捷径打包为 JSON。账号库不在此列
+/// （走口令加密的备份恢复）。设置组装含注册表/SQLite 读，落盘走阻塞线程池
+#[tauri::command]
+async fn config_export(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let engine = state.engine.clone();
+    let hotkey = state.hotkey.lock().expect("hotkey poisoned").clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dto = build_app_settings(&app, &engine, &hotkey);
+        let file = providers::appconfig::ConfigFile {
+            kind: providers::appconfig::CONFIG_KIND.into(),
+            version: providers::appconfig::CONFIG_VERSION,
+            exported_at: Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()),
+            app_version: Some(app.package_info().version.to_string()),
+            settings: config_settings_from(&dto),
+            plugins: dto
+                .plugins
+                .iter()
+                .map(|p| providers::appconfig::ConfigPluginSwitch {
+                    id: p.id.clone(),
+                    enabled: p.enabled,
+                })
+                .collect(),
+            shortcuts: engine.shortcuts_list(),
+        };
+        let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+        std::fs::write(&path, text + "\n").map_err(|e| format!("写入失败：{e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 导入配置文件：读文件 + 校验 kind/version 后原样返回，前端回填设置表单，
+/// 用户核对后点「保存」走既有管线生效（热键冲突回滚、插件开关校验都在那条路上）
+#[tauri::command]
+async fn config_import(path: String) -> Result<providers::appconfig::ConfigFile, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("读取失败：{e}"))?;
+        providers::appconfig::validate_config_text(&text)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 透明面板（亚克力）：应用/清除窗口特效。系统不支持时返回 Err（调用方决定回退）。
 /// 特效只作用于桌面模糊底，面板自身透明度由前端 CSS（zap-trans 类）负责
 fn apply_window_effects(app: &AppHandle, on: bool) -> Result<(), String> {
@@ -1410,6 +1481,8 @@ pub fn run() {
             get_app_settings,
             save_settings,
             autostart_set,
+            config_export,
+            config_import,
             transparency_set,
             superpanel_act,
             superpanel_hide,
