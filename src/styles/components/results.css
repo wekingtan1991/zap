@@ -28,6 +28,31 @@
    同步 active——悬停行必有琥珀渐变，再叠灰底是第二层语义噪音；
    :hover 仅保留给行尾按钮的点亮（见 .zap-row-pin 一节） */
 
+/* 合并粘贴模式的行尾勾选框（仅普通域文本剪贴板条目渲染） */
+.zap-merge-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  border: 1.5px solid var(--zap-w-12);
+  color: transparent;
+  font-size: 12px;
+  font-weight: 700;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.zap-merge-check.on {
+  border-color: rgba(245, 158, 11, 0.75);
+  background: rgba(245, 158, 11, 0.18);
+  color: var(--zap-warn);
+}
+
 .zap-item::before {
   content: "";
   position: absolute;
