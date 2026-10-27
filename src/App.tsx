@@ -755,6 +755,62 @@ function AppView() {
     }
   }, [isVault, mergeMode]);
 
+  // 合并模式的键盘面挂窗口捕获——**不能挂面板/输入框 onKeyDown**：点击
+  // 底栏按钮或条目后焦点掉到按钮/body，输入框的 onKeyDown 收不到任何键
+  // （与 2026-10-22 表单 Esc 失效同根因，本次在合并功能上重犯后按同一
+  // 修法收口）。捕获阶段拦下合并语义键并 stopPropagation，防输入框的
+  // onKeyDown 对同一按键再处理一遍；其余按键放行不干扰打字。
+  // 不传依赖数组：每次渲染重挂保闭包新鲜（VaultFormView Esc 同款）。
+  // isComposing 卫兵挡 IME 选词键（合成期 keydown 不该触发勾选/合并）
+  useEffect(() => {
+    if (!mergeMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      // 右键菜单存活时 Esc 只关菜单，其余键放行给菜单语义（同 onKeyDown 口径）
+      if (ctxMenu) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          setCtxMenu(null);
+        }
+        return;
+      }
+      if (e.key === "Enter" && e.ctrlKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        void performMergePaste();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        // 仅文本剪贴板条目可勾：图片行号在图片表，clip_texts 查不到会被跳过
+        const it = items[active];
+        if (it && it.kind === "clip") {
+          const id = Number(it.target);
+          if (!Number.isNaN(id)) {
+            setMergeSel((s) =>
+              s.includes(id) ? s.filter((x) => x !== id) : [...s, id]
+            );
+          }
+        }
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleMerge();
+      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        e.stopPropagation();
+        kbNavRef.current = true;
+        setActive((a) =>
+          e.key === "ArrowDown"
+            ? Math.min(a + 1, Math.max(items.length - 1, 0))
+            : Math.max(a - 1, 0)
+        );
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  });
+
   /// 工作台进入：按条目 target 定内容源——q = 万能输入框识别（携带当前
   /// 搜索词全文）、entry = 搜索入口（空内容等待粘贴）、数字 = 剪贴板行号回查；
   /// backQuery 记下返回词，Esc 退出时恢复主搜索现场
@@ -941,35 +997,6 @@ function AppView() {
       return;
     }
     if (view.kind !== "main") return;
-
-    // 合并粘贴模式的键盘面（与底栏按钮同权）：Enter 勾/取光标行、
-    // Ctrl+Enter 执行合并、Esc 先退模式再谈清词收面板。方向键落到下方通用导航
-    if (mergeMode) {
-      if (e.key === "Enter" && e.ctrlKey) {
-        e.preventDefault();
-        void performMergePaste();
-        return;
-      }
-      if (e.key === "Enter") {
-        e.preventDefault();
-        const it = items[active];
-        // 仅文本剪贴板条目可勾：图片行号在图片表，clip_texts 查不到会被跳过
-        if (it && it.kind === "clip") {
-          const id = Number(it.target);
-          if (!Number.isNaN(id)) {
-            setMergeSel((s) =>
-              s.includes(id) ? s.filter((x) => x !== id) : [...s, id]
-            );
-          }
-        }
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        toggleMerge();
-        return;
-      }
-    }
 
     // 条目次级操作（普通域）：Ctrl+Shift+Enter 管理员 / Ctrl+Enter 所在文件夹 /
     // Ctrl+Shift+C 复制路径。账号库域不响应，次级动作按 kind 限权
