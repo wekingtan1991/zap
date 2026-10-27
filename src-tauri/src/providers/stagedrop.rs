@@ -51,8 +51,10 @@ const POLL_MS: u64 = 80;
 const GONE_DEBOUNCE_MS: u64 = 1200;
 /// 会话结束后的最短驻留：等 Drop 事件链路走完
 const HIDE_DWELL_MS: u64 = 200;
-/// drop 结果反馈的展示时长
+/// drop 结果反馈的展示时长（失败态分档加长：失败原因常是长路径，
+/// 1.2s 读不完就闪没，用户失去重试线索）
 const FEEDBACK_MS: u64 = 1200;
+const FEEDBACK_ERR_MS: u64 = 3000;
 /// stage_add 处理态的自愈上限（网络路径 metadata 可达秒级；超时轮询照常隐藏）
 const PROCESSING_MS: u64 = 4000;
 
@@ -105,15 +107,17 @@ pub fn begin_processing() -> u64 {
     st.generation
 }
 
-/// stage_add 完成：换结果文案并进入反馈期（代际不匹配 = 新会话已开，作废）
-pub fn finish_processing(generation: u64, text: String) {
+/// stage_add 完成：换结果文案并进入反馈期（代际不匹配 = 新会话已开，作废）。
+/// err = 有失败条目：失败文案（首条失败原因）停留三倍时长
+pub fn finish_processing(generation: u64, text: String, err: bool) {
     let mut st = STATE.lock().expect("stagedrop state poisoned");
     if st.generation != generation {
         return;
     }
     st.feedback = Some(Feedback {
         text,
-        until: Instant::now() + Duration::from_millis(FEEDBACK_MS),
+        until: Instant::now()
+            + Duration::from_millis(if err { FEEDBACK_ERR_MS } else { FEEDBACK_MS }),
     });
 }
 
@@ -686,25 +690,48 @@ mod tests {
         );
     }
 
+    /// STATE 是进程级全局：碰它的测试共用一把锁串行化（代际号会被并行测试互改）
+    static STATE_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// 代际守卫：begin 期间开了新会话，旧结果不得覆盖新会话状态
     #[test]
     fn 过期代际的完成结果作废() {
+        let _g = STATE_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let generation = begin_processing();
         // 模拟新会话递增代际
         {
             let mut st = STATE.lock().unwrap();
             st.generation += 1;
         }
-        finish_processing(generation, "已放入 1 条 · 共 1 条".into());
+        finish_processing(generation, "已放入 1 条 · 共 1 条".into(), false);
         assert!(
             current_text().is_none_or(|t| t == PROCESSING_TEXT),
             "过期代际的结果不应覆盖处理态"
         );
         // 同代际正常写入
         let generation = begin_processing();
-        finish_processing(generation, "已放入 1 条 · 共 1 条".into());
+        finish_processing(generation, "已放入 1 条 · 共 1 条".into(), false);
         assert_eq!(current_text().as_deref(), Some("已放入 1 条 · 共 1 条"));
         // 清场（全局状态，勿影响其他测试）
+        STATE.lock().unwrap().feedback = None;
+    }
+
+    /// 失败反馈停留时长分档：失败 3s / 成功 1.2s（读不完失败原因是真实痛点）
+    #[test]
+    fn 失败反馈停留更久() {
+        let _g = STATE_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let g = begin_processing();
+        let before = Instant::now();
+        finish_processing(g, "路径不存在：x".into(), true);
+        let until = STATE.lock().unwrap().feedback.as_ref().unwrap().until;
+        assert!(until.duration_since(before) >= Duration::from_millis(FEEDBACK_ERR_MS));
+        STATE.lock().unwrap().feedback = None;
+
+        let g = begin_processing();
+        let before = Instant::now();
+        finish_processing(g, "已放入 1 条 · 共 1 条".into(), false);
+        let until = STATE.lock().unwrap().feedback.as_ref().unwrap().until;
+        assert!(until.duration_since(before) < Duration::from_millis(FEEDBACK_ERR_MS));
         STATE.lock().unwrap().feedback = None;
     }
 

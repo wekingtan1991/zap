@@ -62,8 +62,9 @@ describe("kindUi 注册表", () => {
   });
 
   it("右键动作按 kind 收敛：路径类/剪贴板/窗口/链接各有其菜单", () => {
-    // 应用保持三动作（管理员运行仅 app）
+    // 应用四动作（管理员运行仅 app；放入中转站排首位，同 file/recent 口径）
     expect(kindUi("app")?.ctxActions).toEqual([
+      ["stage_add", "放入中转站"],
       ["reveal", "打开所在文件夹"],
       ["admin", "管理员运行"],
       ["copy_path", "复制路径"],

@@ -45,6 +45,9 @@ const REGISTRY: Record<string, KindUi> = {
     label: "应用",
     badge: "app",
     ctxActions: [
+      // 放入排首位（同 file/recent 口径）：常用应用固定进中转站是主场景，
+      // target 是 .lnk/exe 真实路径，后端 stage_add 会解析 lnk 为本体
+      ["stage_add", "放入中转站"],
       ["reveal", "打开所在文件夹"],
       ["admin", "管理员运行"],
       ["copy_path", "复制路径"],
