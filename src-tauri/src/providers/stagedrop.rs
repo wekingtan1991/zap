@@ -245,13 +245,16 @@ pub fn spawn(app: AppHandle) {
                     layout_bar(&app, false);
                     show(&app);
                     super::diag::log("stagedrop: drag session start");
-                    let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", ());
+                    // payload 分流：前端只对 start 重挂重播入场动画——
+                    // stale 若也重挂，长拖拽中反馈到期会把滑入动画重播在拖拽中途
+                    let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", "start");
                 }
                 Poll::ResetStale => {
-                    // 拖拽进行中：旧反馈文案到期复位（长拖拽不残留上一轮结果）
+                    // 拖拽进行中：旧反馈文案到期复位（长拖拽不残留上一轮结果）。
+                    // 只复位文案，不动会话动画（见上）
                     st.feedback = None;
                     drop(st);
-                    let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", ());
+                    let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", "stale");
                 }
                 Poll::Hold | Poll::Settle => {
                     // 宽限期内视作仍在拖 / 反馈驻留未到期：不动条子
