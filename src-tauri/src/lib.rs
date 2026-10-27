@@ -756,6 +756,15 @@ async fn clip_row(state: tauri::State<'_, AppState>, id: i64) -> Result<String, 
     .map_err(|e| e.to_string())?
 }
 
+/// 合并粘贴结果：count = 实际合并条数（已被清理的跳过）；pasted = 是否带了
+/// 焦点交还+注入（自动粘贴关闭时只回填，措辞应说「到剪贴板」而非「粘贴」）
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MergePasteOutcome {
+    count: usize,
+    pasted: bool,
+}
+
 /// 多条合并粘贴：按前端给定的点选顺序取各条全文，换行拼接后走与单条
 /// 「选中即粘贴」同一套回填+注入流程（take_prev_foreground + paste_text_async）。
 /// 合并产物是新组合，刻意不进自身复制抑制窗——与单条粘贴同口径，会收录进
@@ -766,7 +775,7 @@ async fn clip_merge_paste(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     ids: Vec<i64>,
-) -> Result<usize, String> {
+) -> Result<MergePasteOutcome, String> {
     if ids.is_empty() {
         return Err("没有选择要合并的条目".into());
     }
@@ -782,7 +791,10 @@ async fn clip_merge_paste(
         hide_panel_window(&app);
     }
     paste_text_async(texts.join("\n"), prev);
-    Ok(texts.len())
+    Ok(MergePasteOutcome {
+        count: texts.len(),
+        pasted: prev.is_some(),
+    })
 }
 
 /// 通用文本复制（JSON 美化/压缩结果回填等）：
