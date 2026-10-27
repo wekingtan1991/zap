@@ -21,7 +21,7 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { kindUi, type ItemActions } from "@/plugins/registry";
 import { routeItem } from "@/plugins/dispatch";
-import { isPinned, type SearchItem } from "@/plugins/types";
+import { isPinned, clipRowId, type SearchItem } from "@/plugins/types";
 import {
   kickEverythingEnsure,
   runCommand,
@@ -723,6 +723,17 @@ function AppView() {
     setMergeSel([]);
   }, []);
 
+  /// 勾选/取消一条（保序，点击与 Enter 共用）：仅文本剪贴板条目；
+  /// 行号取自 id（clipRowId）——target 是内容本体，取数恒 NaN
+  const toggleClipSelection = useCallback((it: SearchItem | undefined) => {
+    if (!it || it.kind !== "clip") return;
+    const id = clipRowId(it);
+    if (Number.isNaN(id)) return;
+    setMergeSel((s) =>
+      s.includes(id) ? s.filter((x) => x !== id) : [...s, id]
+    );
+  }, []);
+
   /// 执行合并：勾选顺序 = 拼接顺序。**只清勾选、不退模式**——自动粘贴关闭时
   /// 面板不收，用户往往要连着合下一批；自动粘贴开启时面板收起，zap://hidden
   /// 兜底清掉整个模式。个别条目已被清理时后端跳过并返回实际条数；全部被
@@ -782,16 +793,7 @@ function AppView() {
       } else if (e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
-        // 仅文本剪贴板条目可勾：图片行号在图片表，clip_texts 查不到会被跳过
-        const it = items[active];
-        if (it && it.kind === "clip") {
-          const id = Number(it.target);
-          if (!Number.isNaN(id)) {
-            setMergeSel((s) =>
-              s.includes(id) ? s.filter((x) => x !== id) : [...s, id]
-            );
-          }
-        }
+        toggleClipSelection(items[active]);
       } else if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
@@ -883,12 +885,7 @@ function AppView() {
       // 合并粘贴模式：点击文本剪贴板条目 = 勾选/取消（保序），不打开、不触发
       // 分发；放在同条目去重之前——快速二连点取消勾选不能被双击防抖吞掉
       if (mergeMode && it.kind === "clip") {
-        const id = Number(it.target);
-        if (!Number.isNaN(id)) {
-          setMergeSel((s) =>
-            s.includes(id) ? s.filter((x) => x !== id) : [...s, id]
-          );
-        }
+        toggleClipSelection(it);
         return;
       }
       // 同一条目 300ms 内去重：双击行（Explorer 迁移习惯）= 两次 click，
@@ -1260,7 +1257,7 @@ function AppView() {
                 <span
                   className={
                     "zap-merge-check" +
-                    (mergeSel.includes(Number(it.target)) ? " on" : "")
+                    (mergeSel.includes(clipRowId(it)) ? " on" : "")
                   }
                   aria-hidden="true"
                 >
