@@ -1,0 +1,65 @@
+/* ============================================================
+   基础层：全局重置与跨视图共享的底层样式。
+   组件级样式一律去 components/ 找，不要写在这里。
+   ============================================================ */
+
+/* ---------- 基础 ---------- */
+/* 面板不透明填充：窗口虽是透明窗口，但四角不透出桌面（避免"透明角"）。
+   背景随主题切换（:root / :root.zap-light 的 --zap-body-bg） */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--zap-body-bg);
+  overflow: hidden;
+  user-select: none;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 文本选区随主题：琥珀淡底替代浏览器默认蓝（详情字段/工作台值可选中文本），
+   两套主题下均可读——深底亮字、浅底暗字被同一层半透明琥珀罩住不改明暗关系 */
+::selection {
+  background: rgba(245, 158, 11, 0.32);
+}
+
+/* 细滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--zap-w-14) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--zap-w-14);
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--zap-w-35);
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 尊重系统的"减少动态效果"偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

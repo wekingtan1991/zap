@@ -76,6 +76,8 @@ export interface AppSettings {
   clipAutoPaste: boolean;
   /// 中转站未固定条目容量上限
   stageMax: number;
+  /// 全局拖拽落区条开关
+  stagedropEnabled: boolean;
   pwdClearSecs: number;
   autostart: boolean;
   everythingAutostart: boolean;
@@ -311,6 +313,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           ...res,
           clipAutoPaste: res.clipAutoPaste ?? true,
           stageMax: res.stageMax ?? 50,
+          stagedropEnabled: res.stagedropEnabled ?? true,
           appearance: res.appearance ?? "dark",
           panelTransparency: res.panelTransparency ?? true,
           superpanelHotkey: res.superpanelHotkey ?? "",
@@ -476,6 +479,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         clipMax: st.clipMax,
         clipAutoPaste: st.clipAutoPaste ?? true,
         stageMax: st.stageMax,
+        stagedropEnabled: st.stagedropEnabled ?? true,
         pwdClearSecs: st.pwdClearSecs,
         everythingAutostart: st.everythingAutostart,
         appearance: st.appearance ?? "dark",
@@ -514,7 +518,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
 
   return (
     <div
-      className="zap-panel vault outline-none"
+      className="zap-panel vault zap-view-in outline-none"
       tabIndex={-1}
       ref={focusRef}
     >
@@ -728,6 +732,26 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                 <SelectItem value="200">200</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div className="flex min-h-[38px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <Label
+                htmlFor="set-stagedrop"
+                className="text-[13px] font-normal text-foreground"
+              >
+                拖拽落区条
+              </Label>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                任何应用开始拖文件时，桌面右下角弹出「拖到这，放入中转站」；部分应用不弹属正常
+              </span>
+            </span>
+            <Checkbox
+              id="set-stagedrop"
+              checked={st.stagedropEnabled}
+              onCheckedChange={(v) =>
+                setSt((s) => (s ? { ...s, stagedropEnabled: v === true } : s))
+              }
+            />
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">

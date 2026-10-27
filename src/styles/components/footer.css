@@ -1,0 +1,70 @@
+/* ============================================================
+   底部快捷键提示栏：主面板（普通/账号库两套提示）与中转站共用，
+   以及 Alt 组合键说明的问号浮层。
+   ============================================================ */
+
+.zap-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--zap-w-07);
+  background: var(--zap-w-025);
+  font-size: 11px;
+  color: var(--zap-fg-mute2);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.zap-footer-hints {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.zap-footer-sep {
+  width: 1px;
+  height: 12px;
+  margin: 0 4px;
+  background: var(--zap-w-12);
+}
+
+/* 底栏 Alt 组合键说明的问号图标 */
+.zap-footer-help {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+  color: var(--zap-fg-dim);
+  cursor: help;
+  transition: color 0.14s ease;
+}
+
+.zap-footer-help:hover {
+  color: var(--zap-warn);
+}
+
+/* Alt 组合键说明浮层：键位一列、说明一列，左右对齐 */
+.zap-alt-help {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  white-space: nowrap;
+  padding: 2px;
+}
+
+.zap-alt-help-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.zap-alt-help-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 74px;
+  flex-shrink: 0;
+}

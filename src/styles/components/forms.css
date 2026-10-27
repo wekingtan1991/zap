@@ -1,0 +1,61 @@
+/* ============================================================
+   表单与导入骨架：账号新增/编辑表单、智能导入、JSON/文本工作台
+   正文区（zap-form）共用的纵向骨架与字段说明样式。
+   ============================================================ */
+
+/* ---------- 表单 / 导入 / 详情 通用骨架 ---------- */
+.zap-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  overflow-y: auto;
+  animation: slide-up 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* 表单字段说明（如标题用途提示） */
+.zap-form-hint {
+  color: var(--zap-fg-dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.zap-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.zap-form-actions > * {
+  flex: 1;
+}
+
+.zap-pass-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.zap-pass-row > *:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 智能导入预览行 */
+.zap-import-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--zap-w-08);
+}
+
+.zap-import-grid {
+  display: flex;
+  gap: 6px;
+}
+
+.zap-import-grid > * {
+  flex: 1;
+  min-width: 0;
+}

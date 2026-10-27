@@ -31,6 +31,9 @@ pub const KEY_CLIP_HOTKEY: &str = "clip_hotkey";
 pub const KEY_SUPERPANEL_HOTKEY: &str = "superpanel_hotkey";
 /// 中转站直达热键（空串 = 未绑定）：呼出面板并进入中转站视图
 pub const KEY_STAGE_HOTKEY: &str = "stage_hotkey";
+/// 全局拖拽落区条开关：任何应用拖文件时右下角弹「拖到这，放入中转站」
+pub const KEY_STAGEDROP_ENABLED: &str = "stagedrop_enabled";
+pub const DEFAULT_STAGEDROP_ENABLED: bool = true;
 /// 中转站未固定条目容量上限
 pub const KEY_STAGE_CAP: &str = "stage_cap";
 pub const DEFAULT_STAGE_CAP: i64 = 50;

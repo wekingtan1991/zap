@@ -1,0 +1,47 @@
+/* ============================================================
+   超级面板：选中文本呼出的动作菜单（独立小窗口，光标旁展示）。
+   窗口壳复用 panel.css 的 .zap-panel，这里只管菜单本体。
+   ============================================================ */
+.zap-super {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  height: 100%;
+}
+.zap-super-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  color: var(--zap-fg-mute);
+  border-bottom: 1px solid var(--zap-w-08);
+  margin-bottom: 2px;
+}
+.zap-super-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--zap-fg);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+/* 键盘与悬停共用一层选中高亮：行 onMouseEnter 会把 active 同步到悬停行，
+   语义与主列表一致——选中（琥珀底）是唯一视觉态，没有第二层 hover 灰 */
+.zap-super-item.zap-super-active {
+  background: var(--zap-w-08);
+}
+.zap-super-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

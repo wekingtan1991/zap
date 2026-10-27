@@ -6121,6 +6121,7 @@ dependencies = [
  "tauri-plugin-updater",
  "urlencoding",
  "windows",
+ "windows-core",
 ]
 
 [[package]]

@@ -1,0 +1,135 @@
+/* ============================================================
+   中转站视图：头部计数、拖入落区高亮与提示层、失效条目。
+   条目行本身复用 results.css 的 zap-item 系。
+   ============================================================ */
+
+/* 头部计数：域标签（胶囊）旁的弱化补充信息 */
+.zap-stage-count {
+  color: var(--zap-fg-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 落区：results 容器自身作为拖放高亮面与提示层的定位基准 */
+.zap-stage {
+  position: relative;
+}
+
+.zap-stage.zap-stage-drop {
+  outline: 2px dashed rgba(245, 158, 11, 0.6);
+  outline-offset: -8px;
+  border-radius: 12px;
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.zap-stage-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--zap-warn);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  animation: fade-in 0.12s ease-out both;
+}
+
+/* 失效条目：整行弱化 + 行尾「已失效」小标（死链不自动删，右键可重新定位） */
+.zap-item.zap-stage-dead {
+  opacity: 0.55;
+}
+
+.zap-stage-dead-tag {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ---------- 拖拽落区窗口（stagedrop）：透明外壳 + 圆角卡片双态 ---------- */
+/* 细条 280x36（会话常态）↔ 大卡片 300x264（文件悬停，QQ 式展开，窗口由
+   Rust 侧 layout_bar 同步缩放，右下角锚定，光标始终留在卡片区内） */
+
+/* 文档透明化：base.css 全局 body 底色会填死窗口透明边距与圆角外露处
+   （类由 main.tsx 按 label 挂载；特异性高于全局规则，无视 @import 顺序） */
+html.zap-stagedrop-doc,
+html.zap-stagedrop-doc body,
+html.zap-stagedrop-doc #root {
+  background: transparent;
+}
+
+.zap-stagedrop {
+  height: 100vh;
+  padding: 6px; /* 透明边距：给圆角卡片留出圆角空间 */
+  animation: fade-in 0.12s ease-out both;
+  user-select: none;
+}
+
+.zap-stagedrop-card {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  background: var(--zap-panel-grad);
+  border: 1px solid var(--zap-w-10);
+  border-radius: 12px;
+  color: var(--zap-fg-soft2);
+  font-size: 12.5px;
+  transition:
+    border-color 0.14s ease,
+    background-color 0.14s ease;
+}
+
+.zap-stagedrop-card svg {
+  color: var(--zap-warn);
+}
+
+.zap-stagedrop-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 文件悬停：展开为大卡片（虚线边框 + 大图标 + 大标题，参照 QQ 松手添加） */
+.zap-stagedrop.hot .zap-stagedrop-card {
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  border: 2px dashed rgba(245, 158, 11, 0.6);
+  background:
+    radial-gradient(
+      120% 100% at 50% 0%,
+      rgba(245, 158, 11, 0.14),
+      transparent 70%
+    ),
+    var(--zap-panel-grad);
+  color: var(--zap-fg-strong);
+}
+
+.zap-stagedrop-hero {
+  width: 56px;
+  height: 56px;
+  color: var(--zap-warn);
+  opacity: 0.9;
+}
+
+.zap-stagedrop-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.zap-stagedrop-sub {
+  font-size: 12px;
+  color: var(--zap-fg-dim);
+}

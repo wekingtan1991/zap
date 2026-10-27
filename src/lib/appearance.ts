@@ -1,5 +1,5 @@
 /// 外观主题（深色/浅色/跟随系统）：documentElement 挂 zap-light 类切换令牌。
-/// 深浅两套令牌定义在 index.css（:root 深色为默认，:root.zap-light 覆盖浅色）。
+/// 深浅两套令牌定义在 styles/tokens.css（:root 深色为默认，:root.zap-light 覆盖浅色）。
 /// 设置页改模式时即时预览，持久化经 save_settings 的 appearance 键
 export type Appearance = "dark" | "light" | "system";
 
