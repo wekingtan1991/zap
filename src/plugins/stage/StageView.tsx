@@ -477,16 +477,19 @@ export function StageView({ focusRef, onClose }: Props) {
           />
         </div>
       )}
-      <div
-        className={
-          "zap-results zap-stage" +
-          (dragging || processing !== null ? " zap-stage-drop" : "")
-        }
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setMenu({ x: e.clientX, y: e.clientY, row: null });
-        }}
-      >
+      {/* 提示层在滚动容器外：absolute inset-0 挂在滚动容器内会相对「内容盒」
+          定位，列表一长提示就随内容滚出视口；包裹层才是视口锚 */}
+      <div className="zap-stage-wrap">
+        <div
+          className={
+            "zap-results zap-stage" +
+            (dragging || processing !== null ? " zap-stage-drop" : "")
+          }
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setMenu({ x: e.clientX, y: e.clientY, row: null });
+          }}
+        >
         {rows.length === 0 ? (
           <div className="zap-empty">
             <span className="zap-empty-ico">
@@ -566,6 +569,7 @@ export function StageView({ focusRef, onClose }: Props) {
         {processing !== null && !dragging && (
           <div className="zap-stage-drop-hint">正在放入 {processing} 项…</div>
         )}
+      </div>
       </div>
       {menu && (
         <>
