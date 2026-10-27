@@ -113,6 +113,8 @@ pub fn start(app: tauri::AppHandle) {
             if !root_is_ours {
                 if let Some(c) = PENDING.lock().expect("pending poisoned").take() {
                     log(&format!("discard (not our window): {c}"));
+                    // 前端不知情会一直停在「按下新组合…」录制态：丢弃时同步通知
+                    let _ = app.emit("zap://hk-capture-reset", ());
                 }
             } else if let Some(combo) = PENDING.lock().expect("pending poisoned").take() {
                 log(&format!("captured+emit: {combo}"));

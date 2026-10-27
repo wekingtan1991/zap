@@ -45,6 +45,7 @@ import { ToolWorkbench } from "@/plugins/text/ToolWorkbench";
 import { SettingsView } from "@/views/SettingsView";
 import { useUpdater } from "@/views/useUpdater";
 import { applyAppearance, applyPanelTransparency, type Appearance } from "@/lib/appearance";
+import { clampMenuPos } from "@/lib/ctxMenu";
 
 /// 工作台内容源：入口进入 = 空文本等待粘贴；输入识别（万能输入框）= 携带
 /// 进入时刻的搜索词全文；剪贴板识别 = 按行号回查呼出时刻的内容
@@ -195,9 +196,12 @@ function AppView() {
     busyRef.current = busy;
   }, [busy]);
 
-  // 保护域：pw 前缀进入账号库
-  const isVault = query.trim().toLowerCase().startsWith("pw");
-  const vaultTerm = isVault ? query.trim().slice(2).trim() : "";
+  // 保护域：「pw」单独输入 = 空词浏览，「pw 」后接搜索词；「pwsh」这类 pw 开头的
+  // 常规搜索目标不再被劫持（旧口径 startsWith("pw") 会吃掉整个 pw* 命名空间）
+  const trimmedQuery = query.trim();
+  const lowered = trimmedQuery.toLowerCase();
+  const isVault = lowered === "pw" || lowered.startsWith("pw ");
+  const vaultTerm = isVault ? trimmedQuery.slice(2).trim() : "";
 
   // 外观与透明面板随设置刷新（设置页改主题即时预览）：挂载与设置页关闭后重拉。
   // 插件开关的门控已收敛到后端（probe/入口条目按 plugin_off 跳过），前端不再缓存
@@ -224,12 +228,15 @@ function AppView() {
     vaultTermRef.current = vaultTerm;
   }, [vaultTerm]);
 
-  // 账号库搜索
+  // 账号库搜索（cancelled 守卫：在途响应无法取消，快速输入时旧词的慢响应
+  // 不得覆盖新词结果——后端各请求独立并发执行，完成顺序无保证）
   useEffect(() => {
     if (!isVault) return;
+    let cancelled = false;
     const timer = setTimeout(async () => {
       try {
         const res = await invoke<SearchItem[]>("vault_search", { query: vaultTerm });
+        if (cancelled) return;
         const list = [...res];
         if (!vaultTerm) list.push(VAULT_ADD_ENTRY, VAULT_IMPORT_ENTRY);
         setItems(list);
@@ -238,7 +245,10 @@ function AppView() {
         // 忽略
       }
     }, 60);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [isVault, vaultTerm]);
 
   // 热键钩子启停命令归 SettingsView 持有；这里保留兜底停止（呼出重置时调用）
@@ -331,19 +341,25 @@ function AppView() {
   }, [openStage]);
 
   // 普通域搜索（账号库保护域下不生效；万能输入框识别与工具入口条目
-  // 由后端 probe/entry 在 search 结果里置顶返回，前端无感知）
+  // 由后端 probe/entry 在 search 结果里置顶返回，前端无感知）。
+  // cancelled 守卫同账号库搜索：files 源带 250ms HTTP 超时，竞态窗口真实存在
   useEffect(() => {
     if (isVault) return;
+    let cancelled = false;
     const timer = setTimeout(async () => {
       try {
         const res = await invoke<SearchItem[]>("search", { query: query.trim() });
+        if (cancelled) return;
         setItems(res);
         setActive(0);
       } catch {
         // 后端异常时保持当前列表不变
       }
     }, 80);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [query, isVault]);
 
   const activate = useCallback((item: SearchItem) => {
@@ -418,8 +434,26 @@ function AppView() {
     };
   }, [openSettings]);
 
-  const refreshVault = useCallback(async (term: string) => {    try {
+  // Ctrl+, 打开设置（窗口捕获，全视图可用）：子页面原先进不了设置（面板
+  // onKeyDown 只在 main 视图生效），只能先 Esc 回主面板。设置页内重复触发
+  // 按 no-op 跳过；热键录制态不冲突（, 不是可录键，录制监听只认可录键名）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.key !== ",") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (view.kind !== "settings") openSettings();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  });
+
+  /// 账号库列表重拉（pin/delete/表单收尾后）：响应回来时关键词已变（用户
+  /// 继续输入）则丢弃，交还给账号库搜索 effect 的正常刷新链路
+  const refreshVault = useCallback(async (term: string) => {
+    try {
       const res = await invoke<SearchItem[]>("vault_search", { query: term });
+      if (term !== vaultTermRef.current) return;
       const list = [...res];
       if (!term) list.push(VAULT_ADD_ENTRY, VAULT_IMPORT_ENTRY);
       setItems(list);
@@ -654,9 +688,10 @@ function AppView() {
     if (Number.isNaN(id)) return;
     try {
       await invoke<boolean>("clip_pin", { id });
-      const res = await invoke<SearchItem[]>("search", {
-        query: queryRef.current.trim(),
-      });
+      const q = queryRef.current.trim();
+      const res = await invoke<SearchItem[]>("search", { query: q });
+      // 重拉期间词已变：丢弃本次响应，交还给搜索 effect
+      if (q !== queryRef.current.trim()) return;
       setItems(res);
       setActive(0);
     } catch (e) {
@@ -829,13 +864,6 @@ function AppView() {
       return;
     }
     if (view.kind !== "main") return;
-
-    // Ctrl+, 打开设置
-    if (e.ctrlKey && e.key === ",") {
-      e.preventDefault();
-      openSettings();
-      return;
-    }
 
     // 条目次级操作（普通域）：Ctrl+Shift+Enter 管理员 / Ctrl+Enter 所在文件夹 /
     // Ctrl+Shift+C 复制路径。账号库域不响应，次级动作按 kind 限权
@@ -1112,10 +1140,11 @@ function AppView() {
           />
           <div
             className="zap-ctx-menu"
-            style={{
-              left: Math.min(ctxMenu.x, 720 - 176),
-              top: Math.min(ctxMenu.y, 480 - 132),
-            }}
+            style={clampMenuPos(
+              ctxMenu.x,
+              ctxMenu.y,
+              kindUi(ctxMenu.item.kind)?.ctxActions?.length ?? 0,
+            )}
           >
             {(kindUi(ctxMenu.item.kind)?.ctxActions ?? []).map(
               ([act, label]) => (

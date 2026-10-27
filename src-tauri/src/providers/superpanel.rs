@@ -205,7 +205,9 @@ pub fn build_actions(text: &str) -> Vec<SuperAction> {
         id: "web".into(),
         label: "网页搜索".into(),
     });
-    actions.truncate(5);
+    // 上限 6：当前动作组合实际最多 5 条（识别答案与 JSON 识别互斥），
+    // 留 1 条余量给未来新增动作，防「网页搜索」这类兜底被静默裁掉
+    actions.truncate(6);
     actions
 }
 

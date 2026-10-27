@@ -127,6 +127,7 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
                 kind: "file".into(),
                 target: full,
                 icon: None,
+                pinned: false,
                 score: 45.0 - i as f32,
             }
         })

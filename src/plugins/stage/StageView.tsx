@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as pickPath } from "@tauri-apps/plugin-dialog";
@@ -8,11 +8,13 @@ import {
   FilePlus2,
   FolderPlus,
   Inbox,
+  Search,
   TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useEscCapture } from "@/hooks/useEscCapture";
+import { clampMenuPos } from "@/lib/ctxMenu";
 import { VaultRowPin } from "@/plugins/vault/VaultRowPin";
 
 /// stage_list 行协议（providers/stage.rs StageRecord 的 camelCase 镜像）
@@ -57,7 +59,21 @@ export function StageView({ focusRef, onClose }: Props) {
   const [active, setActive] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [menu, setMenu] = useState<CtxMenu | null>(null);
+  /// 本地过滤词（容量上限 200 条，滚动翻找不可用）：匹配名称或路径，不走后端
+  const [filter, setFilter] = useState("");
   const activeItemRef = useRef<HTMLDivElement | null>(null);
+
+  /// 过滤后的可见行：键盘导航、列表渲染、右键菜单都以它为准
+  const shown = useMemo(() => {
+    const f = filter.trim().toLowerCase();
+    if (!f) return rows;
+    return rows.filter((r) => (r.name + " " + r.path).toLowerCase().includes(f));
+  }, [rows, filter]);
+
+  // 过滤词变化即回选中首行：旧 active 在过滤后的列表里可能越界
+  useEffect(() => {
+    setActive(0);
+  }, [filter]);
 
   const load = useCallback(async () => {
     try {
@@ -300,23 +316,30 @@ export function StageView({ focusRef, onClose }: Props) {
   ];
 
   const menuItems = menu ? (menu.row ? rowMenuItems(menu.row) : emptyMenuItems()) : [];
-  // 菜单高度随条数，防贴底溢出（与主面板右键菜单同一夹法）
-  const menuHeight = menuItems.length * 32 + 12;
+  // 菜单定位随条数夹紧（与主面板右键菜单共用同一帮手）
+  const menuPos = menu ? clampMenuPos(menu.x, menu.y, menuItems.length) : null;
 
-  // 右键菜单存活时 Esc 优先收菜单（enabled 互斥，同 VaultDetailView 约定）
+  // 右键菜单存活时 Esc 优先收菜单（enabled 互斥，同 VaultDetailView 约定）；
+  // 过滤词非空时 Esc 先清过滤再谈退出——渐进退出与主面板「有词清词」同口径
   useEscCapture(() => setMenu(null), menu !== null);
-  useEscCapture(onClose, menu === null);
+  useEscCapture(() => {
+    if (filter) {
+      setFilter("");
+      return;
+    }
+    onClose();
+  }, menu === null);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActive((a) => Math.min(a + 1, Math.max(rows.length - 1, 0)));
+      setActive((a) => Math.min(a + 1, Math.max(shown.length - 1, 0)));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setActive((a) => Math.max(a - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const row = rows[active];
+      const row = shown[active];
       if (row) openRow(row);
     }
   };
@@ -336,6 +359,7 @@ export function StageView({ focusRef, onClose }: Props) {
         <span className="zap-stage-count">
           共 {rows.length} 条
           {pinnedCount > 0 && ` · 固定 ${pinnedCount} 条`}
+          {filter.trim() && ` · 匹配 ${shown.length} 条`}
         </span>
         <Button
           variant="ghost"
@@ -365,6 +389,18 @@ export function StageView({ focusRef, onClose }: Props) {
           返回（Esc）
         </Button>
       </div>
+      {/* 过滤行：列表非空时出现（空列表无处可滤），本地过滤不走后端 */}
+      {rows.length > 0 && (
+        <div className="zap-stage-filter">
+          <Search className="size-3.5 shrink-0" />
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="过滤名称或路径…"
+            spellCheck={false}
+          />
+        </div>
+      )}
       <div
         className={
           "zap-results zap-stage" + (dragging ? " zap-stage-drop" : "")
@@ -388,8 +424,16 @@ export function StageView({ focusRef, onClose }: Props) {
             </span>
             <span className="zap-empty-sub">常用文件夹可固定，永不清出</span>
           </div>
+        ) : shown.length === 0 ? (
+          <div className="zap-empty">
+            <span className="zap-empty-ico">
+              <Search className="size-5" />
+            </span>
+            <span className="zap-empty-title">没有匹配的条目</span>
+            <span className="zap-empty-sub">换个关键词，或清空过滤框</span>
+          </div>
         ) : (
-          rows.map((row, i) => (
+          shown.map((row, i) => (
             <div
               key={row.id}
               ref={i === active ? activeItemRef : undefined}
@@ -446,13 +490,7 @@ export function StageView({ focusRef, onClose }: Props) {
               setMenu(null);
             }}
           />
-          <div
-            className="zap-ctx-menu"
-            style={{
-              left: Math.min(menu.x, 720 - 176),
-              top: Math.min(menu.y, 480 - menuHeight),
-            }}
-          >
+          <div className="zap-ctx-menu" style={menuPos ?? undefined}>
             {menuItems.map((mi) => (
               <button
                 key={mi.label}

@@ -31,6 +31,11 @@ use tauri::{AppHandle, Emitter, Manager};
 /// 运行时开关：启动从 appconfig 加载、设置保存时同步
 pub static STAGEDROP_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// 条子当前是否应处于展示态（show/hide/ensure_visible/disable_hide 各写入点
+/// 维护）。开关关闭的轮询分支据此短路：is_visible 是跨线程投递主线程的查询，
+/// 每 80ms 空转一次纯属浪费；BAR_SHOWN 恒真才进一次真实核对
+static BAR_SHOWN: AtomicBool = AtomicBool::new(false);
+
 /// 轮询间隔（FindWindowW 微秒级，恒定节奏；评审否决了 GetAsyncKeyState 分档：
 /// 物理键/UIPI/锁屏/触屏四坑，收益无感）
 const POLL_MS: u64 = 80;
@@ -118,6 +123,7 @@ pub fn ensure_visible(app: &AppHandle) {
     {
         layout_bar(app, false);
         let _ = win.show();
+        BAR_SHOWN.store(true, Ordering::Relaxed);
     }
 }
 
@@ -148,7 +154,9 @@ pub fn spawn(app: AppHandle) {
         loop {
             std::thread::sleep(Duration::from_millis(POLL_MS));
             if !STAGEDROP_ENABLED.load(Ordering::Relaxed) {
-                disable_hide(&app);
+                if BAR_SHOWN.load(Ordering::Relaxed) {
+                    disable_hide(&app);
+                }
                 continue;
             }
             let dragging = is_shell_dragging();
@@ -319,6 +327,7 @@ fn layout_bar(_app: &AppHandle, _expanded: bool) {}
 fn show(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("stagedrop") {
         let _ = win.show();
+        BAR_SHOWN.store(true, Ordering::Relaxed);
     }
 }
 
@@ -329,6 +338,7 @@ fn hide(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("stagedrop") {
         let _ = win.hide();
     }
+    BAR_SHOWN.store(false, Ordering::Relaxed);
 }
 
 /// 开关关闭：已显示则归位（拖拽中关闭也立即收）
@@ -338,6 +348,7 @@ fn disable_hide(app: &AppHandle) {
     {
         let _ = app.emit_to("stagedrop", "zap://stagedrop-hot", false);
         let _ = win.hide();
+        BAR_SHOWN.store(false, Ordering::Relaxed);
         let mut st = STATE.lock().expect("stagedrop state poisoned");
         st.session_active = false;
         st.gone_since = None;

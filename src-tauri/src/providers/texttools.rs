@@ -38,6 +38,7 @@ impl TextToolsPlugin {
             // entry = 入口进入：工作台空内容等待粘贴
             target: "entry".into(),
             icon: None,
+            pinned: false,
             score: 0.0,
         }
     }
@@ -103,6 +104,7 @@ impl super::plugin::Plugin for TextToolsPlugin {
             // target = 剪贴板行号：进入工作台后按行号回查当时内容
             target: clip_rowid.to_string(),
             icon: None,
+            pinned: false,
             score: 0.0,
         }]
     }
@@ -124,6 +126,7 @@ impl super::plugin::Plugin for TextToolsPlugin {
             kind: "tool".into(),
             target: "q".into(),
             icon: None,
+            pinned: false,
             score: 0.0,
         }]
     }

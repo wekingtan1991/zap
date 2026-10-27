@@ -275,11 +275,6 @@ fn build_item(
     } else {
         first_line
     };
-    let title = if pinned {
-        format!("📌 {title}")
-    } else {
-        title
-    };
     let extra_lines = content.lines().count().saturating_sub(1);
     let subtitle = if extra_lines > 0 {
         format!(
@@ -298,6 +293,7 @@ fn build_item(
         kind: "clip".into(),
         target: content,
         icon: None,
+        pinned,
         score: 60.0 - index as f32,
     }
 }
@@ -429,7 +425,8 @@ mod tests {
 
         let items = search(&conn, "", 5);
         assert_eq!(items[0].id, format!("clip:{old}"), "固定条目应排最前");
-        assert_eq!(items[0].title, "📌 旧内容");
+        assert!(items[0].pinned, "固定条目应带结构化置顶标记");
+        assert_eq!(items[0].title, "旧内容");
         assert!(items[1].id.ends_with(&new.to_string()), "其余按时间倒序");
 
         // 取消固定恢复时间序

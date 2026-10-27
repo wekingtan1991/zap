@@ -401,6 +401,7 @@ impl StagePlugin {
             kind: "stage".into(),
             target: "entry".into(),
             icon: None,
+            pinned: false,
             score: 0.0,
         }
     }
