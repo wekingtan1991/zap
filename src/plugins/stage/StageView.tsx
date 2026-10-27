@@ -213,7 +213,11 @@ export function StageView({ focusRef, onClose }: Props) {
         target: row.path,
         score: 0,
       },
-    }).catch((e) => toast.error("打开失败：" + String(e)));
+    }).catch((e) => {
+      // 打开失败回滚防抖锚点：失败即重试不该被 300ms 窗口吞掉（评审 P2）
+      lastOpenRef.current = { t: 0, key: "" };
+      toast.error("打开失败：" + String(e));
+    });
   }, []);
 
   /// 复制文件到剪贴板（CF_HDROP）：可粘贴到任意位置，中转站「携带」语义

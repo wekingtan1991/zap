@@ -82,17 +82,24 @@
   opacity: 0.3;
 }
 
+/* 拖入/处理中提示：胶囊底衬而非裸文字——与空态引导文案同心中叠时
+   （首拖网络路径、过滤无匹配）裸字会叠在引导文案上不可读（评审 P2） */
 .zap-stage-drop-hint {
   position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 7px 16px;
+  border-radius: 999px;
+  background: var(--zap-panel-grad);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   pointer-events: none;
   color: var(--zap-warn);
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 1px;
+  white-space: nowrap;
   animation: fade-in 0.12s ease-out both;
 }
 

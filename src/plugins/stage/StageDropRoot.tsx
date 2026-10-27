@@ -57,16 +57,17 @@ export function StageDropRoot() {
   }, []);
 
   // 反馈文案：Rust 侧事件推送（drop 后处理中/结果）+ 挂载时拉取兜底 +
-  // 新拖拽会话复位（轮询线程 emit，顺带递增会话计数重播入场动画）。
-  // then(f=>f()) 模式在 cleanup 先于 resolve 时同样注销
-  // （f 挂在 resolved promise 链上必然被调），无需 cancelled-flag
+  // 新拖拽会话复位。reset 带 payload 分流：start=会话起点（重挂重播入场），
+  // stale=拖拽中途旧反馈到期（只复位文案——重挂会把滑入/大卡片动画
+  // 重播在拖拽中途，评审 P2）。then(f=>f()) 模式在 cleanup 先于 resolve
+  // 时同样注销（f 挂在 resolved promise 链上必然被调），无需 cancelled-flag
   useEffect(() => {
     const unFeedback = listen<string>("zap://stagedrop-feedback", (e) =>
       setText(e.payload)
     ).catch(() => () => {});
-    const unReset = listen("zap://stagedrop-reset", () => {
+    const unReset = listen<string>("zap://stagedrop-reset", (e) => {
       setText(DEFAULT_TEXT);
-      setSession((s) => s + 1);
+      if (e.payload === "start") setSession((s) => s + 1);
     }).catch(() => () => {});
     invoke<string | null>("stagedrop_feedback_state")
       .then((t) => {
