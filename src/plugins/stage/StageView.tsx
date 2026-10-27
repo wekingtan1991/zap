@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as pickPath } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
@@ -61,13 +62,26 @@ export function StageView({ focusRef, onClose }: Props) {
   const [menu, setMenu] = useState<CtxMenu | null>(null);
   /// 本地过滤词（容量上限 200 条，滚动翻找不可用）：匹配名称或路径，不走后端
   const [filter, setFilter] = useState("");
+  /// 正在放入的条数（stage_add 在途）：拖入大批网络路径时 metadata 可达秒级，
+  /// 松手后列表毫无变化会被当成「没丢进去」而重复拖
+  const [processing, setProcessing] = useState<number | null>(null);
   const activeItemRef = useRef<HTMLDivElement | null>(null);
+  /// openRow 防抖锚点：双击（Explorer 迁移习惯）= 两次 click 两次 ShellExecute，
+  /// 文件类多实例查看器会开两份
+  const lastOpenRef = useRef({ t: 0, key: "" });
+  /// load 竞态序号：外部 stage-changed 与自身操作触发的 load 可能交叠，
+  /// 旧响应后到会覆盖新数据（同主搜索竞态守卫口径）
+  const loadSeqRef = useRef(0);
 
-  /// 过滤后的可见行：键盘导航、列表渲染、右键菜单都以它为准
+  /// 过滤后的可见行：键盘导航、列表渲染、右键菜单都以它为准。
+  /// 空格分词多关键词全匹配（「pdf 2026」式写法）
   const shown = useMemo(() => {
-    const f = filter.trim().toLowerCase();
-    if (!f) return rows;
-    return rows.filter((r) => (r.name + " " + r.path).toLowerCase().includes(f));
+    const terms = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return rows;
+    return rows.filter((r) => {
+      const hay = (r.name + " " + r.path).toLowerCase();
+      return terms.every((t) => hay.includes(t));
+    });
   }, [rows, filter]);
 
   // 过滤词变化即回选中首行：旧 active 在过滤后的列表里可能越界
@@ -75,9 +89,17 @@ export function StageView({ focusRef, onClose }: Props) {
     setActive(0);
   }, [filter]);
 
+  // 列表缩短（移出/清空/外部收敛）后夹紧 active，防止高亮悬空消失
+  useEffect(() => {
+    setActive((a) => Math.min(a, Math.max(shown.length - 1, 0)));
+  }, [shown.length]);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     try {
-      setRows(await invoke<StageRow[]>("stage_list"));
+      const r = await invoke<StageRow[]>("stage_list");
+      if (loadSeqRef.current !== seq) return;
+      setRows(r);
     } catch {
       // 列表拉取失败保持现状
     }
@@ -87,10 +109,23 @@ export function StageView({ focusRef, onClose }: Props) {
     void load();
   }, [load]);
 
+  // 外部放入通道（拖拽落区条 / 搜索右键放入）刷新本视图：视图打开期间面板被
+  // hold，两条通道并存是常态，不订阅则落区条放入后列表纹丝不动。
+  // then(f=>f()) 模式：cleanup 先于 resolve 时同样注销（见 StageDropRoot 同款）
+  useEffect(() => {
+    const un = listen("zap://stage-changed", () => void load()).catch(
+      () => () => {}
+    );
+    return () => {
+      un.then((f) => f()).catch(() => {});
+    };
+  }, [load]);
+
   /// 批量放入（拖拽 / 对话框添加共用）：结果分桶提示——新增、重复置顶、失败
   const addPaths = useCallback(
     async (paths: string[]) => {
       if (paths.length === 0) return;
+      setProcessing((p) => (p === null ? paths.length : p + paths.length));
       try {
         const r = await invoke<{
           added: number;
@@ -109,6 +144,13 @@ export function StageView({ focusRef, onClose }: Props) {
         }
       } catch (e) {
         toast.error(String(e));
+      } finally {
+        // 多批在途时按批递减（拖入途中又拖一批），归零才撤处理中态
+        setProcessing((p) => {
+          if (p === null) return null;
+          const next = p - paths.length;
+          return next <= 0 ? null : next;
+        });
       }
     },
     [load]
@@ -147,13 +189,21 @@ export function StageView({ focusRef, onClose }: Props) {
     activeItemRef.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
-  /// 打开（点击 / Enter 共用）：交给后端 open_item 的 stage 分支，
-  /// 成功即收面板（与普通条目启动同口径）
+  /// 打开（点击 / Enter 共用）：交给后端 open_item 的 stage 分支。
+  /// stage 打开刻意不收面板（后端按 kind 跳过 hide）：中转站是连续处理
+  /// 多个暂存项的工作台，文件在原应用起来、面板留原位；Esc 返回才收。
+  /// 同一目标 300ms 内去重——双击行会触发两次 click，文件类多实例
+  /// 查看器会开两份
   const openRow = useCallback((row: StageRow) => {
     if (row.missing) {
       toast.error("原文件已不存在，可右键重新定位");
       return;
     }
+    const now = performance.now();
+    if (now - lastOpenRef.current.t < 300 && lastOpenRef.current.key === row.path) {
+      return;
+    }
+    lastOpenRef.current = { t: now, key: row.path };
     invoke("open_item", {
       item: {
         id: `stage:${row.id}`,
@@ -270,6 +320,25 @@ export function StageView({ focusRef, onClose }: Props) {
     }
   }, [rows, load, restoreRows]);
 
+  /// 清理失效条目（死链不自动删，攒多了一次清）：missing 已在列表数据里
+  /// （list 时逐条点查），这里只批量删 id；快照留撤销
+  const cleanDead = useCallback(async () => {
+    const snapshot = rows.filter((r) => r.missing);
+    if (snapshot.length === 0) return;
+    try {
+      const n = await invoke<number>("stage_remove_batch", {
+        ids: snapshot.map((r) => r.id),
+      });
+      await load();
+      toast.success(`已清理 ${n} 条失效条目`, {
+        action: { label: "撤销", onClick: () => void restoreRows(snapshot) },
+        duration: 6000,
+      });
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }, [rows, load, restoreRows]);
+
   const addFilesDialog = useCallback(async () => {
     const picked = await pickPath({ multiple: true });
     if (picked) void addPaths(picked);
@@ -282,6 +351,7 @@ export function StageView({ focusRef, onClose }: Props) {
 
   const pinnedCount = rows.filter((r) => r.pinned).length;
   const unpinnedCount = rows.length - pinnedCount;
+  const deadCount = rows.filter((r) => r.missing).length;
 
   /// 条目右键菜单：失效条目没有「打开 / 复制文件」（原文件不在了），
   /// 换「重新定位」；reveal / 复制路径对死链仍有意义（帮用户排查）
@@ -305,12 +375,17 @@ export function StageView({ focusRef, onClose }: Props) {
     ];
   };
 
-  /// 空区右键菜单：清空仅在未固定条目存在时可用
+  /// 空区右键菜单：清空仅在未固定条目存在时可用；失效条目可一键清理
   const emptyMenuItems = (): MenuItem[] => [
     {
       label: `清空临时区（${unpinnedCount} 条）`,
       run: () => void clearUnpinned(),
       disabled: unpinnedCount === 0,
+    },
+    {
+      label: `清理失效条目（${deadCount} 条）`,
+      run: () => void cleanDead(),
+      disabled: deadCount === 0,
     },
     { label: "添加文件…", run: () => void addFilesDialog() },
     { label: "添加文件夹…", run: () => void addDirsDialog() },
@@ -404,7 +479,8 @@ export function StageView({ focusRef, onClose }: Props) {
       )}
       <div
         className={
-          "zap-results zap-stage" + (dragging ? " zap-stage-drop" : "")
+          "zap-results zap-stage" +
+          (dragging || processing !== null ? " zap-stage-drop" : "")
         }
         onContextMenu={(e) => {
           e.preventDefault();
@@ -435,51 +511,61 @@ export function StageView({ focusRef, onClose }: Props) {
           </div>
         ) : (
           shown.map((row, i) => (
-            <div
-              key={row.id}
-              ref={i === active ? activeItemRef : undefined}
-              className={
-                "zap-item" +
-                (i === active ? " active" : "") +
-                (row.missing ? " zap-stage-dead" : "")
-              }
-              onMouseEnter={() => setActive(i)}
-              onClick={() => openRow(row)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setActive(i);
-                setMenu({ x: e.clientX, y: e.clientY, row });
-              }}
-            >
-              {row.icon ? (
-                <img className="zap-ico" src={row.icon} alt="" draggable={false} />
-              ) : (
-                <Badge variant="file">{row.isDir ? "文件夹" : "文件"}</Badge>
+            <Fragment key={row.id}>
+              {/* 固定区与临时区的分界线：两层结构（固定永不清出 / 临时会被
+                  清空与容量淘汰）在视觉上不可见是认知断点 */}
+              {i > 0 && !row.pinned && shown[i - 1].pinned && (
+                <div className="zap-stage-divider" aria-hidden="true" />
               )}
-              <div className="zap-texts">
-                <div className="zap-title">
-                  {row.missing && (
-                    <TriangleAlert className="zap-title-pin size-3" />
-                  )}
-                  {row.name}
+              <div
+                ref={i === active ? activeItemRef : undefined}
+                title={row.path}
+                className={
+                  "zap-item" +
+                  (i === active ? " active" : "") +
+                  (row.missing ? " zap-stage-dead" : "")
+                }
+                onMouseEnter={() => setActive(i)}
+                onClick={() => openRow(row)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setActive(i);
+                  setMenu({ x: e.clientX, y: e.clientY, row });
+                }}
+              >
+                {row.icon ? (
+                  <img className="zap-ico" src={row.icon} alt="" draggable={false} />
+                ) : (
+                  <Badge variant="file">{row.isDir ? "文件夹" : "文件"}</Badge>
+                )}
+                <div className="zap-texts">
+                  <div className="zap-title">
+                    {row.missing && (
+                      <TriangleAlert className="zap-title-pin size-3" />
+                    )}
+                    {row.name}
+                  </div>
+                  <div className="zap-sub">{row.path}</div>
                 </div>
-                <div className="zap-sub">{row.path}</div>
+                {row.missing && (
+                  <span className="zap-stage-dead-tag">已失效</span>
+                )}
+                {/* 行尾固定按钮：挡住 dblclick 冒泡，双击按钮不能顺带打开文件 */}
+                <span onDoubleClick={(e) => e.stopPropagation()}>
+                  <VaultRowPin
+                    pinned={row.pinned}
+                    onPin={() => void togglePin(row)}
+                  />
+                </span>
               </div>
-              {row.missing && (
-                <span className="zap-stage-dead-tag">已失效</span>
-              )}
-              {/* 行尾固定按钮：挡住 dblclick 冒泡，双击按钮不能顺带打开文件 */}
-              <span onDoubleClick={(e) => e.stopPropagation()}>
-                <VaultRowPin
-                  pinned={row.pinned}
-                  onPin={() => void togglePin(row)}
-                />
-              </span>
-            </div>
+            </Fragment>
           ))
         )}
         {dragging && <div className="zap-stage-drop-hint">松手放入中转站</div>}
+        {processing !== null && !dragging && (
+          <div className="zap-stage-drop-hint">正在放入 {processing} 项…</div>
+        )}
       </div>
       {menu && (
         <>
@@ -512,7 +598,7 @@ export function StageView({ focusRef, onClose }: Props) {
       )}
       <div className="zap-footer">
         <span className="zap-footer-hints">
-          <span>拖入即存 · 点击 / Enter 打开 · 右键更多操作</span>
+          <span>拖入即存 · 点击 / Enter 打开（面板保持） · 右键更多操作</span>
         </span>
         <span className="zap-footer-hints">
           <span>固定条目永不清出</span>

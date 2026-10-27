@@ -336,12 +336,39 @@ pub fn restore(
 }
 
 /// 批量撤销恢复（清空撤销一次调用）：逐条幂等插回（已重新放入的路径跳过），
-/// 返回恢复条数。单条 SQL 失败跳过不拖垮整批；同样不触发容量淘汰
+/// 返回恢复条数。单条 SQL 失败跳过不拖垮整批（事务回滚反而会放大偶发失败）；
+/// 同样不触发容量淘汰。整批包一个事务：默认每语句 autocommit 各自 fsync，
+/// 清空 50 条撤销 = 50 次磁盘同步，事务化后一次
 pub fn restore_batch(conn: &Connection, items: &[(String, bool, bool, i64)]) -> usize {
-    items
+    let Ok(tx) = conn.unchecked_transaction() else {
+        return 0;
+    };
+    let n = items
         .iter()
-        .filter(|(p, d, pin, at)| restore(conn, p, *d, *pin, *at).unwrap_or(false))
+        .filter(|(p, d, pin, at)| restore(&tx, p, *d, *pin, *at).unwrap_or(false))
+        .count();
+    if tx.commit().is_err() {
+        return 0;
+    }
+    n
+}
+
+/// 批量移出（清理失效条目用）：逐条删除已存在的 id，返回实际移出条数。
+/// 失效判定由调用方在锁外完成（exists 是磁盘 IO，见模块头锁纪律），
+/// 这里只收 id 纯库操作
+pub fn remove_batch(conn: &Connection, ids: &[i64]) -> usize {
+    ids.iter()
+        .filter(|id| {
+            conn.execute("DELETE FROM stage_items WHERE id=?1", params![id])
+                .is_ok_and(|n| n > 0)
+        })
         .count()
+}
+
+/// 立即执行容量淘汰（设置调小容量时收敛已有超容条目；平时由放入路径
+/// 的 insert_one 顺带触发）。锁内纯库操作
+pub fn enforce_cap(conn: &Connection) {
+    evict_beyond_cap(conn);
 }
 
 /// 复制文件到剪贴板（CF_HDROP）：粘贴到任意对话框/资源管理器即为复制原文件。
@@ -674,6 +701,35 @@ mod tests {
         let _ = std::fs::remove_file(b);
         let _ = std::fs::remove_file(c);
         let _ = std::fs::remove_file(d);
+    }
+
+    #[test]
+    fn 容量调小立即收敛且批量移出() {
+        let _g = CAP_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = mem_conn();
+        CAP.store(3, Ordering::Relaxed);
+        let files: Vec<String> = (0..5).map(|i| temp_file(&format!("ec{i}"))).collect();
+        // 直接入库绕过放入路径的顺带淘汰，模拟「历史遗留超容」
+        for (i, p) in files.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO stage_items(path, is_dir, pinned, added_at) VALUES(?1, 0, 0, ?2)",
+                params![p, 1000 + i as i64],
+            )
+            .unwrap();
+        }
+        assert_eq!(count(&conn), 5);
+        enforce_cap(&conn);
+        assert_eq!(count(&conn), 3, "设置调小后立即收敛到容量内");
+        let paths: Vec<String> = list(&conn).into_iter().map(|r| r.path).collect();
+        assert!(!paths.contains(&files[0]), "挤掉最旧的");
+        // 批量移出：存在的 id 计数，不存在的忽略
+        let ids: Vec<i64> = list(&conn).into_iter().map(|r| r.id).collect();
+        assert_eq!(remove_batch(&conn, &ids), 3);
+        assert_eq!(remove_batch(&conn, &[9999]), 0, "不存在的 id 不计数");
+        CAP.store(50, Ordering::Relaxed);
+        for p in &files {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     #[test]

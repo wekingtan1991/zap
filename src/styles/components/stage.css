@@ -40,16 +40,38 @@
   color: var(--zap-fg-ph);
 }
 
-/* 落区：results 容器自身作为拖放高亮面与提示层的定位基准 */
+/* 落区：results 容器自身作为拖放高亮面与提示层的定位基准。
+   拖拽/处理中两态共用一套视觉（dashed 高亮 + 列表降暗 + 提示层）；
+   outline-color/background 走过渡，进出场不再是硬切。
+   radius 只在 drop 态给（容器 overflow-y:auto，常态圆角会永久裁切
+   滚动内容的四角） */
 .zap-stage {
   position: relative;
+  transition:
+    outline-color 0.12s ease,
+    background-color 0.12s ease;
+  outline: 2px dashed transparent;
+  outline-offset: -8px;
 }
 
 .zap-stage.zap-stage-drop {
-  outline: 2px dashed rgba(245, 158, 11, 0.6);
-  outline-offset: -8px;
   border-radius: 12px;
+  outline-color: rgba(245, 158, 11, 0.6);
   background: rgba(245, 158, 11, 0.06);
+}
+
+/* 拖入/放入在途时条目整体降暗：提示文字不再与条目文本打架。
+   transition 必须整条复制 results.css 的列表再追加 opacity——
+   transition 是单属性，只写 opacity 会把行原有的背景/按压过渡整条顶掉 */
+.zap-stage .zap-item {
+  transition:
+    background-color 0.14s ease,
+    transform 0.14s ease,
+    opacity 0.12s ease;
+}
+
+.zap-stage.zap-stage-drop .zap-item {
+  opacity: 0.3;
 }
 
 .zap-stage-drop-hint {
@@ -69,6 +91,15 @@
 /* 失效条目：整行弱化 + 行尾「已失效」小标（死链不自动删，右键可重新定位） */
 .zap-item.zap-stage-dead {
   opacity: 0.55;
+}
+
+/* 固定区与临时区分隔：两层结构（固定永不清出 / 临时会被清空与容量淘汰）
+   的视觉锚点，用户据此知道「清空临时区」会清掉哪些 */
+.zap-stage-divider {
+  height: 1px;
+  margin: 6px 14px;
+  background: var(--zap-w-06);
+  flex-shrink: 0;
 }
 
 .zap-stage-dead-tag {
@@ -97,7 +128,7 @@ html.zap-stagedrop-doc #root {
 .zap-stagedrop {
   height: 100vh;
   padding: 6px; /* 透明边距：给圆角卡片留出圆角空间 */
-  animation: fade-in 0.12s ease-out both;
+  animation: var(--animate-stagedrop-in);
   user-select: none;
 }
 
@@ -132,7 +163,6 @@ html.zap-stagedrop-doc #root {
 /* 文件悬停：展开为大卡片（虚线边框 + 大图标 + 大标题，参照 QQ 松手添加） */
 .zap-stagedrop.hot .zap-stagedrop-card {
   flex-direction: column;
-  gap: 10px;
   padding: 20px;
   border: 2px dashed rgba(245, 158, 11, 0.6);
   background:
@@ -143,6 +173,16 @@ html.zap-stagedrop-doc #root {
     ),
     var(--zap-panel-grad);
   color: var(--zap-fg-strong);
+}
+
+/* 大卡片内容容器：窗口 set_size 无法 CSS 过渡，内容换装入场动效遮住
+   尺寸瞬切的生硬感（gap 从 card 挪到这里，card 只剩一个子节点） */
+.zap-stagedrop-hot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  animation: var(--animate-item-in);
 }
 
 .zap-stagedrop-hero {

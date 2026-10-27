@@ -339,6 +339,18 @@ impl SearchEngine {
         stage::remove(&conn, id)
     }
 
+    /// 批量移出（清理失效条目用）：返回实际移出条数，不存在的 id 忽略
+    pub fn stage_remove_batch(&self, ids: &[i64]) -> usize {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::remove_batch(&conn, ids)
+    }
+
+    /// 设置调小容量后立即收敛已有超容条目（平时由放入路径顺带淘汰）
+    pub fn stage_enforce_cap(&self) {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::enforce_cap(&conn);
+    }
+
     pub fn stage_clear(&self) -> Result<usize, String> {
         let conn = self.clip.lock().expect("clip db poisoned");
         stage::clear(&conn)

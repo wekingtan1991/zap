@@ -15,6 +15,10 @@ const DEFAULT_TEXT = "拖到这，放入中转站";
 export function StageDropRoot() {
   const [hot, setHot] = useState(false);
   const [text, setText] = useState(DEFAULT_TEXT);
+  /// 会话计数：条子窗口只 hide/show 不销毁，CSS 入场动画只在 DOM 挂载时播
+  /// 一次——key 递增重挂子树，每轮拖拽会话重播入场（同 App.tsx 面板
+  /// zap://shown 的 remove/reflow/add 手法，这里用 key 更直白）
+  const [session, setSession] = useState(0);
 
   // 高亮双通道：主路径 = Rust 自有 IDropTarget 的 zap://stagedrop-hot（wry 在
   // 该窗口的拖放被 WebView2 拒绝，见 providers/stagedrop.rs 模块头）；
@@ -53,15 +57,17 @@ export function StageDropRoot() {
   }, []);
 
   // 反馈文案：Rust 侧事件推送（drop 后处理中/结果）+ 挂载时拉取兜底 +
-  // 新拖拽会话复位（轮询线程 emit）。then(f=>f()) 模式在 cleanup 先于 resolve
-  // 时同样注销（f 挂在 resolved promise 链上必然被调），无需 cancelled-flag
+  // 新拖拽会话复位（轮询线程 emit，顺带递增会话计数重播入场动画）。
+  // then(f=>f()) 模式在 cleanup 先于 resolve 时同样注销
+  // （f 挂在 resolved promise 链上必然被调），无需 cancelled-flag
   useEffect(() => {
     const unFeedback = listen<string>("zap://stagedrop-feedback", (e) =>
       setText(e.payload)
     ).catch(() => () => {});
-    const unReset = listen("zap://stagedrop-reset", () =>
-      setText(DEFAULT_TEXT)
-    ).catch(() => () => {});
+    const unReset = listen("zap://stagedrop-reset", () => {
+      setText(DEFAULT_TEXT);
+      setSession((s) => s + 1);
+    }).catch(() => () => {});
     invoke<string | null>("stagedrop_feedback_state")
       .then((t) => {
         if (t) setText(t);
@@ -74,15 +80,17 @@ export function StageDropRoot() {
   }, []);
 
   return (
-    <div className={"zap-stagedrop" + (hot ? " hot" : "")} aria-live="polite">
+    <div className={"zap-stagedrop" + (hot ? " hot" : "")} aria-live="polite" key={session}>
       <div className="zap-stagedrop-card">
         {hot ? (
-          <>
-            {/* QQ 式悬停大卡片（窗口由 Rust 侧同步放大到 300x264） */}
+          <div className="zap-stagedrop-hot">
+            {/* QQ 式悬停大卡片（窗口由 Rust 侧同步放大到 300x264）；
+                内容容器带入场动效：窗口 set_size 无法 CSS 过渡，但内容
+                换装可以，遮住尺寸瞬切的生硬感 */}
             <Inbox className="zap-stagedrop-hero" />
             <div className="zap-stagedrop-title">文件拖到这</div>
             <div className="zap-stagedrop-sub">放入中转站 · 松手即存</div>
-          </>
+          </div>
         ) : (
           <>
             <Inbox className="size-4 shrink-0" />

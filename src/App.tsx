@@ -153,6 +153,8 @@ function AppView() {
   const inputRef = useRef<HTMLInputElement>(null);
   const queryRef = useRef("");
   const busyRef = useRef(false);
+  /// runItem 同条目去重锚点（双击行 = 两次 click，见 runItem 注释）
+  const lastRunRef = useRef({ t: 0, key: "" });
   const vaultTermRef = useRef("");
   const activeItemRef = useRef<HTMLDivElement | null>(null);
   const kbNavRef = useRef(false);
@@ -768,6 +770,16 @@ function AppView() {
   const runItem = useCallback(
     (it: SearchItem | undefined) => {
       if (!it || busyRef.current) return;
+      // 同一条目 300ms 内去重：双击行（Explorer 迁移习惯）= 两次 click，
+      // 文件/应用类会 ShellExecute 两次开两份；Enter 连击同理
+      const now = performance.now();
+      if (
+        now - lastRunRef.current.t < 300 &&
+        lastRunRef.current.key === it.id
+      ) {
+        return;
+      }
+      lastRunRef.current = { t: now, key: it.id };
       // 分发决策收敛在 plugins/dispatch.ts（纯函数，可单测）；这里只执行
       const route = routeItem(it);
       switch (route.type) {

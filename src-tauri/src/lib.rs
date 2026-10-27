@@ -490,6 +490,9 @@ fn save_settings(
     if let Some(cap) = stage_max {
         let cap = cap.clamp(10, 500);
         providers::stage::CAP.store(cap, Ordering::Relaxed);
+        // 调小立即收敛已有超容条目：等下次放入才收敛不符合「改了就生效」直觉
+        // （调大无需动作，多出的空间天然可用）
+        state.engine.stage_enforce_cap();
         state
             .engine
             .set_setting(providers::appconfig::KEY_STAGE_CAP, &cap.to_string())?;
@@ -1040,7 +1043,10 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
     if let Err(e) = result {
         return Err(e.to_string());
     }
-    if !paste_started {
+    // stage 视图内打开不收面板（用户拍板）：中转站是「连续处理多个暂存项」
+    // 的工作台心智——文件在原应用起来，面板留原位供继续点击/复制/固定，
+    // Esc 或返回才收。其余 kind 维持启动即走
+    if !paste_started && item.kind != "stage" {
         hide_panel_window(&app);
     }
     Ok(())
@@ -1086,6 +1092,19 @@ async fn stage_remove(state: tauri::State<'_, AppState>, id: i64) -> Result<(), 
     tauri::async_runtime::spawn_blocking(move || engine.stage_remove(id))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// 批量移出（清理失效条目）：失效判定在前端列表数据里（list 时已逐条 exists），
+/// 这里只按 id 删除，返回实际移出条数
+#[tauri::command]
+async fn stage_remove_batch(
+    state: tauri::State<'_, AppState>,
+    ids: Vec<i64>,
+) -> Result<usize, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.stage_remove_batch(&ids))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 清空临时区（固定条目保留），返回清掉条数
@@ -1154,8 +1173,15 @@ pub(crate) fn handle_stage_drop(app: &AppHandle, paths: Vec<String>) {
     drop(tauri::async_runtime::spawn_blocking(move || {
         let outcome = engine.stage_add(&paths);
         let text = providers::stagedrop::feedback_text(&outcome);
-        providers::stagedrop::finish_processing(generation, text.clone());
+        providers::stagedrop::finish_processing(
+            generation,
+            text.clone(),
+            !outcome.failed.is_empty(),
+        );
         let _ = app.emit_to("stagedrop", "zap://stagedrop-feedback", text);
+        // 通知主窗口：中转站视图若开着（面板 hold 期间两条放入通道并存是常态），
+        // 列表需要刷新；视图未开时无人订阅，事件落空无害
+        let _ = app.emit("zap://stage-changed", ());
     }));
 }
 
@@ -1447,6 +1473,7 @@ pub fn run() {
             stage_list,
             stage_add,
             stage_remove,
+            stage_remove_batch,
             stage_clear,
             stage_pin,
             stage_relocate,
