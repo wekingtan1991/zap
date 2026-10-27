@@ -373,9 +373,17 @@ function AppView() {
 
   const activate = useCallback((item: SearchItem) => {
     // 打开失败后端不收面板：这里 toast 报因，用户可另选条目
-    invoke("open_item", { item }).catch((e) => {
-      toast.error("打开失败：" + String(e));
-    });
+    invoke("open_item", { item })
+      .then(() => {
+        // 剪贴板条目的可见反馈：自动粘贴开启时面板已收（toast 随窗口不可见，
+        // 无代价）；关闭时回填是静默的，用户感知为「点了没反应」
+        if (item.kind === "clip" || item.kind === "clipimg") {
+          toast.success("已复制到剪贴板，可粘贴");
+        }
+      })
+      .catch((e) => {
+        toast.error("打开失败：" + String(e));
+      });
   }, []);
 
   /// 条目次级操作（键盘触发与右键菜单共用）：
@@ -715,21 +723,24 @@ function AppView() {
     setMergeSel([]);
   }, []);
 
-  /// 执行合并：勾选顺序 = 拼接顺序。个别条目已被清理时后端跳过并返回实际
-  /// 条数；全部被清理则报错（面板不收，toast 可见）。成功且带走粘贴时面板
-  /// 已收起，合并产物本身即反馈——toast 主要服务「未启用自动粘贴」与失败路径
+  /// 执行合并：勾选顺序 = 拼接顺序。**只清勾选、不退模式**——自动粘贴关闭时
+  /// 面板不收，用户往往要连着合下一批；自动粘贴开启时面板收起，zap://hidden
+  /// 兜底清掉整个模式。个别条目已被清理时后端跳过并返回实际条数；全部被
+  /// 清理则报错（面板不收，toast 可见）
   const performMergePaste = useCallback(async () => {
     const ids = [...mergeSel];
-    setMergeMode(false);
     setMergeSel([]);
     if (ids.length === 0) return;
     try {
-      const n = await invoke<number>("clip_merge_paste", { ids });
-      if (n < ids.length) {
-        toast.warning(`已合并粘贴 ${n} 条（${ids.length - n} 条已被清理，已跳过）`);
-      } else {
-        toast.success(`已合并 ${n} 条并粘贴`);
-      }
+      const r = await invoke<{ count: number; pasted: boolean }>(
+        "clip_merge_paste",
+        { ids }
+      );
+      const skipped = ids.length - r.count;
+      const head = r.pasted
+        ? `已合并粘贴 ${r.count} 条`
+        : `已合并 ${r.count} 条到剪贴板`;
+      toast.success(skipped > 0 ? `${head}（${skipped} 条已被清理，已跳过）` : head);
     } catch (e) {
       toast.error(String(e));
     }
