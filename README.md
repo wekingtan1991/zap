@@ -127,7 +127,7 @@ pnpm build            # 仅前端类型检查 + 构建（tsc && vite build）
 测试与规范（在 `src-tauri/` 下）：
 
 ```bash
-cargo test --lib                                    # 后端单元测试（61 个）
+cargo test --lib                                    # 后端单元测试（97 个）
 cargo test --lib -- --ignored --nocapture           # 真实开始菜单图标提取冒烟（机器相关）
 cargo fmt --check                                   # 格式检查（CI 同款）
 cargo clippy --all-targets -- -D warnings           # lint（CI 同款，零警告）
