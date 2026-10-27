@@ -40,11 +40,19 @@
   color: var(--zap-fg-ph);
 }
 
-/* 落区：results 容器自身作为拖放高亮面与提示层的定位基准。
-   拖拽/处理中两态共用一套视觉（dashed 高亮 + 列表降暗 + 提示层）；
+/* 落区：results 容器自身作为拖放高亮面（dashed 高亮 + 列表降暗）；
    outline-color/background 走过渡，进出场不再是硬切。
    radius 只在 drop 态给（容器 overflow-y:auto，常态圆角会永久裁切
-   滚动内容的四角） */
+   滚动内容的四角）。
+   包裹层 zap-stage-wrap 承担 flex 撑满与提示层视口锚——提示层若挂在
+   滚动容器内，absolute inset-0 相对内容盒定位，长列表会滚出视口 */
+.zap-stage-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
 .zap-stage {
   position: relative;
   transition:
