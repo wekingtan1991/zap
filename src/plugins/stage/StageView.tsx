@@ -98,8 +98,10 @@ export function StageView({ focusRef, onClose }: Props) {
     [load]
   );
 
-  // 拖拽落区：监听只在本视图挂载期间存活，普通搜索态不受影响（误投防护）
+  // 拖拽落区：监听只在本视图挂载期间存活，普通搜索态不受影响（误投防护）。
+  // cancelled-flag：cleanup 先于 then 执行时立即注销，防 StrictMode 双挂载泄漏
   useEffect(() => {
+    let cancelled = false;
     let un: (() => void) | null = null;
     getCurrentWebview()
       .onDragDropEvent((e) => {
@@ -114,10 +116,12 @@ export function StageView({ focusRef, onClose }: Props) {
         }
       })
       .then((f) => {
-        un = f;
+        if (cancelled) f();
+        else un = f;
       })
       .catch(() => {});
     return () => {
+      cancelled = true;
       un?.();
     };
   }, [addPaths]);
@@ -319,7 +323,7 @@ export function StageView({ focusRef, onClose }: Props) {
 
   return (
     <div
-      className="zap-panel outline-none"
+      className="zap-panel zap-view-in outline-none"
       tabIndex={-1}
       ref={focusRef}
       onKeyDown={onKeyDown}

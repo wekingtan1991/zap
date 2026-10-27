@@ -229,6 +229,8 @@ struct AppSettingsDto {
     clip_autopaste: bool,
     /// 中转站未固定条目容量上限
     stage_max: i64,
+    /// 全局拖拽落区条开关
+    stagedrop_enabled: bool,
     pwd_clear_secs: i64,
     autostart: bool,
     everything_autostart: bool,
@@ -264,6 +266,7 @@ fn get_app_settings(app: AppHandle, state: tauri::State<AppState>) -> AppSetting
         clip_max: providers::clipboard::RETENTION_LIMIT.load(Ordering::Relaxed),
         clip_autopaste: providers::clipboard::PASTE_TO_PREV.load(Ordering::Relaxed),
         stage_max: providers::stage::CAP.load(Ordering::Relaxed),
+        stagedrop_enabled: providers::stagedrop::STAGEDROP_ENABLED.load(Ordering::Relaxed),
         pwd_clear_secs: state
             .engine
             .get_setting(providers::appconfig::KEY_PWD_CLEAR_SECS)
@@ -322,6 +325,7 @@ fn save_settings(
     clip_autopaste: Option<bool>,
     // Option 容错：半新半旧的会话（前端未带上新键）保存时不再整单被拒
     stage_max: Option<i64>,
+    stagedrop_enabled: Option<bool>,
     pwd_clear_secs: i64,
     everything_autostart: bool,
     appearance: Option<String>,
@@ -467,6 +471,13 @@ fn save_settings(
         state
             .engine
             .set_setting(providers::appconfig::KEY_STAGE_CAP, &cap.to_string())?;
+    }
+    if let Some(on) = stagedrop_enabled {
+        providers::stagedrop::STAGEDROP_ENABLED.store(on, Ordering::Relaxed);
+        state.engine.set_setting(
+            providers::appconfig::KEY_STAGEDROP_ENABLED,
+            if on { "1" } else { "0" },
+        )?;
     }
     if let Some(mode) = appearance {
         // 只收合法值（防前端脏数据把主题写坏）
@@ -1023,6 +1034,38 @@ async fn stage_copy_file(paths: Vec<String>) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
+/// 落区条当前反馈文案（前端挂载时拉取同步；None = 默认文案）。
+/// drop 的接收与 stage_add 全在 Rust 侧，这是唯一的前端拉取点
+#[tauri::command]
+fn stagedrop_feedback_state() -> Option<String> {
+    providers::stagedrop::current_text()
+}
+
+/// 落区 drop 的统一处理：自有 IDropTarget 主路径与 wry→on_window_event 兜底
+/// 路径都汇到这里（同一窗口只会有一条路径存活，不会双触发）。
+/// stage_add 压线程池——网络路径的 metadata 可达秒级，不能占调用线程
+pub(crate) fn handle_stage_drop(app: &AppHandle, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    let generation = providers::stagedrop::begin_processing();
+    // 可见性兜底：条子被收起后 Drop 才到达时补显
+    providers::stagedrop::ensure_visible(app);
+    let _ = app.emit_to(
+        "stagedrop",
+        "zap://stagedrop-feedback",
+        providers::stagedrop::PROCESSING_TEXT.to_string(),
+    );
+    let engine = app.state::<AppState>().engine.clone();
+    let app = app.to_owned();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        let outcome = engine.stage_add(&paths);
+        let text = providers::stagedrop::feedback_text(&outcome);
+        providers::stagedrop::finish_processing(generation, text.clone());
+        let _ = app.emit_to("stagedrop", "zap://stagedrop-feedback", text);
+    }));
+}
+
 /// 撤销恢复：原样插回刚移出/清空的条目（含固定态与时间戳；路径已被重新放入则忽略）
 #[tauri::command]
 async fn stage_restore(
@@ -1253,6 +1296,18 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .on_window_event(|window, event| {
+            // 中转站拖拽落区：wry→tauri DragDrop 路径作为自有 IDropTarget 的
+            // 兜底（主路径在 stagedrop.rs 的 StageDropTarget，替换了 wry 在该
+            // 窗口的注册；两条路互斥不会双触发）
+            if window.label() == "stagedrop"
+                && let WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event
+            {
+                let paths: Vec<String> = paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                handle_stage_drop(window.app_handle(), paths);
+            }
             // 失焦即隐："毫无存在感"的核心；显示后 300ms 内的焦点抖动忽略
             if let WindowEvent::Focused(false) = event {
                 if window.label() == "superpanel" {
@@ -1290,6 +1345,7 @@ pub fn run() {
             stage_relocate,
             stage_restore,
             stage_copy_file,
+            stagedrop_feedback_state,
             everything_status,
             everything_ensure,
             everything_setup,
@@ -1358,6 +1414,16 @@ pub fn run() {
                 .filter(|v| (10..=500).contains(v))
                 .unwrap_or(providers::appconfig::DEFAULT_STAGE_CAP);
             providers::stage::CAP.store(stage_cap, Ordering::Relaxed);
+
+            // 拖拽落区条：检测线程无条件启动（互验 P1——冷启动关闭态下运行时
+            // 重开也要即时生效），线程内按存档开关门控（关闭态仅空闲探测）
+            let stagedrop_on = engine
+                .get_setting(providers::appconfig::KEY_STAGEDROP_ENABLED)
+                .map(|v| v != "0")
+                .unwrap_or(providers::appconfig::DEFAULT_STAGEDROP_ENABLED);
+            providers::stagedrop::STAGEDROP_ENABLED.store(stagedrop_on, Ordering::Relaxed);
+            providers::stagedrop::spawn(app.handle().clone());
+            providers::stagedrop::register_drop_target(app.handle());
 
             let saved_hotkey = engine
                 .get_setting(providers::appconfig::KEY_HOTKEY)

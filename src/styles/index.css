@@ -1,0 +1,36 @@
+/* ============================================================
+   样式入口（唯一被 import 的文件：src/main.tsx）
+   - tokens.css     设计令牌（暗/浅/透明三套变量，改主题只动这里）
+   - base.css       基础层（body 重置、滚动条、减少动态效果）
+   - animations.css 动效（animate-* 令牌 + @keyframes 全集）
+   - components/    按界面区域一个文件：panel 面板壳与输入行 /
+                    results 结果列表 / forms 表单与导入骨架 /
+                    vault 账号详情与密码卡 / dialogs 弹窗（删除确认+备份）/
+                    settings 设置页杂项 / footer 底栏 /
+                    json JSON 工作台 / tool 文本工具工作台 /
+                    ctx-menu 右键菜单 / stage 中转站 / super 超级面板
+   新增样式：先找所属区域文件；新部件新建文件并在下方追加 @import。
+   @import 顺序即层叠顺序（令牌 → 基础 → 动效 → 组件按原 App.css 分节序）。
+   ============================================================ */
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./tokens.css";
+@import "./base.css";
+@import "./animations.css";
+@import "./components/panel.css";
+@import "./components/results.css";
+@import "./components/forms.css";
+@import "./components/vault.css";
+@import "./components/dialogs.css";
+@import "./components/settings.css";
+@import "./components/footer.css";
+@import "./components/json.css";
+@import "./components/ctx-menu.css";
+@import "./components/stage.css";
+@import "./components/tool.css";
+@import "./components/super.css";
+
+/* 变体注册：dark 供 shadcn 组件用；light 是本项目浅色主题（zap-light 类，
+   见 src/lib/appearance.ts），badge 等固定色组件用它做浅色覆盖 */
+@custom-variant dark (&:is(.dark *));
+@custom-variant light (&:is(.zap-light *));

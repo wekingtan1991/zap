@@ -14,6 +14,7 @@ pub mod recent;
 pub mod settings;
 pub mod shortcuts;
 pub mod stage;
+pub mod stagedrop;
 pub mod superpanel;
 pub mod sysutil;
 pub mod texttools;

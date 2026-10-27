@@ -9,7 +9,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { CircleHelp, Lock, Pin, Search, TriangleAlert, Zap } from "lucide-react";
-import "./App.css";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Kbd } from "@/components/ui/kbd";
@@ -156,6 +155,10 @@ function AppView() {
   const vaultTermRef = useRef("");
   const activeItemRef = useRef<HTMLDivElement | null>(null);
   const kbNavRef = useRef(false);
+  /// 主面板根节点：zap://shown 时重播呼出动画（见 shown 监听内注释）
+  const panelRef = useRef<HTMLDivElement>(null);
+  /// 结果滚动容器：query 变化时回滚顶部（见滚动重置 effect 注释）
+  const resultsRef = useRef<HTMLDivElement>(null);
   /// 条目右键菜单（次级操作）：光标位置 + 目标条目
   const [ctxMenu, setCtxMenu] = useState<{
     x: number;
@@ -182,6 +185,12 @@ function AppView() {
     kbNavRef.current = false;
     activeItemRef.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
+
+  // 搜索词变化即回滚列表顶部：active 已复位到 0，滚动不跟随会让键盘导航
+  // 从视口外起跳。置顶等动作后的列表刷新不走这里（query 未变），视线留在原地
+  useEffect(() => {
+    resultsRef.current?.scrollTo({ top: 0 });
+  }, [query]);
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
@@ -256,6 +265,16 @@ function AppView() {
       setView({ kind: "main" });
       stopHkCapture();
       setActive(0);
+      // 重播呼出动画：面板窗口只隐藏不销毁，跨 shown 组件不重挂——
+      // 移除→reflow→重挂让 panel-in 重新起播；从子视图返回走重挂的静态类
+      const panel = panelRef.current;
+      if (panel) {
+        panel.classList.remove("zap-panel-in");
+        void panel.offsetWidth; // 强制 reflow：同一帧内重置动画
+        panel.classList.add("zap-panel-in");
+      }
+      // query 多半未变（hidden 已清空），effect 不会触发：呼出即显式回滚
+      resultsRef.current?.scrollTo({ top: 0 });
       setTimeout(() => inputRef.current?.focus(), 30);
       if (busyRef.current) return;
       invoke<SearchItem[]>("search", { query: "" })
@@ -981,7 +1000,10 @@ function AppView() {
 
   // ---------- 主面板 ----------
   return (
-    <div className={"zap-panel" + (isVault ? " vault" : "")}>
+    <div
+      ref={panelRef}
+      className={"zap-panel zap-panel-in" + (isVault ? " vault" : "")}
+    >
       <div className="zap-input-row">
         <span className="zap-logo">
           {isVault ? (
@@ -1016,7 +1038,7 @@ function AppView() {
           </svg>
         </Button>
       </div>
-      <div className="zap-results">
+      <div className="zap-results" ref={resultsRef}>
         {items.length === 0 ? (
           <div className="zap-empty">
             <span className="zap-empty-ico">

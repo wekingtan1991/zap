@@ -1,0 +1,161 @@
+/* ============================================================
+   账号详情：Hero 标题卡、字段行（行尾一键复制）、密码明文卡
+   与 TOTP 实时验证码——账号库专属的展示样式。
+   ============================================================ */
+
+/* ---------- 账号详情：Hero 标题卡 + 字段卡 + 行尾一键复制 ---------- */
+.zap-detail-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background:
+    radial-gradient(
+      120% 120% at 0% 0%,
+      rgba(245, 158, 11, 0.12),
+      transparent 55%
+    ),
+    var(--zap-w-04);
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  animation: fade-in 0.18s ease-out both;
+}
+
+.zap-detail-hero-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.zap-detail-hero-pin {
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.5));
+}
+
+.zap-detail-title {
+  color: var(--zap-warn);
+  font-size: 15px;
+  font-weight: 600;
+  word-break: break-all;
+  user-select: text;
+}
+
+.zap-detail-hero-sub {
+  color: var(--zap-fg-mute2);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.zap-detail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.zap-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--zap-w-04);
+  border: 1px solid var(--zap-w-07);
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.zap-detail-row:hover {
+  background: var(--zap-w-06);
+  border-color: var(--zap-w-12);
+}
+
+.zap-detail-label {
+  width: 44px;
+  flex-shrink: 0;
+  color: var(--zap-fg-mute2);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.zap-detail-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--zap-fg);
+  font-size: 13px;
+  word-break: break-all;
+  user-select: text;
+}
+
+.zap-detail-mask {
+  color: var(--zap-warn);
+  letter-spacing: 2px;
+}
+
+.zap-detail-ops {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ---------- 查看密码浮层与明文卡 ---------- */
+.zap-pw-reveal {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 15px;
+  letter-spacing: 1px;
+  color: var(--zap-warn);
+  user-select: text;
+}
+
+/* 查看密码：大号密码展示卡（琥珀微光 + 描边，聚焦"这就是密码本体"） */
+.zap-pw-card {
+  display: flex;
+  align-items: center;
+  padding: 4px 20px;
+  border-radius: 12px;
+  background:
+    radial-gradient(
+      120% 140% at 0% 0%,
+      rgba(245, 158, 11, 0.14),
+      transparent 60%
+    ),
+    var(--zap-w-04);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  box-shadow: inset 0 1px 0 var(--zap-w-06);
+}
+
+.zap-pw-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--zap-fg-mute2);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.zap-pw-hint svg {
+  flex-shrink: 0;
+  color: rgba(245, 158, 11, 0.85);
+}
+
+/* ---------- 详情页 TOTP 实时验证码 ---------- */
+.zap-totp-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  color: var(--zap-fg-strong);
+}
+
+.zap-totp-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  letter-spacing: 0;
+  color: var(--zap-fg-dim);
+}

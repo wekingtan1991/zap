@@ -1,0 +1,148 @@
+/* ============================================================
+   面板壳与输入行：所有视图共用的外壳（.zap-panel）、输入行、
+   logo 磁贴、保护域描边与域标签（账号库 / JSON 工具 / 文本工具 /
+   中转站 / 设置页都挂 zap-vault-tag 系）。
+   ============================================================ */
+
+.zap-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  /* 直角 + 不透明渐变：Tauri 透明窗口无法圆角裁切，四角必须填满 */
+  background:
+    radial-gradient(
+      130% 90% at 50% -20%,
+      rgba(245, 158, 11, 0.08),
+      transparent 60%
+    ),
+    var(--zap-panel-grad);
+  border: 1px solid var(--zap-w-10);
+  border-radius: 0;
+  box-shadow: inset 0 1px 0 var(--zap-w-07);
+  overflow: hidden;
+  transition:
+    border-color 0.28s ease,
+    box-shadow 0.28s ease;
+}
+
+/* ---------- 入场动效挂载点 ---------- */
+/* 呼出动画：面板窗口只隐藏不销毁，CSS 动画不会随窗口 show 自动重播——
+   常驻面板（主面板跨 zap://shown、超级面板跨菜单推送）由 JS
+   「移除 → reflow → 重挂」此类重播；主面板根节点静态挂此类，
+   从子视图（设置/中转站/详情）返回的重挂也走同一入场 */
+.zap-panel-in {
+  animation: panel-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 子视图整面切换（设置页/中转站）的入场：视图卸载/挂载即播，无需 JS */
+.zap-view-in {
+  animation: slide-up 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.zap-input-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--zap-w-08);
+  flex-shrink: 0;
+  transition: border-color 0.28s ease;
+}
+
+.zap-logo {
+  width: 28px;
+  height: 28px;
+  font-size: 15px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: linear-gradient(145deg, var(--zap-warn), #d97706);
+  box-shadow:
+    inset 0 1px 0 var(--zap-w-35),
+    0 2px 8px rgba(245, 158, 11, 0.35);
+}
+
+/* 磁贴内的 lucide 图标用深色，保证琥珀渐变上的对比度 */
+.zap-logo svg {
+  color: #1a1205;
+}
+
+.zap-input-row input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--zap-fg-strong);
+  font-size: 16px;
+  font-family: inherit;
+  caret-color: #f59e0b;
+}
+
+.zap-input-row input::placeholder {
+  color: var(--zap-fg-ph);
+}
+
+/* 输入行设置按钮：悬浮时给出圆形底衬 */
+.zap-gear {
+  border-radius: 8px;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.zap-gear:hover {
+  background: var(--zap-w-08);
+}
+
+/* 错误态「重新加载」文本按钮（ErrorBoundary 输入行内，此前无样式裸奔） */
+.zap-link-btn {
+  border: none;
+  background: none;
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--zap-warn);
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 0.15s ease;
+}
+
+.zap-link-btn:hover {
+  background: var(--zap-w-08);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* 保护域：警示色描边 */
+.zap-panel.vault {
+  border-color: rgba(245, 158, 11, 0.38);
+  box-shadow:
+    inset 0 0 0 1px rgba(245, 158, 11, 0.5),
+    inset 0 0 22px rgba(245, 158, 11, 0.05);
+}
+
+.zap-panel.vault .zap-input-row {
+  border-bottom-color: rgba(245, 158, 11, 0.35);
+}
+
+.zap-vault-tag {
+  color: var(--zap-warn);
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  animation: fade-in 0.18s ease-out both;
+}
+
+/* 主面板账号域标签：胶囊化，强化"进入保护域"的感知 */
+.zap-vault-tag-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.12);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}

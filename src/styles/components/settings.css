@@ -1,0 +1,44 @@
+/* ============================================================
+   设置页杂项：热键录制态、保存反馈、版本号。
+   设置页布局主体走 Tailwind 工具类（SettingsView.tsx），这里只放
+   无法用工具类简洁表达 / 需要跨主题语义的少量类。
+   ============================================================ */
+
+/* 热键键帽可点击录制 + 录制中高亮 */
+.zap-hk {
+  cursor: pointer;
+  user-select: none;
+}
+
+.zap-hk-rec {
+  border-color: rgba(245, 158, 11, 0.8) !important;
+  color: var(--zap-warn) !important;
+}
+
+.zap-hk-err {
+  color: var(--zap-err);
+  font-size: 12px;
+  margin-top: -4px;
+}
+
+.zap-set-saved {
+  color: var(--zap-green);
+  font-size: 12px;
+  text-align: right;
+}
+
+/* 设置页底部版本号 */
+.zap-version {
+  color: var(--zap-fg-dim);
+  font-size: 13px;
+  text-align: center;
+  padding-top: 4px;
+  user-select: none;
+  letter-spacing: 0.3px;
+}
+
+.zap-version .zap-version-num {
+  color: var(--zap-warn);
+  font-weight: 600;
+  font-family: Consolas, "Courier New", monospace;
+}
