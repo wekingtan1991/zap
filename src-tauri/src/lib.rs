@@ -1296,6 +1296,14 @@ pub(crate) fn handle_stage_drop(app: &AppHandle, paths: Vec<String>) {
     if paths.is_empty() {
         return;
     }
+    // drop 即呼出中转站面板（用户拍板 2026-10-28）：压独立线程一拍——自有
+    // IDropTarget 路径本就在后台线程，wry 兜底路径的调用点在主线程事件循环
+    // 的拖放事件里，同步开主面板会嵌进 OLE 拖拽循环收尾；面板与入库并行，
+    // 列表靠 zap://stage-changed 刷新
+    {
+        let app = app.clone();
+        std::thread::spawn(move || open_stage_panel(&app));
+    }
     let generation = providers::stagedrop::begin_processing();
     // 可见性兜底：条子被收起后 Drop 才到达时补显
     providers::stagedrop::ensure_visible(app);
@@ -1350,13 +1358,11 @@ async fn stage_restore_batch(
     .map_err(|e| e.to_string())?
 }
 
-/// 前台窗口的根窗口是否是本面板（WebView2 子窗口夺焦时 tao 会误报 Focused(false)）
+/// 前台窗口的根窗口是否属于指定 hwnd（WebView2 子窗口夺焦时 tao 会误报
+/// Focused(false)，焦点判定必须落在根窗口上）
 #[cfg(windows)]
-fn foreground_belongs_to_panel(window: &tauri::Window) -> bool {
+fn foreground_belongs_to_hwnd(ours: windows::Win32::Foundation::HWND) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, GetForegroundWindow};
-    let Ok(ours) = window.hwnd() else {
-        return false;
-    };
     unsafe {
         let fg = GetForegroundWindow();
         if fg.is_invalid() {
@@ -1364,6 +1370,15 @@ fn foreground_belongs_to_panel(window: &tauri::Window) -> bool {
         }
         GetAncestor(fg, GA_ROOT) == ours
     }
+}
+
+/// 前台窗口的根窗口是否是本面板（WebView2 子窗口夺焦时 tao 会误报 Focused(false)）
+#[cfg(windows)]
+fn foreground_belongs_to_panel(window: &tauri::Window) -> bool {
+    let Ok(ours) = window.hwnd() else {
+        return false;
+    };
+    foreground_belongs_to_hwnd(ours)
 }
 
 /// 呼出前的前台窗口（剪贴板「选中即粘贴」的焦点交还目标）。前台已是面板则不记
@@ -1435,6 +1450,47 @@ pub(crate) fn toggle_panel(app: &AppHandle, preset: Option<&str>) {
         engine.refresh_apps();
         engine.refresh_recents();
     }));
+}
+
+/// drop 落区后立即呼出中转站面板（用户拍板 2026-10-28）：show 路径整体复用
+/// toggle_panel（定位/prev_foreground/hold 清零/shown/preset 全继承），差异
+/// 只在「可见即 no-op 不收」——toggle 语义会把已开的工作台收掉（评审 P1），
+/// 而 drop 时刻面板可见的唯一常态就是 stage 视图 hold 中（拖拽第一步焦点
+/// 就交给拖源，无 hold 的视图早被失焦即隐收掉），no-op 即正确。失败与否
+/// 此刻未知，不做结果分流：面板与 stage_add 并行，列表靠 zap://stage-changed
+/// 刷新；失败条目不进库，面板里表现为「没有新条目」，原因仍在条内反馈（3s）
+pub(crate) fn open_stage_panel(app: &AppHandle) {
+    if !providers::stagedrop::STAGEDROP_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
+        return;
+    };
+    if win.is_visible().unwrap_or(false) {
+        return;
+    }
+    toggle_panel(app, Some("stage"));
+    // 焦点兜底（评审 P1）：drop 时刻前台是拖源应用，zap 是后台进程，
+    // set_focus 可能被系统前台锁拒绝——面板停在「可见但无焦点」态（没有
+    // Focused(false) 转变，失焦即隐不触发，正是失焦家族的 Esc 失灵形态）。
+    // 延迟核对根窗口归属，确认没拿到前台则 Alt 解锁后重设一次
+    #[cfg(windows)]
+    {
+        let win = win.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let Ok(hwnd) = win.hwnd() else {
+                return;
+            };
+            if foreground_belongs_to_hwnd(hwnd) {
+                return;
+            }
+            let ok = providers::winsys::force_foreground(hwnd.0 as isize);
+            providers::diag::log(&format!(
+                "stagedrop: panel focus fallback force_foreground={ok}"
+            ));
+        });
+    }
 }
 
 /// 直达热键·快速粘贴：不经面板，把最近复制的文本粘贴到当前前台窗口。

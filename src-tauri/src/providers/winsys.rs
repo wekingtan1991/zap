@@ -202,6 +202,33 @@ fn send_ctrl_v() {
     }
 }
 
+/// 后台进程的前台切换兜底（drop 呼出面板专用）：SetForegroundWindow 受系统
+/// 前台锁约束，zap 非前台时（drop 时刻前台是拖源应用）会被静默拒绝。注入
+/// 一次 Alt 按下/抬起——系统向最近收到输入的进程授予前台指定权，键事件即
+/// 刷新该归属——随后再设一次前台。失败方向 = 面板可见但无焦点，用户点一下
+/// 即恢复，无损坏通路。若真机仍不凑效，备选弹药是 AttachThreadInput 与
+/// 前台线程共享输入态
+pub fn force_foreground(hwnd_val: isize) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_MENU, keybd_event,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    };
+    let hwnd = HWND(hwnd_val as *mut core::ffi::c_void);
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        // 扫描码 0x38 = 左 Alt，与真实键盘一致（本机调试经验：注入走扫描码）
+        keybd_event(VK_MENU.0 as u8, 0x38, KEYBD_EVENT_FLAGS(0), 0);
+        let ok = SetForegroundWindow(hwnd).as_bool();
+        keybd_event(VK_MENU.0 as u8, 0x38, KEYEVENTF_KEYUP, 0);
+        ok
+    }
+}
+
 /// 窗口切换源插件适配。搜索时走窗口快照枚举（Win32 调用），
 /// 保持 needs_conn = false：不得在 clip 锁内执行
 pub struct WinsysPlugin;
