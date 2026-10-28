@@ -18,6 +18,7 @@ const current: SettingsSnapshot = {
   clipAutoPaste: true,
   stageMax: 50,
   stagedropEnabled: true,
+  stagedropOpenPanel: false,
   pwdClearSecs: 45,
   autostart: false,
   everythingAutostart: true,
@@ -52,6 +53,7 @@ describe("mergeImportedConfig", () => {
       clipAutoPaste: false,
       stageMax: 200,
       stagedropEnabled: false,
+      stagedropOpenPanel: true,
       pwdClearSecs: 30,
       autostart: true,
       everythingAutostart: false,
@@ -68,6 +70,7 @@ describe("mergeImportedConfig", () => {
     expect(out.clipAutoPaste).toBe(false);
     expect(out.stageMax).toBe(200);
     expect(out.stagedropEnabled).toBe(false);
+    expect(out.stagedropOpenPanel).toBe(true);
     expect(out.pwdClearSecs).toBe(30);
     expect(out.autostart).toBe(true);
     expect(out.everythingAutostart).toBe(false);

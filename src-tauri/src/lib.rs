@@ -244,6 +244,8 @@ struct AppSettingsDto {
     stage_max: i64,
     /// 全局拖拽落区条开关
     stagedrop_enabled: bool,
+    /// 拖入落区条松手后自动呼出中转站面板
+    stagedrop_open_panel: bool,
     pwd_clear_secs: i64,
     autostart: bool,
     everything_autostart: bool,
@@ -281,6 +283,7 @@ fn build_app_settings(
         clip_autopaste: providers::clipboard::PASTE_TO_PREV.load(Ordering::Relaxed),
         stage_max: providers::stage::CAP.load(Ordering::Relaxed),
         stagedrop_enabled: providers::stagedrop::STAGEDROP_ENABLED.load(Ordering::Relaxed),
+        stagedrop_open_panel: providers::stagedrop::STAGEDROP_OPEN_PANEL.load(Ordering::Relaxed),
         pwd_clear_secs: engine
             .get_setting(providers::appconfig::KEY_PWD_CLEAR_SECS)
             .and_then(|v| v.parse().ok())
@@ -354,6 +357,8 @@ fn save_settings(
     // Option 容错：半新半旧的会话（前端未带上新键）保存时不再整单被拒
     stage_max: Option<i64>,
     stagedrop_enabled: Option<bool>,
+    // Option 容错：半新半旧的会话（前端未带上新键）保存时不再整单被拒
+    stagedrop_open_panel: Option<bool>,
     pwd_clear_secs: i64,
     everything_autostart: bool,
     appearance: Option<String>,
@@ -517,6 +522,13 @@ fn save_settings(
             if on { "1" } else { "0" },
         )?;
     }
+    if let Some(on) = stagedrop_open_panel {
+        providers::stagedrop::STAGEDROP_OPEN_PANEL.store(on, Ordering::Relaxed);
+        state.engine.set_setting(
+            providers::appconfig::KEY_STAGEDROP_OPEN_PANEL,
+            if on { "1" } else { "0" },
+        )?;
+    }
     if let Some(mode) = appearance {
         // 只收合法值（防前端脏数据把主题写坏）
         if matches!(mode.as_str(), "dark" | "light" | "system") {
@@ -576,6 +588,7 @@ fn config_settings_from(dto: &AppSettingsDto) -> providers::appconfig::ConfigSet
         clip_autopaste: Some(dto.clip_autopaste),
         stage_max: Some(dto.stage_max),
         stagedrop_enabled: Some(dto.stagedrop_enabled),
+        stagedrop_open_panel: Some(dto.stagedrop_open_panel),
         pwd_clear_secs: Some(dto.pwd_clear_secs),
         autostart: Some(dto.autostart),
         everything_autostart: Some(dto.everything_autostart),
@@ -1475,6 +1488,11 @@ pub(crate) fn open_stage_panel(app: &AppHandle) {
     if !providers::stagedrop::STAGEDROP_ENABLED.load(Ordering::Relaxed) {
         return;
     }
+    // 自动呼出面板是可关的体验项（设置开关，默认关）：关闭时 drop 的结果
+    // 反馈只落在条上（成功 1.2s / 失败 3s），面板不弹
+    if !providers::stagedrop::STAGEDROP_OPEN_PANEL.load(Ordering::Relaxed) {
+        return;
+    }
     let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
         return;
     };
@@ -1768,6 +1786,11 @@ pub fn run() {
                 .map(|v| v != "0")
                 .unwrap_or(providers::appconfig::DEFAULT_STAGEDROP_ENABLED);
             providers::stagedrop::STAGEDROP_ENABLED.store(stagedrop_on, Ordering::Relaxed);
+            let stagedrop_open_on = engine
+                .get_setting(providers::appconfig::KEY_STAGEDROP_OPEN_PANEL)
+                .map(|v| v != "0")
+                .unwrap_or(providers::appconfig::DEFAULT_STAGEDROP_OPEN_PANEL);
+            providers::stagedrop::STAGEDROP_OPEN_PANEL.store(stagedrop_open_on, Ordering::Relaxed);
             providers::stagedrop::spawn(app.handle().clone());
             providers::stagedrop::register_drop_target(app.handle());
 
