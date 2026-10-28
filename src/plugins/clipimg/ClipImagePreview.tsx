@@ -162,31 +162,33 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
                 alt={`剪贴板图片 ${meta.width}×${meta.height}`}
               />
             </div>
-            <div className="zap-imgprev-meta">
-              {meta.width}×{meta.height} · {humanSize(meta.size)} · 复制于{" "}
-              {new Date(meta.createdAt).toLocaleString()}
-            </div>
-            <div className="zap-imgprev-actions">
-              <Button variant="secondary" size="sm" onClick={paste}>
-                <ClipboardPaste className="size-3.5" />
-                粘贴
-              </Button>
-              <Button variant="outline" size="sm" onClick={copyOnly}>
-                {copied ? (
-                  <Check className="size-3.5 text-success" />
-                ) : (
-                  <Copy className="size-3.5" />
-                )}
-                仅复制
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => void saveAs()}>
-                <Download className="size-3.5" />
-                另存为
-              </Button>
-              <Button variant="outline" size="sm" onClick={togglePin}>
-                <Pin className="size-3.5" />
-                {pinned ? "取消固定" : "固定"}
-              </Button>
+            <div className="zap-imgprev-footer">
+              <span className="zap-imgprev-meta">
+                {meta.width}×{meta.height} · {humanSize(meta.size)} · 复制于{" "}
+                {new Date(meta.createdAt).toLocaleString()}
+              </span>
+              <div className="zap-imgprev-actions">
+                <Button variant="default" size="sm" onClick={paste}>
+                  <ClipboardPaste className="size-3.5" />
+                  粘贴
+                </Button>
+                <Button variant="outline" size="sm" onClick={copyOnly}>
+                  {copied ? (
+                    <Check className="size-3.5 text-success" />
+                  ) : (
+                    <Copy className="size-3.5" />
+                  )}
+                  仅复制
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => void saveAs()}>
+                  <Download className="size-3.5" />
+                  另存为
+                </Button>
+                <Button variant="outline" size="sm" onClick={togglePin}>
+                  <Pin className="size-3.5" />
+                  {pinned ? "取消固定" : "固定"}
+                </Button>
+              </div>
             </div>
           </>
         )
