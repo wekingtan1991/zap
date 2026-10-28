@@ -217,8 +217,39 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-/// 启动剪贴板监听线程：独立消息循环 + 独立写连接（WAL 下与读连接并存）
+/// 待入库的图片任务：回调线程只负责取 RGBA，编码/哈希/缩略图/写库在独立线程
+struct ImageTask {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+/// 图片入库 worker：channel 断开（监听线程退出）后归还连接，测试可内联驱动
+fn image_store_loop(conn: Connection, rx: std::sync::mpsc::Receiver<ImageTask>) -> Connection {
+    for task in rx {
+        let _ = super::clipimage::store(&conn, &task.rgba, task.width, task.height);
+    }
+    conn
+}
+
+/// 启动剪贴板监听线程：独立消息循环 + 独立写连接（WAL 下与读连接并存）。
+/// 图片入库另起一线程：PNG 编码 + sha256 + 缩略图对 4K 截图可达数百毫秒，
+/// 同步跑在回调里会拖住监听，截完图立刻呼出面板可能赶不上入库——回调只取
+/// RGBA 丢队列。队列有界（4 张 4K RGBA ≈ 130MB 上限）防截图风暴打爆内存，
+/// 满即丢新图：风暴下入库本就追不上，静默优于阻塞监听
 pub fn spawn_watcher(db_path: PathBuf) {
+    let (img_tx, img_rx) = std::sync::mpsc::sync_channel::<ImageTask>(4);
+    let worker_path = db_path.clone();
+    std::thread::spawn(move || {
+        let conn = match open_db(&worker_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("zap: 剪贴板图片入库线程打开数据库失败: {e}");
+                return;
+            }
+        };
+        let _ = image_store_loop(conn, img_rx);
+    });
     std::thread::spawn(move || {
         let conn = match open_db(&db_path) {
             Ok(c) => c,
@@ -230,6 +261,7 @@ pub fn spawn_watcher(db_path: PathBuf) {
         struct Handler {
             conn: Connection,
             cb: arboard::Clipboard,
+            img_tx: std::sync::mpsc::SyncSender<ImageTask>,
         }
         impl ClipboardHandler for Handler {
             fn on_clipboard_change(&mut self) -> CallbackResult {
@@ -259,13 +291,13 @@ pub fn spawn_watcher(db_path: PathBuf) {
                         );
                     }
                 } else if let Ok(img) = self.cb.get_image() {
-                    // 无文本可取时尝试图片（截图类）。入库失败静默（超限/编码异常不打扰）
-                    let _ = super::clipimage::store(
-                        &self.conn,
-                        &img.bytes,
-                        img.width as u32,
-                        img.height as u32,
-                    );
+                    // 无文本可取时尝试图片（截图类）：只取 RGBA 丢队列，编码/哈希/
+                    // 缩略图在独立线程；队列满丢弃（风暴保护，见 spawn_watcher 注释）
+                    let _ = self.img_tx.try_send(ImageTask {
+                        rgba: img.bytes.into_owned(),
+                        width: img.width as u32,
+                        height: img.height as u32,
+                    });
                 }
                 CallbackResult::Next
             }
@@ -278,6 +310,7 @@ pub fn spawn_watcher(db_path: PathBuf) {
 
         let handler = Handler {
             conn,
+            img_tx,
             cb: match arboard::Clipboard::new() {
                 Ok(c) => c,
                 Err(e) => {
@@ -558,6 +591,26 @@ mod tests {
         .expect("insert");
         conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
             .expect("rowid")
+    }
+
+    /// 图片入库队列 worker：投递任务 → channel 断开 → 归还连接后图片已在库。
+    /// 回调线程只取 RGBA 丢队列的拓扑由本测试锁定（编码/哈希/缩略图在 worker 侧）
+    #[test]
+    fn 图片队列worker入库() {
+        let conn = mem_db();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ImageTask>(4);
+        let rgba: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        tx.send(ImageTask {
+            rgba: rgba.clone(),
+            width: 2,
+            height: 2,
+        })
+        .expect("send");
+        drop(tx);
+        let conn = image_store_loop(conn, rx);
+        let items = super::super::clipimage::search_recent(&conn, 10);
+        assert_eq!(items.len(), 1, "worker 应把队列里的图片入库");
+        assert!(items[0].2.id.starts_with("clipimg:"));
     }
 
     /// 按行号取全文（合并粘贴 clip_texts 的根基）：存在给原文，已被清理给 None
