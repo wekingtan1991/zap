@@ -741,16 +741,10 @@ async fn vault_parse(text: String) -> Result<Vec<providers::vault::ParsedAccount
 
 // ---------- JSON 工具插件 ----------
 
+/// 一次返回分析报告 + 美化/压缩：前端每击键单次 IPC 单次解析
 #[tauri::command]
-async fn json_analyze(text: String) -> Result<providers::jsontools::JsonReport, String> {
-    tauri::async_runtime::spawn_blocking(move || providers::jsontools::analyze(&text))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn json_format(text: String, pretty: bool) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || providers::jsontools::format_text(&text, pretty))
+async fn json_analyze_full(text: String) -> Result<providers::jsontools::JsonFull, String> {
+    tauri::async_runtime::spawn_blocking(move || providers::jsontools::analyze_full(&text))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1749,8 +1743,7 @@ pub fn run() {
             vault_backup_decrypt,
             vault_backup_restore,
             secondary_action,
-            json_analyze,
-            json_format,
+            json_analyze_full,
             json_to_yaml,
             json_to_ts,
             tool_convert_all,

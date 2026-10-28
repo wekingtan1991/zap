@@ -14,12 +14,16 @@ import { Button } from "@/components/ui/button";
 import { useEscCapture } from "@/hooks/useEscCapture";
 import type { PanelProps } from "@/plugins/panel";
 
-/// 后端 jsontools::JsonReport 的线协议镜像
-interface JsonReport {
+/// 后端 jsontools::JsonFull 的线协议镜像：报告与美化/压缩一次带回
+interface JsonAnalysis {
   valid: boolean;
   kind: string;
   bytes: number;
   error: string | null;
+  /// 美化（2 空格缩进）；仅 valid 时有值
+  pretty: string | null;
+  /// 压缩；仅 valid 时有值
+  compact: string | null;
 }
 
 interface Props extends PanelProps {
@@ -37,7 +41,7 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
     text !== undefined ? text : null
   );
   const [loadErr, setLoadErr] = useState("");
-  const [report, setReport] = useState<JsonReport | null>(null);
+  const [report, setReport] = useState<JsonAnalysis | null>(null);
   const [pretty, setPretty] = useState("");
   const [compact, setCompact] = useState("");
   const [mode, setMode] = useState<"tree" | "text">("tree");
@@ -89,7 +93,8 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
   }, [awaitPaste]);
 
   // 分析防抖：前缀域每击键触发；行号源加载后只触发一次。
-  // cancelled 守卫：在途响应无法取消，快速编辑时旧内容的分析不得覆盖新内容
+  // 单次 IPC 带回 report+pretty+compact（后端一次 serde 解析）。cancelled 守卫：
+  // 在途响应无法取消，快速编辑时旧内容的分析不得覆盖新内容
   useEffect(() => {
     let cancelled = false;
     const timer = setTimeout(async () => {
@@ -101,19 +106,15 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
         return;
       }
       try {
-        const rep = await invoke<JsonReport>("json_analyze", { text: active });
+        const rep = await invoke<JsonAnalysis>("json_analyze_full", {
+          text: active,
+        });
         if (cancelled) return;
         setCmdErr("");
         setReport(rep);
-        if (rep.valid) {
-          const [p, c] = await Promise.all([
-            invoke<string>("json_format", { text: active, pretty: true }),
-            invoke<string>("json_format", { text: active, pretty: false }),
-          ]);
-          if (cancelled) return;
-          setPretty(p);
-          setCompact(c);
-        }
+        // 无效/超限时为 null：清空旧内容，不残留上一次合法输入的格式化结果
+        setPretty(rep.pretty ?? "");
+        setCompact(rep.compact ?? "");
       } catch (e) {
         // 命令级失败（插件停用等）：状态条呈现，不残留旧内容
         if (cancelled) return;
@@ -247,7 +248,13 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           <JsonNode name="" value={treeRoot} depth={0} />
         ) : !pretty ? (
           <div className="zap-json-empty">
-            <span>{cmdErr ? "无法分析" : "分析中…"}</span>
+            <span>
+              {cmdErr
+                ? "无法分析"
+                : report && !report.valid
+                  ? "校验未通过 · 修正后自动更新"
+                  : "分析中…"}
+            </span>
           </div>
         ) : (
           <>

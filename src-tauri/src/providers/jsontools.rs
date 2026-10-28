@@ -170,10 +170,11 @@ fn human_size(bytes: usize) -> String {
     }
 }
 
-/// 分析报告：仅元信息，不回传内容（原文前端已有，或按行号回查）
+/// 一次带回分析报告与美化/压缩（pretty/compact 仅 valid 时有值）：
+/// 前端每击键从 3 次 IPC、3 次 serde 解析收敛为 1 次 1 解析
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JsonReport {
+pub struct JsonFull {
     pub valid: bool,
     /// 对象 / 数组 / 标量；无效时为空串
     pub kind: String,
@@ -181,41 +182,56 @@ pub struct JsonReport {
     pub bytes: usize,
     /// 无效时的可读错误（含行列号）
     pub error: Option<String>,
+    /// 美化（2 空格缩进）；仅 valid 时有值
+    pub pretty: Option<String>,
+    /// 压缩；仅 valid 时有值
+    pub compact: Option<String>,
 }
 
-/// 分析文本：校验 + 类型判定 + 错误定位
-pub fn analyze(text: &str) -> Result<JsonReport, String> {
+/// 分析文本：校验 + 类型判定 + 错误定位 + 美化/压缩一次带回。
+/// 无效/超限返回 valid=false 且 pretty/compact 为 None——前端据此清空旧内容，
+/// 不残留上一次合法输入的格式化结果
+pub fn analyze_full(text: &str) -> Result<JsonFull, String> {
     ensure_enabled()?;
     let t = text.trim();
     if t.len() > MAX_ANALYZE_BYTES {
-        return Ok(JsonReport {
+        return Ok(JsonFull {
             valid: false,
             kind: String::new(),
             bytes: t.len(),
             error: Some(oversize_msg(t.len())),
+            pretty: None,
+            compact: None,
         });
     }
-    Ok(match serde_json::from_str::<serde_json::Value>(t) {
-        Ok(v) => JsonReport {
-            valid: true,
-            kind: match v {
-                serde_json::Value::Object(_) => "对象".into(),
-                serde_json::Value::Array(_) => "数组".into(),
-                _ => "标量".into(),
-            },
-            bytes: t.len(),
-            error: None,
-        },
-        Err(e) => JsonReport {
+    match serde_json::from_str::<serde_json::Value>(t) {
+        Ok(v) => {
+            let kind = match v {
+                serde_json::Value::Object(_) => "对象",
+                serde_json::Value::Array(_) => "数组",
+                _ => "标量",
+            };
+            Ok(JsonFull {
+                valid: true,
+                kind: kind.into(),
+                bytes: t.len(),
+                error: None,
+                pretty: Some(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
+                compact: Some(serde_json::to_string(&v).map_err(|e| e.to_string())?),
+            })
+        }
+        Err(e) => Ok(JsonFull {
             valid: false,
             kind: String::new(),
             bytes: t.len(),
             error: Some(format_json_error(&e)),
-        },
-    })
+            pretty: None,
+            compact: None,
+        }),
+    }
 }
 
-/// 解析前置：停用守卫 + 大小上限 + serde 解析（格式化/转换共用）
+/// 解析前置：停用守卫 + 大小上限 + serde 解析（to_yaml/to_ts 共用）
 fn parse_limited(text: &str) -> Result<serde_json::Value, String> {
     ensure_enabled()?;
     let t = text.trim();
@@ -225,7 +241,8 @@ fn parse_limited(text: &str) -> Result<serde_json::Value, String> {
     serde_json::from_str(t).map_err(|e| format_json_error(&e))
 }
 
-/// 美化（pretty = true，2 空格缩进）/ 压缩
+/// 美化（pretty = true，2 空格缩进）/ 压缩。超级面板 json_pretty/json_compact
+/// 动作的取数路径（Err 传播失败文案），与工作台的 analyze_full 并存
 pub fn format_text(text: &str, pretty: bool) -> Result<String, String> {
     let v = parse_limited(text)?;
     if pretty {
@@ -475,51 +492,70 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap();
         JSON_TOOLS_ON.store(false, Ordering::Relaxed);
         let detect_off = JsonToolsPlugin.detect(1, "{\"a\":1}");
-        let analyze_off = analyze("{\"a\":1}");
-        let format_off = format_text("{\"a\":1}", true);
+        let analyze_off = analyze_full("{\"a\":1}");
         let yaml_off = to_yaml("{\"a\":1}");
         let ts_off = to_ts("{\"a\":1}");
         JSON_TOOLS_ON.store(true, Ordering::Relaxed);
         assert!(detect_off.is_empty());
         assert!(analyze_off.is_err());
-        assert!(format_off.is_err());
         assert!(yaml_off.is_err());
         assert!(ts_off.is_err());
         // 恢复后同一路径可用
-        assert!(analyze("{\"a\":1}").is_ok());
+        assert!(analyze_full("{\"a\":1}").is_ok());
     }
 
     #[test]
-    fn 分析报告含类型与字节数() {
+    fn 分析报告含类型字节数与格式化() {
         let _g = TEST_LOCK.lock().unwrap();
-        let rep = analyze("{\"a\": 1}").expect("分析成功");
+        let rep = analyze_full("{\"a\": 1}").expect("分析成功");
         assert!(rep.valid);
         assert_eq!(rep.kind, "对象");
         assert_eq!(rep.bytes, 8);
         assert!(rep.error.is_none());
+        // 美化/压缩随报告一次带回（每击键 3 次 IPC 收敛为 1 次的根基）
+        assert_eq!(
+            rep.pretty.as_deref(),
+            Some("{\n  \"a\": 1\n}"),
+            "美化 2 空格缩进"
+        );
+        assert_eq!(rep.compact.as_deref(), Some("{\"a\":1}"), "压缩互逆");
     }
 
     #[test]
-    fn 分析错误带行列() {
+    fn 分析错误带行列且无格式化残留() {
         let _g = TEST_LOCK.lock().unwrap();
-        let rep = analyze("{\n  \"a\": 1\n  \"b\": 2\n}").expect("返回报告");
+        let rep = analyze_full("{\n  \"a\": 1\n  \"b\": 2\n}").expect("返回报告");
         assert!(!rep.valid);
         let err = rep.error.expect("应有错误");
         assert!(err.contains("第 3 行"), "错误应定位到第 3 行：{err}");
+        // 无效内容不带格式化结果：前端据此清空，不残留上次合法输入
+        assert!(rep.pretty.is_none());
+        assert!(rep.compact.is_none());
     }
 
     #[test]
-    fn 美化与压缩互逆() {
+    fn 美化与压缩往返互逆() {
         let _g = TEST_LOCK.lock().unwrap();
         let src = "{\"a\":1,\"b\":[1,2]}";
-        let pretty = format_text(src, true).expect("美化成功");
+        let full = analyze_full(src).expect("分析成功");
+        let pretty = full.pretty.expect("valid 应有美化");
         assert_eq!(pretty, "{\n  \"a\": 1,\n  \"b\": [\n    1,\n    2\n  ]\n}");
-        let compact = format_text(&pretty, false).expect("压缩成功");
-        assert_eq!(compact, src);
+        let back = analyze_full(&pretty).expect("美化后再分析");
+        assert_eq!(back.compact.expect("valid 应有压缩"), src);
     }
 
     #[test]
-    fn 格式化错误返回可读信息() {
+    fn 校验错误返回可读信息() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let rep = analyze_full("{bad").expect("返回报告");
+        assert!(!rep.valid);
+        let err = rep.error.expect("应有错误");
+        assert!(err.contains("第 1 行"), "错误应含行列：{err}");
+    }
+
+    /// 超级面板 json_pretty/json_compact 依赖 Err 携带失败文案（copy() 的报错路径）
+    #[test]
+    fn 格式化错误传播给超级面板() {
         let _g = TEST_LOCK.lock().unwrap();
         let err = format_text("{bad", true).expect_err("应失败");
         assert!(err.contains("第 1 行"), "错误应含行列：{err}");
