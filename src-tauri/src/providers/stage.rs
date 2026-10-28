@@ -230,23 +230,44 @@ pub fn finish(rows: Vec<StageRowData>) -> Vec<StageRecord> {
     })
 }
 
-/// 图标缓存：文件图标只由扩展名决定（目录统一一份），按扩展名惰性提取——
-/// 几十个扩展名即覆盖全部条目，远轻于按路径缓存
+/// 图标缓存：普通文件按扩展名一份（txt/pdf 等展示类型图标即可），目录统一
+/// 一份；可执行类（exe/lnk 等）每个文件图标各异（用户拖入的应用要显示
+/// 自己的图标，不是首个样本的），按路径缓存——条目量受 stage 容量约束，
+/// data URL 均值 ~2KB 量级，无膨胀之虞
 static ICON_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Option<String>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// 缓存键：目录固定 "/"，与无扩展名文件不共用
+/// 可执行类扩展名：图标随文件而异，缓存键退化为完整路径（小写归一）
+fn icon_is_per_file(ext: &str) -> bool {
+    matches!(ext, "exe" | "lnk" | "msi" | "com" | "bat" | "cmd" | "scr")
+}
+
+/// 缓存键：目录固定 "/"；可执行类按路径，其余按扩展名
 fn icon_cache_key(path: &str, is_dir: bool) -> String {
     if is_dir {
         return "/".to_string();
     }
-    std::path::Path::new(path)
+    let ext = std::path::Path::new(path)
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if icon_is_per_file(&ext) {
+        path.to_lowercase()
+    } else {
+        ext
+    }
 }
 
-/// 提取失败也缓存 None：同扩展名不反复打系统调用
+/// 图标提取串行锁：SHGetFileInfoW 高并发下间歇失败（真机 2026-10-28：finish
+/// 的并行 worker 同时提取，关联图标轻查询全过、目录与 PE 资源图标重查询
+/// 全败，同键先败后成证明是竞争非确定失败）。提取毫秒级且条目有容量上限，
+/// 串行总成本可忽略；finish 的存在性 stat 并行（秒级网络路径的需要）不受
+/// 影响——两种成本模型的活不该共享同一批并行 worker
+static ICON_EXTRACT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 提取失败不缓存（None 不入表）：失败是间歇性的，缓存会把一次瞬时竞争
+/// 固化成永久缺失；missing 条目在 finish_one 已挡不提取，真恒失败路径
+/// 不存在，重试成本毫秒级
 fn icon_for(path: &str, is_dir: bool) -> Option<String> {
     let key = icon_cache_key(path, is_dir);
     if let Ok(cache) = ICON_CACHE.lock()
@@ -254,10 +275,24 @@ fn icon_for(path: &str, is_dir: bool) -> Option<String> {
     {
         return hit.clone();
     }
+    let _guard = ICON_EXTRACT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // 排队期间的 double-check：先到者可能已完成写入（同键并行/StrictMode
+    // 双 load 都在此收敛为一次提取）
+    if let Ok(cache) = ICON_CACHE.lock()
+        && let Some(hit) = cache.get(&key)
+    {
+        return hit.clone();
+    }
     let icon = super::apps::extract_icon_png(path).map(|png| super::apps::to_data_url(&png));
-    if let Ok(mut cache) = ICON_CACHE.lock() {
-        // finish 并行下同扩展名可能同时 miss：保留先到者的结果，不覆盖
-        cache.entry(key).or_insert(icon.clone());
+    super::diag::log(&format!(
+        "stage: icon extract key={key} ok={} len={}",
+        icon.is_some(),
+        icon.as_ref().map_or(0, |i| i.len())
+    ));
+    if let Some(data) = icon.clone()
+        && let Ok(mut cache) = ICON_CACHE.lock()
+    {
+        cache.entry(key).or_insert(Some(data));
     }
     icon
 }
@@ -769,6 +804,48 @@ mod tests {
             icon_cache_key("C:\\a\\dir", true),
             "/",
             "目录与无扩展名文件不可共用键"
+        );
+    }
+
+    #[test]
+    fn 可执行类图标按路径缓存() {
+        // 两个不同 exe 必须不同键：拖入的应用各显示自己的图标，
+        // 且单个提取失败（None）不得毒化其他 exe（历史缺陷：按扩展名共享）
+        assert_eq!(
+            icon_cache_key("C:\\a\\AweSun.exe", false),
+            "c:\\a\\awesun.exe"
+        );
+        assert_ne!(
+            icon_cache_key("C:\\a\\AweSun.exe", false),
+            icon_cache_key("C:\\b\\Other.exe", false),
+            "每个 exe 独立键"
+        );
+        assert_eq!(icon_cache_key("C:\\a\\run.bat", false), "c:\\a\\run.bat");
+        assert_eq!(
+            icon_cache_key("C:\\a\\note.txt", false),
+            "txt",
+            "非可执行类仍按扩展名共享"
+        );
+    }
+
+    /// 真实 exe 全链路图标冒烟：finish_one（存在性 → icon_for →
+    /// SHGetFileInfoW → PNG → data URL）。锁「拖入 .exe 行上应出应用图标」
+    /// 的回归（探针实证提取可行后，此测试守 Rust 侧链路不被后续改动打断）
+    #[test]
+    fn 真实exe行图标提取冒烟() {
+        let rec = finish_one(StageRowData {
+            id: 0,
+            path: r"C:\Windows\System32\notepad.exe".into(),
+            is_dir: false,
+            pinned: false,
+            added_at: 0,
+        });
+        assert!(!rec.missing, "notepad.exe 应存在");
+        assert!(
+            rec.icon
+                .as_ref()
+                .is_some_and(|i| i.starts_with("data:image/png;base64,")),
+            "notepad.exe 应提取到应用图标"
         );
     }
 
