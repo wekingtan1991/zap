@@ -84,6 +84,8 @@ export interface AppSettings {
   stageMax: number;
   /// 全局拖拽落区条开关
   stagedropEnabled: boolean;
+  /// 拖入落区条松手后自动呼出中转站面板
+  stagedropOpenPanel: boolean;
   pwdClearSecs: number;
   autostart: boolean;
   everythingAutostart: boolean;
@@ -368,6 +370,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           clipAutoPaste: res.clipAutoPaste ?? true,
           stageMax: res.stageMax ?? 50,
           stagedropEnabled: res.stagedropEnabled ?? true,
+          stagedropOpenPanel: res.stagedropOpenPanel ?? false,
           appearance: res.appearance ?? "dark",
           panelTransparency: res.panelTransparency ?? true,
           superpanelHotkey: res.superpanelHotkey ?? "",
@@ -552,6 +555,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         clipAutoPaste: st.clipAutoPaste ?? true,
         stageMax: st.stageMax,
         stagedropEnabled: st.stagedropEnabled ?? true,
+        stagedropOpenPanel: st.stagedropOpenPanel ?? false,
         pwdClearSecs: st.pwdClearSecs,
         everythingAutostart: st.everythingAutostart,
         appearance: st.appearance ?? "dark",
@@ -816,6 +820,26 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
               checked={st.stagedropEnabled}
               onCheckedChange={(v) =>
                 setSt((s) => (s ? { ...s, stagedropEnabled: v === true } : s))
+              }
+            />
+          </div>
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <Label
+                htmlFor="set-stagedrop-open"
+                className="text-[13px] font-normal text-foreground"
+              >
+                放入后自动打开面板
+              </Label>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                拖文件到落区条松手后自动呼出中转站；关闭时结果仅在落区条上短暂显示
+              </span>
+            </span>
+            <Checkbox
+              id="set-stagedrop-open"
+              checked={st.stagedropOpenPanel}
+              onCheckedChange={(v) =>
+                setSt((s) => (s ? { ...s, stagedropOpenPanel: v === true } : s))
               }
             />
           </div>

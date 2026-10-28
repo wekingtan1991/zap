@@ -38,6 +38,11 @@ use tauri::{AppHandle, Emitter, Manager};
 /// 运行时开关：启动从 appconfig 加载、设置保存时同步
 pub static STAGEDROP_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// 拖入松手后自动呼出中转站面板（设置开关，默认关）：open_stage_panel 的
+/// 门控，关闭时放入结果仍由条内反馈呈现（成功 1.2s / 失败 3s）。启动从
+/// appconfig 加载、设置保存时同步
+pub static STAGEDROP_OPEN_PANEL: AtomicBool = AtomicBool::new(false);
+
 /// 条子当前是否应处于展示态（show/hide/ensure_visible/disable_hide 各写入点
 /// 维护）。开关关闭的轮询分支据此短路：is_visible 是跨线程投递主线程的查询，
 /// 每 80ms 空转一次纯属浪费；BAR_SHOWN 恒真才进一次真实核对

@@ -27,6 +27,7 @@ export interface ConfigFilePayload {
     clipAutoPaste: boolean | null;
     stageMax: number | null;
     stagedropEnabled: boolean | null;
+    stagedropOpenPanel: boolean | null;
     pwdClearSecs: number | null;
     autostart: boolean | null;
     everythingAutostart: boolean | null;
@@ -49,6 +50,7 @@ export interface SettingsSnapshot {
   clipAutoPaste: boolean;
   stageMax: number;
   stagedropEnabled: boolean;
+  stagedropOpenPanel: boolean;
   pwdClearSecs: number;
   autostart: boolean;
   everythingAutostart: boolean;
@@ -94,6 +96,7 @@ export function mergeImportedConfig<T extends SettingsSnapshot>(
     clipAutoPaste: bool(c?.clipAutoPaste, current.clipAutoPaste),
     stageMax: num(c?.stageMax, STAGE_MAX_CHOICES, current.stageMax),
     stagedropEnabled: bool(c?.stagedropEnabled, current.stagedropEnabled),
+    stagedropOpenPanel: bool(c?.stagedropOpenPanel, current.stagedropOpenPanel),
     pwdClearSecs: num(c?.pwdClearSecs, PWD_CLEAR_CHOICES, current.pwdClearSecs),
     autostart: bool(c?.autostart, current.autostart),
     everythingAutostart: bool(c?.everythingAutostart, current.everythingAutostart),

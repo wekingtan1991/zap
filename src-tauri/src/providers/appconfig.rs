@@ -35,6 +35,10 @@ pub const KEY_STAGE_HOTKEY: &str = "stage_hotkey";
 /// 全局拖拽落区条开关：任何应用拖文件时右下角弹「拖到这，放入中转站」
 pub const KEY_STAGEDROP_ENABLED: &str = "stagedrop_enabled";
 pub const DEFAULT_STAGEDROP_ENABLED: bool = true;
+/// 拖文件到落区条松手后是否自动呼出中转站面板（默认关：面板呼出属行为
+/// 变更，交用户显式开启；关闭时放入结果仍由条内反馈呈现）
+pub const KEY_STAGEDROP_OPEN_PANEL: &str = "stagedrop_open_panel";
+pub const DEFAULT_STAGEDROP_OPEN_PANEL: bool = false;
 /// 中转站未固定条目容量上限
 pub const KEY_STAGE_CAP: &str = "stage_cap";
 pub const DEFAULT_STAGE_CAP: i64 = 50;
@@ -89,6 +93,7 @@ pub struct ConfigSettings {
     pub clip_autopaste: Option<bool>,
     pub stage_max: Option<i64>,
     pub stagedrop_enabled: Option<bool>,
+    pub stagedrop_open_panel: Option<bool>,
     pub pwd_clear_secs: Option<i64>,
     pub autostart: Option<bool>,
     pub everything_autostart: Option<bool>,
@@ -206,6 +211,7 @@ mod tests {
         // camelCase 线协议（前端消费的字段名）
         assert!(text.contains("\"clipMax\""));
         assert!(text.contains("\"pwdClearSecs\""));
+        assert!(text.contains("\"stagedropOpenPanel\""));
     }
 
     #[test]
@@ -231,5 +237,18 @@ mod tests {
         assert_eq!(back.settings, ConfigSettings::default());
         assert!(back.plugins.is_empty());
         assert!(back.shortcuts.is_empty());
+    }
+
+    #[test]
+    fn 配置文件旧版缺键容错() {
+        // 旧版 zap 导出的 v1 文件不含后加的键（如 stagedropOpenPanel）：
+        // Option 字段缺失反序列化为 None = 导入时保留当前值（前向兼容契约）
+        let text = format!(
+            r#"{{"kind":"{CONFIG_KIND}","version":{CONFIG_VERSION},"settings":{{"hotkey":"ctrl+alt+space"}}}}"#
+        );
+        let back = validate_config_text(&text).unwrap();
+        assert_eq!(back.settings.hotkey.as_deref(), Some("ctrl+alt+space"));
+        assert_eq!(back.settings.stagedrop_open_panel, None);
+        assert_eq!(back.settings.stagedrop_enabled, None);
     }
 }
