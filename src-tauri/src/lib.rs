@@ -1360,15 +1360,19 @@ pub(crate) fn handle_stage_drop(app: &AppHandle, paths: Vec<String>) {
     drop(tauri::async_runtime::spawn_blocking(move || {
         let outcome = engine.stage_add(&paths);
         let text = providers::stagedrop::feedback_text(&outcome);
-        providers::stagedrop::finish_processing(
-            generation,
-            text.clone(),
-            !outcome.failed.is_empty(),
-        );
-        let _ = app.emit_to("stagedrop", "zap://stagedrop-feedback", text);
+        let failed = !outcome.failed.is_empty();
+        providers::stagedrop::finish_processing(generation, text.clone(), failed);
+        let _ = app.emit_to("stagedrop", "zap://stagedrop-feedback", text.clone());
         // 通知主窗口：中转站视图若开着（面板 hold 期间两条放入通道并存是常态），
         // 列表需要刷新；视图未开时无人订阅，事件落空无害
         let _ = app.emit("zap://stage-changed", ());
+        // 失败升全局 toast（载荷=失败原因）：开面板路径的条子已在呼出时移交
+        // 隐藏（hide_for_handoff），条内 3s 失败文案不可见；不开面板路径条内
+        // 反馈照常，此事件下 App 只在面板可见时呈现。成功不 toast——面板里的
+        // 新条目就是反馈
+        if failed {
+            let _ = app.emit("zap://stage-drop-error", text);
+        }
     }));
 }
 
@@ -1517,6 +1521,11 @@ pub(crate) fn open_stage_panel(app: &AppHandle) {
     if win.is_visible().unwrap_or(false) {
         return;
     }
+    // 本次 drop 必然呼出面板：条子即时移交（面板即反馈面）。不能等
+    // set_stage_view 的 IPC 回程——实测面板先弹 ~¼s 后条子才收，共存窗
+    // 即用户反馈的「视图和条子同时出现」；此刻藏条与开面板同拍发生，
+    // 失败原因由 stage-drop-error 全局事件升 toast（条内反馈随条隐藏不可见）
+    providers::stagedrop::hide_for_handoff(app);
     toggle_panel(app, Some("stage"));
     // 焦点兜底（评审 P1）：drop 时刻前台是拖源应用，zap 是后台进程，
     // set_focus 可能被系统前台锁拒绝——面板停在「可见但无焦点」态（没有

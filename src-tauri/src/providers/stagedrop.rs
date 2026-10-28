@@ -216,6 +216,24 @@ pub fn set_stage_view(app: &AppHandle, open: bool) {
     st.feedback = None;
 }
 
+/// drop 必然呼出面板时的条子即时移交（open_stage_panel 开场调用）：面板即
+/// 反馈面，条内「正在放入/已放入」与面板共存是用户不要的形态（2026-10-28
+/// 实测反馈「视图和条子同时出现」——set_stage_view 的收条要等前端 view 切换
+/// 的 IPC 回程，日志实测 ~¼s 共存窗）。只藏窗口与清反馈，**不清会话状态机**
+/// ——session_active 保持真到轮询自然 End，防 SysDragImage 余晖触发幽灵
+/// Start 重出条（此刻 STAGE_VIEW_OPEN 尚未置位，压制不住）；迟到的
+/// finish_processing 结果写进已隐藏条子无害，失败原因由全局事件升 toast
+pub fn hide_for_handoff(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("stagedrop") else {
+        return;
+    };
+    let _ = app.emit_to("stagedrop", "zap://stagedrop-hot", false);
+    let _ = win.hide();
+    BAR_SHOWN.store(false, Ordering::Relaxed);
+    let mut st = STATE.lock().expect("stagedrop state poisoned");
+    st.feedback = None;
+}
+
 /// drop 事件触达即进入处理态：条子保持展示并换处理文案，返回会话代际
 /// （stage_add 完成回调凭代际写入，期间已开新会话则结果作废）
 pub fn begin_processing() -> u64 {

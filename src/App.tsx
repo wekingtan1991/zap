@@ -359,6 +359,18 @@ function AppView() {
     invoke("set_stage_view", { active: view.kind === "stage" }).catch(() => {});
   }, [view.kind]);
 
+  // 落区条放入失败：开面板路径的条子在呼出时已移交隐藏，条内 3s 失败文案
+  // 不可见，失败原因升 toast（面板可见才有此路径——不开面板的 drop 走条内
+  // 反馈，事件虽也到达但 toast 渲染在隐藏面板里自然不可见，零害）
+  useEffect(() => {
+    const un = listen<string>("zap://stage-drop-error", (e) => {
+      toast.error(e.payload);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
   // 普通域搜索（账号库保护域下不生效；万能输入框识别与工具入口条目
   // 由后端 probe/entry 在 search 结果里置顶返回，前端无感知）。
   // cancelled 守卫同账号库搜索：files 源带 250ms HTTP 超时，竞态窗口真实存在
