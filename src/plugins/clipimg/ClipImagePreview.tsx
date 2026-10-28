@@ -8,6 +8,7 @@ import {
   Copy,
   Download,
   Image as ImageIcon,
+  LoaderCircle,
   Pin,
   TriangleAlert,
 } from "lucide-react";
@@ -50,6 +51,8 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
   const [loadErr, setLoadErr] = useState("");
   const [pinned, setPinned] = useState(false);
   const [copied, setCopied] = useState(false);
+  // 仅复制对大图也可能非瞬时：即时态避免「点了没反应」的体感
+  const [copying, setCopying] = useState(false);
 
   // 独立面板：窗口捕获兜 Esc（焦点掉 body 后面板 onKeyDown 收不到）
   useEscCapture(onBack, true);
@@ -92,13 +95,16 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
   };
 
   const copyOnly = () => {
+    if (copying) return;
+    setCopying(true);
     invoke("clipimg_copy", { id: rowid })
       .then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
         toast.success("已复制，可粘贴");
       })
-      .catch((e) => toast.error(String(e)));
+      .catch((e) => toast.error(String(e)))
+      .finally(() => setCopying(false));
   };
 
   const saveAs = async () => {
@@ -166,13 +172,20 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
                   <ClipboardPaste className="size-3.5" />
                   粘贴
                 </Button>
-                <Button variant="ghost" size="sm" onClick={copyOnly}>
-                  {copied ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={copying}
+                  onClick={copyOnly}
+                >
+                  {copying ? (
+                    <LoaderCircle className="size-3.5 animate-spin" />
+                  ) : copied ? (
                     <Check className="size-3.5 text-success" />
                   ) : (
                     <Copy className="size-3.5" />
                   )}
-                  仅复制
+                  {copying ? "复制中…" : "仅复制"}
                 </Button>
                 <Button variant="ghost" size="sm" onClick={() => void saveAs()}>
                   <Download className="size-3.5" />
