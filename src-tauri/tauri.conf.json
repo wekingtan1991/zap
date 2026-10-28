@@ -42,7 +42,7 @@
         "label": "stagedrop",
         "title": "zap-stagedrop",
         "width": 280,
-        "height": 36,
+        "height": 44,
         "visible": false,
         "decorations": false,
         "transparent": true,
