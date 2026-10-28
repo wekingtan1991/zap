@@ -29,7 +29,10 @@
 }
 
 /* 悬浮玻璃操作条：半透明暗底 + 背景模糊 + 发丝线，看图器惯例的
-   「viewer chrome」——固定暗玻璃在暗/浅主题与任何图片底色上都可读 */
+   「viewer chrome」——固定暗玻璃在暗/浅主题与任何图片底色上都可读。
+   条内 chrome 自持：文字与 hover 不借随主题令牌（--zap-fg 浅色翻近黑、
+   --accent 浅色翻暗 12% 落在暗玻璃上≈不可见），一律白系 alpha，
+   两种主题下观感恒定 */
 .zap-imgprev-bar {
   position: absolute;
   left: 50%;
@@ -44,11 +47,23 @@
   backdrop-filter: blur(14px) saturate(1.2);
   border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  color: var(--zap-fg);
+  color: rgba(255, 255, 255, 0.92);
 }
 
 .zap-imgprev-bar button {
   border-radius: 8px;
+}
+
+/* 高亮跟随鼠标：四键等权 ghost（实心主键在本面板无键盘对应物——
+   Enter 回贴是主列表语义、面板只挂 Esc——被误读成悬停卡住，已改
+   ghost）；特异性 (0,2,1) 压过 ghost 变体的主题 hover (0,2,0) */
+.zap-imgprev-bar button:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.zap-imgprev-bar button:active {
+  background: rgba(255, 255, 255, 0.28);
 }
 
 /* 画布：img 盒在 max 约束下与渲染像素恒等比贴合（不 letterbox），
