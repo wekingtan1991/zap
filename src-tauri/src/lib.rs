@@ -857,8 +857,9 @@ async fn copy_text(text: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// 图片预览面板数据：全图 PNG（base64）+ 元信息。历史保留期内行号恒有效，
-/// 已清理返回错误（面板内呈现，不收面板）
+/// 图片预览面板数据：预览图 PNG（base64，按 clipimage::PREVIEW_MAX 降采样）与
+/// 原图元信息（width/height/size 描述原图，与另存为/仅复制/回贴的原图口径一致）。
+/// 历史保留期内行号恒有效，已清理返回错误（面板内呈现，不收面板）
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ClipImagePreview {
@@ -870,7 +871,9 @@ struct ClipImagePreview {
     png_base64: String,
 }
 
-/// 图片条目预览：预览面板进入时点查一次（与回贴同一行号寻址）
+/// 图片条目预览：预览面板进入时点查一次（与回贴同一行号寻址）。
+/// BLOB 在 clip 锁内拖出，降采样/编码在锁外——16MB 原图 base64 过 IPC 约 22MB
+/// 且前端 parse 峰值 3 份内存，降采样后大图预览收敛到 2MB 以内
 #[tauri::command]
 async fn clipimg_preview(
     state: tauri::State<'_, AppState>,
@@ -881,13 +884,14 @@ async fn clipimg_preview(
         let (w, h, size, created_at, pinned, png) = engine
             .clip_image_meta(id)
             .ok_or_else(|| "该条剪贴板图片已被清理".to_string())?;
+        let preview = providers::clipimage::preview_png(&png)?;
         Ok(ClipImagePreview {
             width: w,
             height: h,
             size,
             created_at,
             pinned,
-            png_base64: base64::engine::general_purpose::STANDARD.encode(png),
+            png_base64: base64::engine::general_purpose::STANDARD.encode(preview),
         })
     })
     .await

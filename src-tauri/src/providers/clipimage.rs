@@ -16,6 +16,9 @@ use super::SearchItem;
 pub const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 /// 缩略图最长边（像素）：列表行高有限，够辨认即可
 const THUMB_MAX: u32 = 72;
+/// 预览图最长边（像素）：预览窗口 720×480 CSS，2× DPR 封顶 1440×960 设备像素，
+/// 再大渲染端也用不上——预览 ≠ 原始分辨率，另存为/仅复制/回贴仍走原图
+pub const PREVIEW_MAX: u32 = 1440;
 
 pub fn init_table(conn: &Connection) {
     let _ = conn.execute_batch(
@@ -251,6 +254,18 @@ pub fn get_full(conn: &Connection, id: i64) -> Option<(u32, u32, i64, i64, bool,
     .ok()
 }
 
+/// 预览图降采样：全图 PNG 按 PREVIEW_MAX 压缩，最长边不超限的原样返回。
+/// 只处理本模块编码的 PNG（恒为 RGBA8）。调用方在锁外 spawn_blocking 里跑——
+/// 大图解码/编码几十毫秒级，不占 clip 锁
+pub fn preview_png(png: &[u8]) -> Result<Vec<u8>, String> {
+    let (w, h, rgba) = decode_png(png)?;
+    if w.max(h) <= PREVIEW_MAX {
+        return Ok(png.to_vec());
+    }
+    let (nw, nh, small) = downscale(&rgba, w, h, PREVIEW_MAX);
+    encode_png(&small, nw, nh)
+}
+
 /// 行号是否仍有图片：open_item 的同步错误路径用，只探存在性不拖 PNG 大字段
 pub fn exists(conn: &Connection, id: i64) -> bool {
     conn.query_row(
@@ -357,6 +372,26 @@ mod tests {
         let (w2, h2, out2) = downscale(&small, 8, 8, THUMB_MAX);
         assert_eq!((w2, h2), (8, 8));
         assert_eq!(out2.len(), small.len());
+    }
+
+    #[test]
+    fn 预览降采样小图原样() {
+        let conn = mem_conn();
+        let (id, _, _) = store(&conn, &sample(600, 400), 600, 400).expect("入库");
+        let (_, _, _, _, _, png) = get_full(&conn, id).expect("取全图");
+        let out = preview_png(&png).expect("预览");
+        assert_eq!(out, png, "最长边不超上限应原样返回不重编码");
+    }
+
+    #[test]
+    fn 预览降采样大图压到上限() {
+        let conn = mem_conn();
+        let (id, _, _) = store(&conn, &sample(2000, 1000), 2000, 1000).expect("入库");
+        let (_, _, _, _, _, png) = get_full(&conn, id).expect("取全图");
+        let out = preview_png(&png).expect("预览");
+        let (w, h, rgba) = decode_png(&out).expect("解码预览图");
+        assert_eq!((w, h), (PREVIEW_MAX, 720), "等比压到最长边 1440");
+        assert_eq!(rgba.len(), (w * h * 4) as usize);
     }
 
     #[test]
