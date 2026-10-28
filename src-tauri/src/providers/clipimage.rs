@@ -123,13 +123,18 @@ pub fn store(conn: &Connection, rgba: &[u8], width: u32, height: u32) -> Option<
         .map(|b| format!("{b:02x}"))
         .collect();
     let now = now_ms();
-    conn.execute(
-        "INSERT INTO clipboard_images(sha256, width, height, size, data, thumb, created_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(sha256) DO UPDATE SET created_at=excluded.created_at",
-        params![hash, width, height, png.len() as i64, png, thumb, now],
-    )
-    .ok()?;
+    // RETURNING 直取行号（INSERT..ON CONFLICT..RETURNING 一次完成），省掉
+    // 按 sha256 的二次点查
+    let rowid: i64 = conn
+        .query_row(
+            "INSERT INTO clipboard_images(sha256, width, height, size, data, thumb, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(sha256) DO UPDATE SET created_at=excluded.created_at
+             RETURNING id",
+            params![hash, width, height, png.len() as i64, png, thumb, now],
+            |r| r.get(0),
+        )
+        .ok()?;
     // 与文本表同规则：保留条数淘汰，固定条目豁免
     let _ = conn.execute(
         "DELETE FROM clipboard_images WHERE pinned=0 AND id NOT IN (
@@ -137,13 +142,6 @@ pub fn store(conn: &Connection, rgba: &[u8], width: u32, height: u32) -> Option<
          )",
         params![super::clipboard::RETENTION_LIMIT.load(Ordering::Relaxed)],
     );
-    let rowid: i64 = conn
-        .query_row(
-            "SELECT id FROM clipboard_images WHERE sha256=?1",
-            params![hash],
-            |r| r.get(0),
-        )
-        .ok()?;
     Some((rowid, width, height))
 }
 

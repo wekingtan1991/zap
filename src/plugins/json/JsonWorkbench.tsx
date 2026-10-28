@@ -107,6 +107,9 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
     }
   }, [report?.valid, pretty]);
 
+  /// 文本视图行数组：渲染里 split 两次（上限 3000 行 ×2）收敛为按内容记忆一次
+  const prettyLines = useMemo(() => pretty.split("\n"), [pretty]);
+
   const copy = useCallback(
     async (which: "pretty" | "compact") => {
       const t = which === "pretty" ? pretty : compact;
@@ -223,16 +226,13 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           </div>
         ) : (
           <>
-            {pretty
-              .split("\n")
-              .slice(0, MAX_DISPLAY_LINES)
-              .map((ln, i) => (
-                <div className="zap-json-line" key={i}>
-                  <span className="zap-json-ln">{i + 1}</span>
-                  <span>{ln}</span>
-                </div>
-              ))}
-            {pretty.split("\n").length > MAX_DISPLAY_LINES && (
+            {prettyLines.slice(0, MAX_DISPLAY_LINES).map((ln, i) => (
+              <div className="zap-json-line" key={i}>
+                <span className="zap-json-ln">{i + 1}</span>
+                <span>{ln}</span>
+              </div>
+            ))}
+            {prettyLines.length > MAX_DISPLAY_LINES && (
               <div className="zap-json-count">
                 …已截断展示前 {MAX_DISPLAY_LINES} 行，完整内容请复制
               </div>
