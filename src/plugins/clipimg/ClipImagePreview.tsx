@@ -168,7 +168,7 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
                 alt={`剪贴板图片 ${meta.width}×${meta.height}`}
               />
               <div className="zap-imgprev-bar">
-                <Button variant="default" size="sm" onClick={paste}>
+                <Button variant="ghost" size="sm" onClick={paste}>
                   <ClipboardPaste className="size-3.5" />
                   粘贴
                 </Button>
