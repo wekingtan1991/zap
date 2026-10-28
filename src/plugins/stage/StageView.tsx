@@ -410,26 +410,37 @@ export function StageView({ focusRef, onClose }: Props) {
     onClose();
   }, menu === null);
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setActive((a) => Math.min(a + 1, Math.max(shown.length - 1, 0)));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setActive((a) => Math.max(a - 1, 0));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      const row = shown[active];
-      if (row) openRow(row);
-    }
-  };
+  // 方向键/Enter 键盘面挂窗口捕获——**不挂面板 onKeyDown**：右键菜单项是真实
+  // <button>，点击执行后按钮卸载焦点掉 body，面板 onKeyDown 收不到任何键
+  // （与 2026-10-22 表单 Esc / 2026-10-28 合并模式同根因，此处为同构潜伏场景，
+  // 按既定纪律预防性收口）。不传依赖数组：每次渲染重挂保闭包新鲜；
+  // isComposing 卫兵挡 IME 选词键；右键菜单存活时整体放行——菜单项聚焦内
+  // Enter 走原生 click，且方向键/Enter 不该穿透菜单操作被遮挡的列表行
+  // （旧面板 onKeyDown 时代菜单开着仍会移动/打开底行，顺带收掉）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing || menu !== null) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActive((a) => Math.min(a + 1, Math.max(shown.length - 1, 0)));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActive((a) => Math.max(a - 1, 0));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const row = shown[active];
+        if (row) openRow(row);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  });
 
   return (
     <div
       className="zap-panel zap-view-in outline-none"
       tabIndex={-1}
       ref={focusRef}
-      onKeyDown={onKeyDown}
     >
       <div className="zap-input-row">
         <span className="zap-logo">
