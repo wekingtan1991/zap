@@ -862,17 +862,7 @@ async fn clipimg_copy(state: tauri::State<'_, AppState>, id: i64) -> Result<(), 
             .ok_or_else(|| "该条剪贴板图片已被清理".to_string())?;
         let (_, _, rgba) = providers::clipimage::decode_png(&png)?;
         providers::clipboard::begin_self_copy();
-        providers::clipboard::retrying(|| {
-            let rgba = rgba.clone();
-            arboard::Clipboard::new().and_then(|mut cb| {
-                cb.set_image(arboard::ImageData {
-                    width: w as usize,
-                    height: h as usize,
-                    bytes: std::borrow::Cow::Owned(rgba),
-                })
-            })
-        })
-        .map_err(|e| e.to_string())?;
+        providers::clipboard::set_image_dib(w as usize, h as usize, &rgba)?;
         Ok(())
     })
     .await
@@ -1149,21 +1139,13 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
             }
             if is_img {
                 std::thread::spawn(move || {
-                    // 图片=按行号点查全图并解码 RGBA 后回填
+                    // 图片=按行号点查全图并解码 RGBA 后回填。DIBV5 直写毫秒级，
+                    // 注入前的等待才不会随图放大成秒级
                     if let Ok(rowid) = target.parse::<i64>()
                         && let Some((w, h, png)) = engine.clip_image(rowid)
                         && let Ok((_, _, rgba)) = providers::clipimage::decode_png(&png)
                     {
-                        let _ = providers::clipboard::retrying(|| {
-                            let rgba = rgba.clone();
-                            arboard::Clipboard::new().and_then(|mut cb| {
-                                cb.set_image(arboard::ImageData {
-                                    width: w as usize,
-                                    height: h as usize,
-                                    bytes: std::borrow::Cow::Owned(rgba),
-                                })
-                            })
-                        });
+                        let _ = providers::clipboard::set_image_dib(w as usize, h as usize, &rgba);
                     }
                     if let Some(hwnd) = prev {
                         std::thread::sleep(Duration::from_millis(80));
