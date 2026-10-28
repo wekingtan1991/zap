@@ -63,9 +63,13 @@ const FEEDBACK_ERR_MS: u64 = 3000;
 /// stage_add 处理态的自愈上限（网络路径 metadata 可达秒级；超时轮询照常隐藏）
 const PROCESSING_MS: u64 = 4000;
 
-/// 落区条逻辑尺寸（须与 tauri.conf.json 的 stagedrop 窗口一致）
+/// 落区条逻辑尺寸（须与 tauri.conf.json 的 stagedrop 窗口一致）。高度 44 =
+/// 去扁平（2026-10-28）：CSS 外壳上下各 6px 透明边距后卡片本体 32px，36 的
+/// 时代卡片仅 24px、装下 16px 图标+12.5px 文本后垂直富余约 2px/边，观感扁平。
+/// 垂直呼吸感唯一来自窗口高度预算——卡片是 height:100% + border-box，只改
+/// CSS 垂直 padding 会被窗口高度裁掉，等于没改
 const BAR_WIDTH: f64 = 280.0;
-const BAR_HEIGHT: f64 = 36.0;
+const BAR_HEIGHT: f64 = 44.0;
 /// 悬停展开的大卡片尺寸（QQ 式效果）：右下角锚定向上/向左扩展——原细条
 /// 区域必然落在卡片内部，悬停光标不会因展开被甩出窗口（否则 leave/enter
 /// 抖动循环）

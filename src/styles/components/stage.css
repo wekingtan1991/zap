@@ -129,8 +129,10 @@
 }
 
 /* ---------- 拖拽落区窗口（stagedrop）：透明外壳 + 圆角卡片双态 ---------- */
-/* 细条 280x36（会话常态）↔ 大卡片 300x264（文件悬停，QQ 式展开，窗口由
-   Rust 侧 layout_bar 同步缩放，右下角锚定，光标始终留在卡片区内） */
+/* 细条 280x44（会话常态；窗口高度预算在 Rust 常量 BAR_HEIGHT + tauri.conf.json，
+   卡片是 height:100%，只改这里的垂直 padding 无效）↔ 大卡片 300x264（文件
+   悬停，QQ 式展开，窗口由 Rust 侧 layout_bar 同步缩放，停靠角锚定，光标始终
+   留在卡片区内） */
 
 /* 文档透明化：base.css 全局 body 底色会填死窗口透明边距与圆角外露处
    （类由 main.tsx 按 label 挂载；特异性高于全局规则，无视 @import 顺序） */
@@ -154,7 +156,7 @@ html.zap-stagedrop-doc #root {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 0 14px;
+  padding: 0 16px;
   background: var(--zap-panel-grad);
   border: 1px solid var(--zap-w-10);
   border-radius: 12px;
