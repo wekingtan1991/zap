@@ -1,5 +1,6 @@
-//! 全局拖拽落区条：任何应用开始 shell 拖拽（Explorer/桌面拖文件）时，桌面
-//! 工作区右下角弹出「拖到这，放入中转站」细条，拖入松手即入中转站。
+//! 全局拖拽落区条：任何应用开始 shell 拖拽（Explorer/桌面拖文件）时，光标
+//! 所在显示器工作区的停靠角（设置项 stagedrop_position，四角可选默认右下）
+//! 弹出「拖到这，放入中转站」细条，拖入松手即入中转站。
 //!
 //! 检测原理：shell 拖拽会话期间 shell32 会创建类名 `SysDragImage` 的拖拽图像
 //! 窗口（无文档契约，IsWindowVisible 双条件判定；diag 日志记录会话起止，供
@@ -30,7 +31,7 @@
 //! 需真机复测两个窗口的拖放。
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -42,6 +43,77 @@ pub static STAGEDROP_ENABLED: AtomicBool = AtomicBool::new(true);
 /// 门控，关闭时放入结果仍由条内反馈呈现（成功 1.2s / 失败 3s）。启动从
 /// appconfig 加载、设置保存时同步
 pub static STAGEDROP_OPEN_PANEL: AtomicBool = AtomicBool::new(false);
+
+/// 落区条停靠角（设置项 stagedrop_position）：相对拖拽发生时**光标所在**
+/// 显示器的工作区。字符串值与存档/配置文件/前端 Select 共用
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Corner {
+    BottomRight,
+    BottomLeft,
+    TopRight,
+    TopLeft,
+}
+
+impl Corner {
+    /// 存档/线协议字符串 → 枚举（非法值 None，调用方保持原值不落库）
+    pub fn parse(s: &str) -> Option<Corner> {
+        match s {
+            "bottom_right" => Some(Corner::BottomRight),
+            "bottom_left" => Some(Corner::BottomLeft),
+            "top_right" => Some(Corner::TopRight),
+            "top_left" => Some(Corner::TopLeft),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Corner::BottomRight => "bottom_right",
+            Corner::BottomLeft => "bottom_left",
+            Corner::TopRight => "top_right",
+            Corner::TopLeft => "top_left",
+        }
+    }
+
+    /// 垂直半区语义：起点误落规避的让位方向依此分流
+    fn is_top(self) -> bool {
+        matches!(self, Corner::TopRight | Corner::TopLeft)
+    }
+}
+
+/// 当前停靠角（u8 = 枚举声明序，读回映射见 position）：启动从 appconfig
+/// 加载、设置保存时同步。layout_bar 在会话起点/悬停展开/落点收条时都读，
+/// 频度高但写者只有设置路径，无锁原子足够
+static POSITION: AtomicU8 = AtomicU8::new(0);
+
+fn position() -> Corner {
+    match POSITION.load(Ordering::Relaxed) {
+        1 => Corner::BottomLeft,
+        2 => Corner::TopRight,
+        3 => Corner::TopLeft,
+        _ => Corner::BottomRight,
+    }
+}
+
+/// 设置同步入口：非法值静默忽略（坏存档/脏数据不落角，保持当前值）
+pub fn set_position_setting(s: &str) {
+    if let Some(c) = Corner::parse(s) {
+        POSITION.store(c as u8, Ordering::Relaxed);
+    }
+}
+
+/// 当前角设置值（DTO 下发/配置导出用）
+pub fn position_setting() -> &'static str {
+    position().as_str()
+}
+
+/// 停靠角变更后立即可见化：条子正显示时按新角重排（保持当前悬停态）；
+/// 隐藏态不动——下轮会话起点的 layout_bar 自然用新角
+pub fn relayout_if_shown(app: &AppHandle) {
+    if BAR_SHOWN.load(Ordering::Relaxed) {
+        layout_bar(app, HOVERING.load(Ordering::Relaxed));
+    }
+}
 
 /// 条子当前是否应处于展示态（show/hide/ensure_visible/disable_hide 各写入点
 /// 维护）。开关关闭的轮询分支据此短路：is_visible 是跨线程投递主线程的查询，
@@ -70,9 +142,9 @@ const PROCESSING_MS: u64 = 4000;
 /// CSS 垂直 padding 会被窗口高度裁掉，等于没改
 const BAR_WIDTH: f64 = 280.0;
 const BAR_HEIGHT: f64 = 44.0;
-/// 悬停展开的大卡片尺寸（QQ 式效果）：右下角锚定向上/向左扩展——原细条
-/// 区域必然落在卡片内部，悬停光标不会因展开被甩出窗口（否则 leave/enter
-/// 抖动循环）
+/// 悬停展开的大卡片尺寸（QQ 式效果）：与细条同锚停靠角原点（见
+/// corner_origin）——展开尺寸两维均大于细条，原细条区域必然落在卡片内部，
+/// 悬停光标不会因展开被甩出窗口（否则 leave/enter 抖动循环）
 const CARD_WIDTH: f64 = 300.0;
 const CARD_HEIGHT: f64 = 264.0;
 
@@ -311,6 +383,10 @@ pub fn spawn(app: AppHandle) {
                     super::diag::log(&format!(
                         "stagedrop: drag session start hovering={hovering}"
                     ));
+                    // 角先于 reset 推送：前端入场动画方向依停靠角切换（顶角
+                    // 从上滑入）。每轮会话起点都发而非只在设置变更时发——绕开
+                    // 「启动早期前端监听未就绪收不到一次性通知」的时序问题
+                    let _ = app.emit_to("stagedrop", "zap://stagedrop-corner", position_setting());
                     // payload 分流：前端只对 start 重挂重播入场动画——
                     // stale 若也重挂，长拖拽中反馈到期会把滑入动画重播在拖拽中途
                     let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", "start");
@@ -381,10 +457,62 @@ fn left_button_held() -> bool {
     false
 }
 
-/// 光标所在显示器工作区右下角定位（rcWork 扣掉任务栏；superpanel 的夹紧
-/// 用整屏尺寸会压任务栏，这里不沿用）。双态布局：细条 = 会话常态；展开 =
-/// QQ 式大卡片（文件悬停时）。展开锚定右下角向上/向左扩展，光标必然仍在
-/// 窗口内。拖拽起点落在细条矩形内时上移一个条高，防起点误落
+/// 工作区物理矩形（layout_bar 从 MONITORINFO.rcWork 搬运；独立结构使几何
+/// 纯函数不依赖 windows 类型，测试可在任意平台跑）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorkRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+/// 纯几何：停靠角 + 物理尺寸 + 边距 → 窗口左上角物理坐标。双态同构锚定：
+/// 细条与展开卡都落在同一角原点，展开尺寸两维均大于细条 → 细条矩形天然
+/// 包含在卡内，悬停光标不会被展开甩出窗口（右下角时代「向上/向左扩」的
+/// 包含性论证泛化到四角，防 leave/enter 抖动循环——原专属右下角的注释语义）
+fn corner_origin(corner: Corner, work: WorkRect, w: i32, h: i32, margin: i32) -> (i32, i32) {
+    let x = if matches!(corner, Corner::BottomRight | Corner::TopRight) {
+        work.right - w - margin
+    } else {
+        work.left + margin
+    };
+    let y = if corner.is_top() {
+        work.top + margin
+    } else {
+        work.bottom - h - margin
+    };
+    (x, y)
+}
+
+/// 起点误落规避：拖拽起点（光标）落在细条矩形内时沿垂直方向让出一个条位
+/// （下角上移、上角下移），仅细条态调用——展开态与细条同锚角原点且更大，
+/// 光标天然在窗口内
+fn avoid_drag_origin(
+    corner: Corner,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    margin: i32,
+    pt: (i32, i32),
+) -> (i32, i32) {
+    let hit = pt.0 >= x && pt.0 <= x + w && pt.1 >= y && pt.1 <= y + h;
+    if !hit {
+        return (x, y);
+    }
+    if corner.is_top() {
+        (x, y + h + margin)
+    } else {
+        (x, y - h - margin)
+    }
+}
+
+/// 光标所在显示器工作区**停靠角**定位（rcWork 扣掉任务栏；superpanel 的夹紧
+/// 用整屏尺寸会压任务栏，这里不沿用）。角由设置项 stagedrop_position 决定
+/// （四角枚举，默认右下）。双态布局：细条 = 会话常态；展开 = QQ 式大卡片
+/// （文件悬停时），锚定见 corner_origin。拖拽起点落在细条矩形内时沿垂直向
+/// 让开一个条位，防起点误落
 #[cfg(windows)]
 fn layout_bar(app: &AppHandle, expanded: bool) {
     use windows::Win32::Foundation::POINT;
@@ -420,7 +548,6 @@ fn layout_bar(app: &AppHandle, expanded: bool) {
             return;
         }
     }
-    let work = mi.rcWork;
     let scale = app
         .monitor_from_point(pt.x as f64, pt.y as f64)
         .ok()
@@ -430,11 +557,17 @@ fn layout_bar(app: &AppHandle, expanded: bool) {
     let w = (w_l * scale) as i32;
     let h = (h_l * scale) as i32;
     let margin = (12.0 * scale) as i32;
-    let x = work.right - w - margin;
-    let mut y = work.bottom - h - margin;
-    // 仅细条态做起点误落规避；展开态锚定右下角，光标天然在窗口内
-    if !expanded && pt.x >= x && pt.x <= x + w && pt.y >= y && pt.y <= y + h {
-        y -= h + margin;
+    let work = WorkRect {
+        left: mi.rcWork.left,
+        top: mi.rcWork.top,
+        right: mi.rcWork.right,
+        bottom: mi.rcWork.bottom,
+    };
+    let corner = position();
+    let (mut x, mut y) = corner_origin(corner, work, w, h, margin);
+    // 仅细条态做起点误落规避；展开态与细条同锚角原点，光标天然在窗口内
+    if !expanded {
+        (x, y) = avoid_drag_origin(corner, x, y, w, h, margin, (pt.x, pt.y));
     }
     // 尺寸与位置同用光标显示器 scale 的物理值（评审 P2-a：自定义缩放下
     // Logical 换算与位置公式取整路径不同会差 1px，物理值严格对齐）
@@ -443,8 +576,9 @@ fn layout_bar(app: &AppHandle, expanded: bool) {
     let r_size = win.set_size(tauri::PhysicalSize::new(w, h));
     let r_pos = win.set_position(tauri::PhysicalPosition::new(x, y));
     super::diag::log(&format!(
-        "stagedrop: layout expanded={expanded} {w}x{h}@{x},{y} scale={scale} \
+        "stagedrop: layout corner={} expanded={expanded} {w}x{h}@{x},{y} scale={scale} \
          size_ok={} pos_ok={}",
+        corner.as_str(),
         r_size.is_ok(),
         r_pos.is_ok()
     ));
@@ -895,5 +1029,93 @@ mod tests {
             decide(&mk(false, None, Some(-300), None), false, false, now),
             Poll::Hide
         ));
+    }
+
+    /// 几何纯函数的公共工作区：left/top 非零防「恰好以原点为锚」掩盖坐标向错误
+    const WR: WorkRect = WorkRect {
+        left: 100,
+        top: 200,
+        right: 2100,
+        bottom: 1300,
+    };
+    const ALL_CORNERS: [Corner; 4] = [
+        Corner::BottomRight,
+        Corner::BottomLeft,
+        Corner::TopRight,
+        Corner::TopLeft,
+    ];
+
+    #[test]
+    fn 停靠角解析往返与坏值拒绝() {
+        for s in ["bottom_right", "bottom_left", "top_right", "top_left"] {
+            assert_eq!(Corner::parse(s).unwrap().as_str(), s);
+        }
+        assert!(Corner::parse("center").is_none());
+        assert!(Corner::parse("").is_none());
+        // 非法值不改动当前角（坏存档/脏数据保持原值）
+        set_position_setting("top_left");
+        set_position_setting("nonsense");
+        assert_eq!(position_setting(), "top_left");
+        set_position_setting("bottom_right");
+        assert_eq!(position_setting(), "bottom_right");
+    }
+
+    #[test]
+    fn 四角原点都在工作区内且互异() {
+        let m = 12;
+        let mut origins = Vec::new();
+        for c in ALL_CORNERS {
+            let (x, y) = corner_origin(c, WR, 280, 44, m);
+            assert!(x >= WR.left + m && x + 280 <= WR.right, "x 出界: {c:?}");
+            assert!(y >= WR.top + m && y + 44 <= WR.bottom, "y 出界: {c:?}");
+            origins.push((x, y));
+        }
+        // 右下角回归锚：贴工作区右/下边距
+        assert_eq!(origins[0], (2100 - 280 - 12, 1300 - 44 - 12));
+        // 四点互异 = 公式真分流（若恒同值则四角设置形同虚设）
+        assert_eq!(
+            origins
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn 展开卡包含细条矩形_四角皆然() {
+        // 悬停展开锚定正确性的几何核心：光标落在细条内 ⇒ 也落在展开卡内
+        // （否则 DragEnter 展开 → 光标出窗 → DragLeave 收条 → 抖动循环）
+        let m = 12;
+        for c in ALL_CORNERS {
+            let (bx, by) = corner_origin(c, WR, 280, 44, m);
+            let (cx, cy) = corner_origin(c, WR, 300, 264, m);
+            assert!(cx <= bx, "卡左越条左: {c:?}");
+            assert!(cy <= by, "卡上越条上: {c:?}");
+            assert!(cx + 300 >= bx + 280, "卡右不及条右: {c:?}");
+            assert!(cy + 264 >= by + 44, "卡下不及条下: {c:?}");
+        }
+    }
+
+    #[test]
+    fn 起点误落规避按垂直半区定向() {
+        let m = 12;
+        // 下角：条内起点 → 上移一个条位
+        let (x, y) = corner_origin(Corner::BottomRight, WR, 280, 44, m);
+        assert_eq!(
+            avoid_drag_origin(Corner::BottomRight, x, y, 280, 44, m, (x + 10, y + 10)),
+            (x, y - 44 - m)
+        );
+        // 顶角：条内起点 → 下移一个条位（原实现只有下角语义，四角化后对称补齐）
+        let (tx, ty) = corner_origin(Corner::TopLeft, WR, 280, 44, m);
+        assert_eq!(
+            avoid_drag_origin(Corner::TopLeft, tx, ty, 280, 44, m, (tx + 10, ty + 10)),
+            (tx, ty + 44 + m)
+        );
+        // 条外起点：原位不动（拖拽起点不在角落时不折腾条子位置）
+        assert_eq!(
+            avoid_drag_origin(Corner::BottomRight, x, y, 280, 44, m, (WR.left, WR.top)),
+            (x, y)
+        );
     }
 }

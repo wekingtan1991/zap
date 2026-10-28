@@ -149,6 +149,12 @@ html.zap-stagedrop-doc #root {
   user-select: none;
 }
 
+/* 顶角停靠（stagedrop_position=top_*）：入场改从上滑入。角由 Rust 每轮
+   会话起点经 zap://stagedrop-corner 推送，类切换即可（动画随类重算重播） */
+.zap-stagedrop.from-top {
+  animation: var(--animate-stagedrop-in-top);
+}
+
 .zap-stagedrop-card {
   display: flex;
   width: 100%;

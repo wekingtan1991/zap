@@ -86,6 +86,8 @@ export interface AppSettings {
   stagedropEnabled: boolean;
   /// 拖入落区条松手后自动呼出中转站面板
   stagedropOpenPanel: boolean;
+  /// 落区条停靠角（bottom_right/bottom_left/top_right/top_left）
+  stagedropPosition: string;
   pwdClearSecs: number;
   autostart: boolean;
   everythingAutostart: boolean;
@@ -371,6 +373,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           stageMax: res.stageMax ?? 50,
           stagedropEnabled: res.stagedropEnabled ?? true,
           stagedropOpenPanel: res.stagedropOpenPanel ?? false,
+          stagedropPosition: res.stagedropPosition ?? "bottom_right",
           appearance: res.appearance ?? "dark",
           panelTransparency: res.panelTransparency ?? true,
           superpanelHotkey: res.superpanelHotkey ?? "",
@@ -556,6 +559,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         stageMax: st.stageMax,
         stagedropEnabled: st.stagedropEnabled ?? true,
         stagedropOpenPanel: st.stagedropOpenPanel ?? false,
+        stagedropPosition: st.stagedropPosition ?? "bottom_right",
         pwdClearSecs: st.pwdClearSecs,
         everythingAutostart: st.everythingAutostart,
         appearance: st.appearance ?? "dark",
@@ -812,7 +816,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                 拖拽落区条
               </Label>
               <span className="text-[11px] leading-snug text-muted-foreground">
-                任何应用开始拖文件时，桌面右下角弹出「拖到这，放入中转站」；部分应用不弹属正常
+                任何应用开始拖文件时，在设定的屏幕角落弹出「拖到这，放入中转站」；部分应用不弹属正常
               </span>
             </span>
             <Checkbox
@@ -822,6 +826,35 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                 setSt((s) => (s ? { ...s, stagedropEnabled: v === true } : s))
               }
             />
+          </div>
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <Label
+                htmlFor="set-stagedrop-pos"
+                className="text-[13px] font-normal text-foreground"
+              >
+                落区条位置
+              </Label>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                落区条停靠在拖拽发生时所在屏幕的哪个角
+              </span>
+            </span>
+            <Select
+              value={st.stagedropPosition ?? "bottom_right"}
+              onValueChange={(v) =>
+                setSt((s) => (s ? { ...s, stagedropPosition: v } : s))
+              }
+            >
+              <SelectTrigger id="set-stagedrop-pos" className="h-[30px] w-[126px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="bottom_right">右下角</SelectItem>
+                <SelectItem value="bottom_left">左下角</SelectItem>
+                <SelectItem value="top_right">右上角</SelectItem>
+                <SelectItem value="top_left">左上角</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex min-h-[42px] items-center justify-between gap-3">
             <span className="flex min-w-0 flex-col gap-px">

@@ -32,13 +32,17 @@ pub const KEY_CLIP_HOTKEY: &str = "clip_hotkey";
 pub const KEY_SUPERPANEL_HOTKEY: &str = "superpanel_hotkey";
 /// 中转站直达热键（空串 = 未绑定）：呼出面板并进入中转站视图
 pub const KEY_STAGE_HOTKEY: &str = "stage_hotkey";
-/// 全局拖拽落区条开关：任何应用拖文件时右下角弹「拖到这，放入中转站」
+/// 全局拖拽落区条开关：任何应用拖文件时在停靠角弹「拖到这，放入中转站」
 pub const KEY_STAGEDROP_ENABLED: &str = "stagedrop_enabled";
 pub const DEFAULT_STAGEDROP_ENABLED: bool = true;
 /// 拖文件到落区条松手后是否自动呼出中转站面板（默认关：面板呼出属行为
 /// 变更，交用户显式开启；关闭时放入结果仍由条内反馈呈现）
 pub const KEY_STAGEDROP_OPEN_PANEL: &str = "stagedrop_open_panel";
 pub const DEFAULT_STAGEDROP_OPEN_PANEL: bool = false;
+/// 落区条停靠角（bottom_right/bottom_left/top_right/top_left）：相对拖拽
+/// 发生时光标所在显示器的工作区，非法值按默认右下处理
+pub const KEY_STAGEDROP_POSITION: &str = "stagedrop_position";
+pub const DEFAULT_STAGEDROP_POSITION: &str = "bottom_right";
 /// 中转站未固定条目容量上限
 pub const KEY_STAGE_CAP: &str = "stage_cap";
 pub const DEFAULT_STAGE_CAP: i64 = 50;
@@ -94,6 +98,7 @@ pub struct ConfigSettings {
     pub stage_max: Option<i64>,
     pub stagedrop_enabled: Option<bool>,
     pub stagedrop_open_panel: Option<bool>,
+    pub stagedrop_position: Option<String>,
     pub pwd_clear_secs: Option<i64>,
     pub autostart: Option<bool>,
     pub everything_autostart: Option<bool>,
@@ -250,5 +255,6 @@ mod tests {
         assert_eq!(back.settings.hotkey.as_deref(), Some("ctrl+alt+space"));
         assert_eq!(back.settings.stagedrop_open_panel, None);
         assert_eq!(back.settings.stagedrop_enabled, None);
+        assert_eq!(back.settings.stagedrop_position, None);
     }
 }

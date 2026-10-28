@@ -15,9 +15,11 @@
   --animate-shake: shake 0.3s ease-in-out;
   --animate-toast-in: toast-in 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
   --animate-pulse-ring: pulse-ring 1.8s ease-in-out infinite;
-  /* 落区条弹出：右下角锚定，从下方 10px 浮入（每轮拖拽会话重播，见
-     StageDropRoot 的 session key） */
+  /* 落区条弹出：停靠角锚定，细条从屏幕内侧 10px 浮入（每轮拖拽会话重播，
+     见 StageDropRoot 的 session key）。底角从下滑入 / 顶角从上滑入，
+     方向由 Rust 每轮会话起点的 zap://stagedrop-corner 推送驱动切换 */
   --animate-stagedrop-in: stagedrop-in 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-stagedrop-in-top: stagedrop-in-top 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes panel-in {
@@ -124,6 +126,16 @@
      opacity 0 起步会先闪一帧「消失」，只滑入不闪 */
   from {
     transform: translateY(10px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes stagedrop-in-top {
+  /* 顶角版：从上侧滑入。同款「纯位移不起 opacity」防闪帧约束 */
+  from {
+    transform: translateY(-10px);
   }
   to {
     transform: none;

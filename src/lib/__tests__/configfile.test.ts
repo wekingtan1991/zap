@@ -19,6 +19,7 @@ const current: SettingsSnapshot = {
   stageMax: 50,
   stagedropEnabled: true,
   stagedropOpenPanel: false,
+  stagedropPosition: "bottom_right",
   pwdClearSecs: 45,
   autostart: false,
   everythingAutostart: true,
@@ -54,6 +55,7 @@ describe("mergeImportedConfig", () => {
       stageMax: 200,
       stagedropEnabled: false,
       stagedropOpenPanel: true,
+      stagedropPosition: "top_left",
       pwdClearSecs: 30,
       autostart: true,
       everythingAutostart: false,
@@ -71,6 +73,7 @@ describe("mergeImportedConfig", () => {
     expect(out.stageMax).toBe(200);
     expect(out.stagedropEnabled).toBe(false);
     expect(out.stagedropOpenPanel).toBe(true);
+    expect(out.stagedropPosition).toBe("top_left");
     expect(out.pwdClearSecs).toBe(30);
     expect(out.autostart).toBe(true);
     expect(out.everythingAutostart).toBe(false);
@@ -98,11 +101,13 @@ describe("mergeImportedConfig", () => {
       stageMax: 7 as number,
       pwdClearSecs: 99 as number,
       appearance: "sepia" as string,
+      stagedropPosition: "center" as string,
     }));
     expect(out.clipMax).toBe(500);
     expect(out.stageMax).toBe(50);
     expect(out.pwdClearSecs).toBe(45);
     expect(out.appearance).toBe("dark");
+    expect(out.stagedropPosition).toBe("bottom_right");
   });
 
   it("插件开关按 id 合并，本机没有的插件忽略", () => {

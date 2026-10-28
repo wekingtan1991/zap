@@ -15,6 +15,10 @@ const DEFAULT_TEXT = "拖到这，放入中转站";
 export function StageDropRoot() {
   const [hot, setHot] = useState(false);
   const [text, setText] = useState(DEFAULT_TEXT);
+  /// 停靠角在垂直半区的顶侧（stagedrop_position=top_*）：入场动画从上滑入。
+  /// 角由 Rust 每轮会话起点推送（zap://stagedrop-corner），不在挂载时拉取——
+  /// 会话起点必发，挂载早期的时序无关紧要
+  const [fromTop, setFromTop] = useState(false);
   /// 会话计数：条子窗口只 hide/show 不销毁，CSS 入场动画只在 DOM 挂载时播
   /// 一次——key 递增重挂子树，每轮拖拽会话重播入场（同 App.tsx 面板
   /// zap://shown 的 remove/reflow/add 手法，这里用 key 更直白）
@@ -51,8 +55,12 @@ export function StageDropRoot() {
     const unHot = listen<boolean>("zap://stagedrop-hot", (e) =>
       setHot(e.payload === true)
     ).catch(() => () => {});
+    const unCorner = listen<string>("zap://stagedrop-corner", (e) =>
+      setFromTop(e.payload === "top_right" || e.payload === "top_left")
+    ).catch(() => () => {});
     return () => {
       unHot.then((f) => f()).catch(() => {});
+      unCorner.then((f) => f()).catch(() => {});
     };
   }, []);
 
@@ -81,7 +89,15 @@ export function StageDropRoot() {
   }, []);
 
   return (
-    <div className={"zap-stagedrop" + (hot ? " hot" : "")} aria-live="polite" key={session}>
+    <div
+      className={
+        "zap-stagedrop" +
+        (hot ? " hot" : "") +
+        (fromTop ? " from-top" : "")
+      }
+      aria-live="polite"
+      key={session}
+    >
       <div className="zap-stagedrop-card">
         {hot ? (
           <div className="zap-stagedrop-hot">
