@@ -351,6 +351,14 @@ function AppView() {
     };
   }, [openStage]);
 
+  // 中转站视图开合同步后端：视图展开期间右下角落区条不出（视图内拖入即
+  // 落点，角落条冗余且与面板叠放）。单一 effect 跟随 view.kind，openStage/
+  // closeStage/进设置等所有进出路径自动覆盖；面板隐藏期间的清零由后端
+  // hide_panel_window 兜底（前端 view 状态隐藏时不重置）
+  useEffect(() => {
+    invoke("set_stage_view", { active: view.kind === "stage" }).catch(() => {});
+  }, [view.kind]);
+
   // 普通域搜索（账号库保护域下不生效；万能输入框识别与工具入口条目
   // 由后端 probe/entry 在 search 结果里置顶返回，前端无感知）。
   // cancelled 守卫同账号库搜索：files 源带 250ms HTTP 超时，竞态窗口真实存在
