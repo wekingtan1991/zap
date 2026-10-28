@@ -15,7 +15,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useEscCapture } from "@/hooks/useEscCapture";
-import type { PanelProps } from "@/plugins/panel";
+import { PanelHeader, useCopyFlash, type PanelProps } from "@/plugins/panel";
 import type { SearchItem } from "@/plugins/types";
 
 /// 后端 clipimg_preview 的线协议镜像
@@ -43,14 +43,14 @@ interface Props extends PanelProps {
   onPinned: () => void;
 }
 
-/// 剪贴板图片预览面板（二段式泛化首个消费者，契约见 plugins/panel.ts）：
+/// 剪贴板图片预览面板（二段式泛化首个消费者，契约见 plugins/panel.tsx）：
 /// 大图确认 + 元信息，动作全鼠标——粘贴走 open_item 回贴管线（与行内 Enter
 /// 同一套），仅复制不粘贴、另存为、固定；Esc 返回列表
 export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
   const [meta, setMeta] = useState<ClipImageMeta | null>(null);
   const [loadErr, setLoadErr] = useState("");
   const [pinned, setPinned] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const { copied, flash } = useCopyFlash(1500);
   // 仅复制对大图也可能非瞬时：即时态避免「点了没反应」的体感
   const [copying, setCopying] = useState(false);
 
@@ -99,8 +99,7 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
     setCopying(true);
     invoke("clipimg_copy", { id: rowid })
       .then(() => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
+        flash("copy");
         toast.success("已复制，可粘贴");
       })
       .catch((e) => toast.error(String(e)))
@@ -135,11 +134,10 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
   };
 
   const header = (
-    <div className="zap-input-row">
-      <span className="zap-logo">
-        <ImageIcon className="size-4 text-primary" />
-      </span>
-      <span className="zap-vault-tag">图片预览</span>
+    <PanelHeader
+      icon={<ImageIcon className="size-4 text-primary" />}
+      tag="图片预览"
+    >
       <Button
         variant="ghost"
         size="sm"
@@ -149,7 +147,7 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
         <ArrowLeft className="size-3" />
         返回（Esc）
       </Button>
-    </div>
+    </PanelHeader>
   );
 
   const body = (
@@ -180,7 +178,7 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
                 >
                   {copying ? (
                     <LoaderCircle className="size-3.5 animate-spin" />
-                  ) : copied ? (
+                  ) : copied === "copy" ? (
                     <Check className="size-3.5 text-success" />
                   ) : (
                     <Copy className="size-3.5" />

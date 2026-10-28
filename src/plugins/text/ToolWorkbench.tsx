@@ -17,7 +17,13 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useEscCapture } from "@/hooks/useEscCapture";
-import type { PanelProps } from "@/plugins/panel";
+import {
+  PanelHeader,
+  useAwaitPaste,
+  useCopyFlash,
+  usePanelSource,
+  type PanelProps,
+} from "@/plugins/panel";
 
 /// 后端 texttools::ToolBundle 的线协议镜像
 interface ToolBundle {
@@ -85,57 +91,21 @@ function ToolRow({
 }
 
 /// 文本工具工作台（独立面板）：时间戳/Base64/URL/UUID/哈希。
-/// 分析与转换在后端（tool_convert_all 防抖一次返回），前端只做展示与复制
+/// 分析与转换在后端（tool_convert_all 防抖一次返回），前端只做展示与复制。
+/// 行号源/粘贴替换/复制闪烁/头部条为 panel 契约公共实现（与 JSON 工作台同构）
 export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
-  const [srcText, setSrcText] = useState<string | null>(
-    text !== undefined ? text : null
-  );
-  const [loadErr, setLoadErr] = useState("");
+  const { setSrcText, loadErr, active } = usePanelSource({
+    text,
+    clipRow,
+  });
   const [bundle, setBundle] = useState<ToolBundle | null>(null);
   const [cmdErr, setCmdErr] = useState("");
   const [uuid, setUuid] = useState("");
-  const [copied, setCopied] = useState<string | null>(null);
-  /// 粘贴替换等待态：点击按钮后下一次 Ctrl+V 整体替换内容，5 秒无粘贴自动取消
-  const [awaitPaste, setAwaitPaste] = useState(false);
-
-  // 行号源：进入时回查一次（文本源初值即内容，与 JSON 工作台同构）
-  useEffect(() => {
-    if (text !== undefined) return;
-    let cancelled = false;
-    invoke<string>("clip_row", { id: clipRow })
-      .then((t) => {
-        if (!cancelled) setSrcText(t);
-      })
-      .catch((e) => {
-        if (!cancelled) setLoadErr(String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [text, clipRow]);
-
-  const active = srcText ?? "";
+  const { copied, flash } = useCopyFlash();
+  const { awaitPaste, startAwait } = useAwaitPaste(setSrcText);
 
   // 独立面板：窗口捕获兜 Esc（焦点掉 body 后面板 onKeyDown 收不到）
   useEscCapture(onBack, true);
-
-  // 粘贴替换：捕获阶段挂 window——焦点在非可编辑元素时 paste 事件仍会到达
-  useEffect(() => {
-    if (!awaitPaste) return;
-    const onPaste = (e: ClipboardEvent) => {
-      const t = e.clipboardData?.getData("text");
-      if (!t) return;
-      e.preventDefault();
-      setSrcText(t);
-      setAwaitPaste(false);
-    };
-    window.addEventListener("paste", onPaste, true);
-    const timer = setTimeout(() => setAwaitPaste(false), 5000);
-    return () => {
-      window.removeEventListener("paste", onPaste, true);
-      clearTimeout(timer);
-    };
-  }, [awaitPaste]);
 
   // 转换防抖：前缀域每击键触发；行号源加载后只触发一次。
   // cancelled 守卫：在途响应无法取消，快速编辑时旧内容的转换不得覆盖新内容
@@ -178,29 +148,30 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
     void genUuid();
   }, [genUuid]);
 
-  const copy = useCallback(async (key: string, value: string) => {
-    try {
-      const msg = await invoke<string>("copy_text", { text: value });
-      setCopied(key);
-      setTimeout(() => setCopied((c) => (c === key ? null : c)), 1600);
-      toast.success(msg);
-    } catch (e) {
-      toast.error("复制失败：" + String(e));
-    }
-  }, []);
+  const copy = useCallback(
+    async (key: string, value: string) => {
+      try {
+        const msg = await invoke<string>("copy_text", { text: value });
+        flash(key);
+        toast.success(msg);
+      } catch (e) {
+        toast.error("复制失败：" + String(e));
+      }
+    },
+    [flash]
+  );
 
   const header = (
-    <div className="zap-input-row">
-      <span className="zap-logo">
-        <Wrench className="size-4 text-primary" />
-      </span>
-      <span className="zap-vault-tag">文本工具</span>
+    <PanelHeader
+      icon={<Wrench className="size-4 text-primary" />}
+      tag="文本工具"
+    >
       <Button
         variant="ghost"
         size="sm"
         className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
         disabled={awaitPaste}
-        onClick={() => setAwaitPaste(true)}
+        onClick={startAwait}
       >
         <ClipboardPaste className="size-3" />
         {awaitPaste ? "按 Ctrl+V 粘贴…" : "粘贴替换"}
@@ -214,7 +185,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
         <ArrowLeft className="size-3" />
         返回（Esc）
       </Button>
-    </div>
+    </PanelHeader>
   );
 
   const body = (
