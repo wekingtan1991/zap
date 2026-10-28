@@ -161,18 +161,12 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
                 src={`data:image/png;base64,${meta.pngBase64}`}
                 alt={`剪贴板图片 ${meta.width}×${meta.height}`}
               />
-            </div>
-            <div className="zap-imgprev-footer">
-              <span className="zap-imgprev-meta">
-                {meta.width}×{meta.height} · {humanSize(meta.size)} · 复制于{" "}
-                {new Date(meta.createdAt).toLocaleString()}
-              </span>
-              <div className="zap-imgprev-actions">
+              <div className="zap-imgprev-bar">
                 <Button variant="default" size="sm" onClick={paste}>
                   <ClipboardPaste className="size-3.5" />
                   粘贴
                 </Button>
-                <Button variant="outline" size="sm" onClick={copyOnly}>
+                <Button variant="ghost" size="sm" onClick={copyOnly}>
                   {copied ? (
                     <Check className="size-3.5 text-success" />
                   ) : (
@@ -180,15 +174,21 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
                   )}
                   仅复制
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => void saveAs()}>
+                <Button variant="ghost" size="sm" onClick={() => void saveAs()}>
                   <Download className="size-3.5" />
                   另存为
                 </Button>
-                <Button variant="outline" size="sm" onClick={togglePin}>
+                <Button variant="ghost" size="sm" onClick={togglePin}>
                   <Pin className="size-3.5" />
                   {pinned ? "取消固定" : "固定"}
                 </Button>
               </div>
+            </div>
+            <div className="zap-imgprev-footer">
+              <span className="zap-imgprev-meta">
+                {meta.width}×{meta.height} · {humanSize(meta.size)} · 复制于{" "}
+                {new Date(meta.createdAt).toLocaleString()}
+              </span>
             </div>
           </>
         )

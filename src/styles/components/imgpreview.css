@@ -1,6 +1,7 @@
 /* ============================================================
-   图片预览面板：中性舞台上的「画布」大图（棋盘格只衬图片本身，
-   描边+投影与舞台分离）+ 底栏（元信息居左 / 动作居右）。
+   图片预览面板：中性舞台 + 悬浮玻璃操作条（看图器形态）。
+   操作条常驻不 hover 隐藏（可见性优先，鼠标直达）；棋盘格只衬
+   图片本体；底栏只留元信息。
    状态条复用 json.css 的 zap-json-status / zap-json-bad（与工作台同款）
    ============================================================ */
 
@@ -12,17 +13,42 @@
   flex: 1;
 }
 
-/* 舞台：中性底色，小图居中不放大（棋盘格不再铺满舞台） */
+/* 舞台：中性底色，小图居中不放大；底部留出操作条的高度，
+   图片永不与悬浮条重叠 */
 .zap-imgprev-stage {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 14px;
+  padding: 14px 14px 56px;
   border-radius: 10px;
   background: var(--zap-w-03);
   border: 1px solid var(--zap-w-07);
+}
+
+/* 悬浮玻璃操作条：半透明暗底 + 背景模糊 + 发丝线，看图器惯例的
+   「viewer chrome」——固定暗玻璃在暗/浅主题与任何图片底色上都可读 */
+.zap-imgprev-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 5px;
+  border-radius: 999px;
+  background: rgba(18, 20, 26, 0.55);
+  backdrop-filter: blur(14px) saturate(1.2);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  color: var(--zap-fg);
+}
+
+.zap-imgprev-bar button {
+  border-radius: 8px;
 }
 
 /* 画布：img 盒在 max 约束下与渲染像素恒等比贴合（不 letterbox），
@@ -47,13 +73,12 @@
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 }
 
-/* 底栏：元信息居左（过长省略），动作居右 */
+/* 底栏：只留元信息（动作已上悬浮条），过长省略 */
 .zap-imgprev-footer {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
   min-width: 0;
+  flex-shrink: 0;
 }
 
 .zap-imgprev-meta {
@@ -65,11 +90,4 @@
   font-size: 12px;
   color: var(--zap-fg-mute2);
   font-variant-numeric: tabular-nums;
-}
-
-.zap-imgprev-actions {
-  display: flex;
-  gap: 6px;
-  margin-left: auto;
-  flex-shrink: 0;
 }
