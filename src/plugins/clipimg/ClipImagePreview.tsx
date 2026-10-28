@@ -36,7 +36,7 @@ function humanSize(bytes: number): string {
 }
 
 interface Props extends PanelProps {
-  /// 图片行号（clipImageRowId 提取）：预览/复制/导出/固定同键寻址
+  /// 图片行号（clipRowId 提取，与文本 clip 同构）：预览/复制/导出/固定同键寻址
   rowid: number;
   /// 面板内固定后通知 App 重拉列表——Esc 退回时 setQuery 同值会被 React
   /// bailout，列表的固定徽标与置顶排序不刷（评审 P2）

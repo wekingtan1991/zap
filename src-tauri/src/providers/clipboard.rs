@@ -350,12 +350,15 @@ fn is_from_password_manager() -> bool {
 }
 
 /// 搜索历史：Rust 侧统一打分（含拼音）。空查询返回最近条目（固定置顶，呼出即见常用）。
-/// 评分只吃前 256 字符且由 SQL 侧 substr 截断——长文本（几 MB 的粘贴）不再每击键
-/// 整行拖回内存，命中后再按行号点查全文
+/// 列表只吃前 256 字符（SQL 侧 substr）与换行数（SQL 侧现算）——全文不随列表过
+/// IPC（几 MB 的粘贴曾每次呼出/每击键整行拖回），回贴/仅复制按行号回查
+/// （open_item 与 secondary_action 的 clip 分支）
 pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
     let now = now_ms();
     let Ok(mut stmt) = conn.prepare(
-        "SELECT id, created_at, pinned, substr(content, 1, 256) FROM clipboard_history
+        "SELECT id, created_at, pinned, substr(content, 1, 256),
+                length(content) - length(replace(content, char(10), ''))
+         FROM clipboard_history
          ORDER BY pinned DESC, created_at DESC LIMIT 300",
     ) else {
         return Vec::new();
@@ -366,11 +369,12 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
             r.get::<_, i64>(1)?,
             r.get::<_, i64>(2)?,
             r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
         ))
     }) else {
         return Vec::new();
     };
-    let rows: Vec<(i64, i64, i64, String)> = rows.flatten().collect();
+    let rows: Vec<(i64, i64, i64, String, i64)> = rows.flatten().collect();
 
     if query.is_empty() {
         // 图片与文本条目按 固定 > 新旧 合并（两表各自已按该序取回）；
@@ -378,13 +382,12 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
         let mut merged: Vec<(i64, i64, SearchItem)> = rows
             .iter()
             .take(limit)
-            .filter_map(|(id, t, pinned, _)| {
-                let content = get_by_id(conn, *id)?;
-                Some((
+            .map(|(id, t, pinned, head, nl)| {
+                (
                     *pinned,
                     *t,
-                    build_item(*id, content, *t, now, 0, *pinned == 1),
-                ))
+                    build_item(*id, head, *nl, *t, now, 0, *pinned == 1),
+                )
             })
             .collect();
         merged.extend(super::clipimage::search_recent(conn, limit - limit / 2));
@@ -401,10 +404,10 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
     }
 
     let q = query.trim().to_lowercase();
-    let mut scored: Vec<(f32, i64, i64, i64)> = rows
+    let mut scored: Vec<(f32, i64, i64, i64, &String, i64)> = rows
         .iter()
-        .filter_map(|(id, t, pinned, head)| {
-            super::score_lowered(head, &q).map(|s| (s, *id, *pinned, *t))
+        .filter_map(|(id, t, pinned, head, nl)| {
+            super::score_lowered(head, &q).map(|s| (s, *id, *pinned, *t, head, *nl))
         })
         .collect();
     // 同分档内固定优先，其次新的在前（与账号库口径一致）
@@ -418,22 +421,23 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
     scored
         .into_iter()
         .enumerate()
-        .filter_map(|(i, (_, id, pinned, t))| {
-            let content = get_by_id(conn, id)?;
-            Some(build_item(id, content, t, now, i, pinned == 1))
-        })
+        .map(|(i, (_, id, pinned, t, head, nl))| build_item(id, head, nl, t, now, i, pinned == 1))
         .collect()
 }
 
+/// 条目构造：只吃首行（head 前 256 字符足够——标题上限 60）与换行数，全文不进
+/// 条目。target = 行号：与 clipimg 同构的行号寻址，内容本体只在动作时按行号
+/// 点查（回贴 open_item / 仅复制 secondary_action）——列表与 IPC 不再携带全文
 fn build_item(
     rowid: i64,
-    content: String,
+    head: &str,
+    newline_count: i64,
     created_at: i64,
     now: i64,
     index: usize,
     pinned: bool,
 ) -> SearchItem {
-    let first_line = content.lines().next().unwrap_or("").trim().to_string();
+    let first_line = head.lines().next().unwrap_or("").trim().to_string();
     let title = if first_line.chars().count() > 60 {
         format!("{}…", first_line.chars().take(60).collect::<String>())
     } else if first_line.is_empty() {
@@ -441,7 +445,7 @@ fn build_item(
     } else {
         first_line
     };
-    let extra_lines = content.lines().count().saturating_sub(1);
+    let extra_lines = newline_count.max(0) as usize;
     let subtitle = if extra_lines > 0 {
         format!(
             "剪贴板 · {} · 还有 {} 行",
@@ -457,7 +461,7 @@ fn build_item(
         title,
         subtitle,
         kind: "clip".into(),
-        target: content,
+        target: rowid.to_string(),
         icon: None,
         pinned,
         score: 60.0 - index as f32,
@@ -611,6 +615,31 @@ mod tests {
         let items = super::super::clipimage::search_recent(&conn, 10);
         assert_eq!(items.len(), 1, "worker 应把队列里的图片入库");
         assert!(items[0].2.id.starts_with("clipimg:"));
+    }
+
+    /// 线协议契约：clip 条目 target = 行号字符串（与 clipimg 同构），全文不随
+    /// 列表过 IPC——回贴/仅复制由 open_item/secondary_action 按行号回查。
+    /// 标题取首行、副标题带换行数，均不依赖全文
+    #[test]
+    fn 列表条目target为行号() {
+        let conn = mem_db();
+        let id = insert(&conn, "first line\nsecond line\nthird line", now_ms());
+        let items = search(&conn, "", 6);
+        let it = items
+            .iter()
+            .find(|i| i.id == format!("clip:{id}"))
+            .expect("空查询应含该条");
+        assert_eq!(it.target, id.to_string(), "target 应为行号");
+        assert_eq!(it.title, "first line");
+        assert!(
+            it.subtitle.contains("还有 2 行"),
+            "副标题应含换行数：{}",
+            it.subtitle
+        );
+        // 打分路径同契约
+        let items = search(&conn, "first", 6);
+        assert_eq!(items[0].target, id.to_string());
+        assert_eq!(items[0].title, "first line");
     }
 
     /// 按行号取全文（合并粘贴 clip_texts 的根基）：存在给原文，已被清理给 None

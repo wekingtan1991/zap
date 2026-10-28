@@ -21,7 +21,7 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { kindUi, type ItemActions } from "@/plugins/registry";
 import { routeItem } from "@/plugins/dispatch";
-import { isPinned, clipRowId, clipImageRowId, type SearchItem } from "@/plugins/types";
+import { isPinned, clipRowId, type SearchItem } from "@/plugins/types";
 import {
   kickEverythingEnsure,
   runCommand,
@@ -733,14 +733,14 @@ function AppView() {
       .catch(() => {});
   }, []);
 
-  /// 剪贴板固定/取消固定（文本与图片条目共用）：
-  /// 固定项置顶/取消复位靠重拉。两套寻址键各走各的助手，且图片条目必须走
+  /// 剪贴板固定/取消固定（文本与图片条目共用）：行号统一取自 target（clipRowId，
+  /// 两 kind 线协议同构）。固定项置顶/取消复位靠重拉，且图片条目必须走
   /// clipimg_pin 直连图片表——clip_pin 文本表先命中，两表自增行号撞号时
   /// 会固定到同号的文本行
   const clipPin = useCallback(
     async (item: SearchItem) => {
       const isImg = item.kind === "clipimg";
-      const id = isImg ? clipImageRowId(item) : clipRowId(item);
+      const id = clipRowId(item);
       if (Number.isNaN(id)) return;
       try {
         await invoke<boolean>(isImg ? "clipimg_pin" : "clip_pin", { id });
@@ -760,7 +760,7 @@ function AppView() {
   }, []);
 
   /// 勾选/取消一条（保序，点击与 Enter 共用）：仅文本剪贴板条目；
-  /// 行号取自 id（clipRowId）——target 是内容本体，取数恒 NaN
+  /// 行号取自 target（clipRowId，与图片条目同构——内容本体不随列表过 IPC）
   const toggleClipSelection = useCallback((it: SearchItem | undefined) => {
     if (!it || it.kind !== "clip") return;
     const id = clipRowId(it);
@@ -877,10 +877,10 @@ function AppView() {
 
   // ---------- 图片预览面板 ----------
   // 右键「预览大图」入口（Enter 保留回贴不占——粘贴是图片条目的第一动作）：
-  // 行号寻址在 target（clipImageRowId，与文本 clip 的 id 寻址相反）；
+  // 行号寻址在 target（clipRowId，与文本 clip 同构）；
   // 面板内粘贴/仅复制/另存为/固定，Esc 经 closeWorkbench 回列表恢复搜索词
   const openClipImagePreview = useCallback((it: SearchItem) => {
-    const rowid = clipImageRowId(it);
+    const rowid = clipRowId(it);
     if (Number.isNaN(rowid)) return;
     setView({ kind: "clipimg", rowid, backQuery: queryRef.current });
   }, []);

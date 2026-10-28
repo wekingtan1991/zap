@@ -1157,33 +1157,42 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
             Ok(())
         }
         "clip" | "clipimg" => {
-            // 图片行号同步探存在：「已被清理」要即时回前端 toast（不收面板），不能异步化
-            if item.kind == "clipimg" {
-                let rowid = item
-                    .target
-                    .parse::<i64>()
-                    .map_err(|_| "无效图片条目".to_string())?;
-                if !app.state::<AppState>().engine.clip_image_exists(rowid) {
-                    return Err("该条剪贴板图片已被清理".into());
+            // 行号寻址（与列表线协议同构：target = 行号，与 clipimg 统一）。
+            // 行号同步探存在：「已被清理」要即时回前端 toast（不收面板），不能异步化
+            let rowid = item.target.parse::<i64>().map_err(|_| {
+                if item.kind == "clipimg" {
+                    "无效图片条目".to_string()
+                } else {
+                    "无效剪贴板条目".to_string()
                 }
-            }
+            })?;
+            let engine = app.state::<AppState>().engine.clone();
+            // 文本回贴按行号回查全文（列表不再携带内容本体）；图片点查存在性
+            let clip_text = if item.kind == "clip" {
+                Some(
+                    engine
+                        .clip_row(rowid)
+                        .ok_or("该条剪贴板已被清理".to_string())?,
+                )
+            } else if !engine.clip_image_exists(rowid) {
+                return Err("该条剪贴板图片已被清理".into());
+            } else {
+                None
+            };
             // 选中即粘贴：焦点交还呼出前的窗口并注入 Ctrl+V，省掉手动一步
             let prev = take_prev_foreground(&app);
-            // 图片的点查全图 + PNG 解码不能占主线程消息泵，压后台线程；
-            // 文本回填走共用 paste_text_async（内部自起线程）
-            let engine = app.state::<AppState>().engine.clone();
-            let target = item.target.clone();
-            let is_img = item.kind == "clipimg";
             paste_started = prev.is_some();
             if prev.is_some() {
                 hide_panel_window(&app);
             }
-            if is_img {
+            if let Some(text) = clip_text {
+                // 文本回填走共用 paste_text_async（内部自起线程）
+                paste_text_async(text, prev);
+            } else {
+                // 图片的点查全图 + PNG 解码不能占主线程消息泵，压后台线程：
+                // DIBV5 直写毫秒级，注入前的等待才不会随图放大成秒级
                 std::thread::spawn(move || {
-                    // 图片=按行号点查全图并解码 RGBA 后回填。DIBV5 直写毫秒级，
-                    // 注入前的等待才不会随图放大成秒级
-                    if let Ok(rowid) = target.parse::<i64>()
-                        && let Some((w, h, png)) = engine.clip_image(rowid)
+                    if let Some((w, h, png)) = engine.clip_image(rowid)
                         && let Ok((_, _, rgba)) = providers::clipimage::decode_png(&png)
                     {
                         let _ = providers::clipboard::set_image_dib(w as usize, h as usize, &rgba);
@@ -1193,8 +1202,6 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
                         providers::winsys::paste_to_prev(hwnd);
                     }
                 });
-            } else {
-                paste_text_async(target, prev);
             }
             Ok(())
         }

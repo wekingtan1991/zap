@@ -16,14 +16,11 @@ export interface SearchItem {
 /// 会话兜底
 export const isPinned = (it: SearchItem) => it.pinned ?? it.title.startsWith("📌");
 
-/// 文本剪贴板条目的行号：寻址键在 id（clip:{rowid}），target 是内容本体——
-/// 按 target 取数是 NaN（合并粘贴首版踩过：target 取数 → NaN → 卫兵静默吞）。
-/// 仅对 kind="clip" 有意义，其余条目返回 NaN
+/// 剪贴板条目行号（文本 clip 与图片 clipimg 线协议统一）：target = 行号字符串，
+/// 内容/图片本体只在动作时按行号回查（回贴/预览/仅复制），不随列表过 IPC。
+/// id（clip:{rowid} / clipimg:{rowid}）仍是跨列表操作的寻址键。历史注记：
+/// 合并粘贴首版文本 clip 的 target 曾是内容本体、行号只在 id——按 target 取数
+/// 恒 NaN 静默吞掉勾选（当时以 id 提取修）；clipimg 一直是 target=行号，
+/// 两 kind 同构后助手合一
 export const clipRowId = (it: SearchItem): number =>
-  it.kind === "clip" ? Number(it.id.replace(/^clip:/, "")) : Number.NaN;
-
-/// 图片剪贴板条目的行号：与文本 clip 相反，行号在 target（回贴/预览按 target
-/// 寻址），id 是 clipimg:{rowid} 标识。两种 kind 寻址键不同是线协议事实，
-/// 各用各的助手取，别互相套
-export const clipImageRowId = (it: SearchItem): number =>
-  it.kind === "clipimg" ? Number(it.target) : Number.NaN;
+  it.kind === "clip" || it.kind === "clipimg" ? Number(it.target) : Number.NaN;
