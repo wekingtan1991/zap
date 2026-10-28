@@ -349,7 +349,8 @@ fn is_from_password_manager() -> bool {
     }
 }
 
-/// 搜索历史：Rust 侧统一打分（含拼音）。空查询返回最近条目（固定置顶，呼出即见常用）。
+/// 搜索历史：Rust 侧统一打分（含拼音）。空查询返回最近条目（固定置顶，呼出即见常用）；
+/// 文本查询下图片条目按 标题+副标题（含尺寸）参与打分同池竞争。
 /// 列表只吃前 256 字符（SQL 侧 substr）与换行数（SQL 侧现算）——全文不随列表过
 /// IPC（几 MB 的粘贴曾每次呼出/每击键整行拖回），回贴/仅复制按行号回查
 /// （open_item 与 secondary_action 的 clip 分支）
@@ -404,24 +405,43 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
     }
 
     let q = query.trim().to_lowercase();
-    let mut scored: Vec<(f32, i64, i64, i64, &String, i64)> = rows
+    // 打分池：文本行按 head 打分；图片条目按 标题+副标题 打分同池竞争——
+    // 标题含尺寸（「图片 1920×1080」），按尺寸/「图片」找图可以召回，
+    // 图片不再是空查询专属（先构造后排序：池内元素统一为现成条目）
+    let mut scored: Vec<(f32, i64, i64, SearchItem)> = rows
         .iter()
         .filter_map(|(id, t, pinned, head, nl)| {
-            super::score_lowered(head, &q).map(|s| (s, *id, *pinned, *t, head, *nl))
+            super::score_lowered(head, &q).map(|s| {
+                (
+                    s,
+                    *pinned,
+                    *t,
+                    build_item(*id, head, *nl, *t, now, 0, *pinned == 1),
+                )
+            })
         })
         .collect();
+    for (pinned, t, it) in super::clipimage::search_recent(conn, limit) {
+        let hay = format!("{} {}", it.title, it.subtitle);
+        if let Some(s) = super::score_lowered(&hay, &q) {
+            scored.push((s, pinned, t, it));
+        }
+    }
     // 同分档内固定优先，其次新的在前（与账号库口径一致）
     scored.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
             .unwrap()
+            .then(b.1.cmp(&a.1))
             .then(b.2.cmp(&a.2))
-            .then(b.3.cmp(&a.3))
     });
     scored.truncate(limit);
     scored
         .into_iter()
         .enumerate()
-        .map(|(i, (_, id, pinned, t, head, nl))| build_item(id, head, nl, t, now, i, pinned == 1))
+        .map(|(i, (_, _, _, mut it))| {
+            it.score = 60.0 - i as f32;
+            it
+        })
         .collect()
 }
 
@@ -595,6 +615,39 @@ mod tests {
         .expect("insert");
         conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
             .expect("rowid")
+    }
+
+    /// 直插图片表（跳过 PNG 编码：本测试只关心搜索召回，缩略图/全图用占位 BLOB）
+    fn insert_image(conn: &Connection, w: i64, h: i64, created_at: i64) {
+        conn.execute(
+            "INSERT INTO clipboard_images(sha256, width, height, size, data, thumb, created_at)
+             VALUES('testhash' || ?1 || ?2, ?1, ?2, 8, X'00', X'00', ?3)",
+            params![w, h, created_at],
+        )
+        .expect("insert image");
+    }
+
+    /// 图片条目参与文本搜索：标题含尺寸，按尺寸可召回；打分不中不混入
+    #[test]
+    fn 图片条目参与文本搜索() {
+        let conn = mem_db();
+        insert(&conn, "普通文本条目", now_ms());
+        insert_image(&conn, 1920, 1080, now_ms());
+        // 按尺寸召回
+        let items = search(&conn, "1920", 6);
+        assert!(
+            items
+                .iter()
+                .any(|i| i.kind == "clipimg" && i.title.contains("1920×1080")),
+            "按尺寸应召回图片：{:?}",
+            items.iter().map(|i| &i.title).collect::<Vec<_>>()
+        );
+        // 按尺寸宽高拆词也可召回（分词打分）
+        let items = search(&conn, "1080", 6);
+        assert!(items.iter().any(|i| i.kind == "clipimg"));
+        // 打分不中不混入
+        let items = search(&conn, "完全不匹配", 6);
+        assert!(items.iter().all(|i| i.kind != "clipimg"));
     }
 
     /// 图片入库队列 worker：投递任务 → channel 断开 → 归还连接后图片已在库。
