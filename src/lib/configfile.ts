@@ -28,6 +28,7 @@ export interface ConfigFilePayload {
     stageMax: number | null;
     stagedropEnabled: boolean | null;
     stagedropOpenPanel: boolean | null;
+    stagedropPosition: string | null;
     pwdClearSecs: number | null;
     autostart: boolean | null;
     everythingAutostart: boolean | null;
@@ -51,6 +52,7 @@ export interface SettingsSnapshot {
   stageMax: number;
   stagedropEnabled: boolean;
   stagedropOpenPanel: boolean;
+  stagedropPosition: string;
   pwdClearSecs: number;
   autostart: boolean;
   everythingAutostart: boolean;
@@ -65,6 +67,13 @@ export const CLIP_MAX_CHOICES = [100, 500, 1000, 5000];
 export const STAGE_MAX_CHOICES = [30, 50, 100, 200];
 export const PWD_CLEAR_CHOICES = [0, 30, 45, 60];
 const APPEARANCE_CHOICES = ["dark", "light", "system"];
+/// 落区条停靠角（后端 stagedrop::Corner 的线协议值）
+export const STAGEDROP_POSITION_CHOICES = [
+  "bottom_right",
+  "bottom_left",
+  "top_right",
+  "top_left",
+];
 
 /// 导入文件 → 设置表单合并：文件缺项/越界值保留当前值；插件开关只取现存 id
 /// （文件可能来自新/旧版本，插件清单以本机为准）；捷径整单替换（校验在保存时做）
@@ -84,6 +93,11 @@ export function mergeImportedConfig<T extends SettingsSnapshot>(
     APPEARANCE_CHOICES.includes(c.appearance)
       ? c.appearance
       : current.appearance;
+  const stagedropPosition =
+    typeof c?.stagedropPosition === "string" &&
+    STAGEDROP_POSITION_CHOICES.includes(c.stagedropPosition)
+      ? c.stagedropPosition
+      : current.stagedropPosition;
   return {
     ...current,
     hotkey: hotkey(c?.hotkey, current.hotkey),
@@ -97,6 +111,7 @@ export function mergeImportedConfig<T extends SettingsSnapshot>(
     stageMax: num(c?.stageMax, STAGE_MAX_CHOICES, current.stageMax),
     stagedropEnabled: bool(c?.stagedropEnabled, current.stagedropEnabled),
     stagedropOpenPanel: bool(c?.stagedropOpenPanel, current.stagedropOpenPanel),
+    stagedropPosition,
     pwdClearSecs: num(c?.pwdClearSecs, PWD_CLEAR_CHOICES, current.pwdClearSecs),
     autostart: bool(c?.autostart, current.autostart),
     everythingAutostart: bool(c?.everythingAutostart, current.everythingAutostart),

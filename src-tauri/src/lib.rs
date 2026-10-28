@@ -246,6 +246,8 @@ struct AppSettingsDto {
     stagedrop_enabled: bool,
     /// 拖入落区条松手后自动呼出中转站面板
     stagedrop_open_panel: bool,
+    /// 落区条停靠角（bottom_right/bottom_left/top_right/top_left）
+    stagedrop_position: String,
     pwd_clear_secs: i64,
     autostart: bool,
     everything_autostart: bool,
@@ -284,6 +286,7 @@ fn build_app_settings(
         stage_max: providers::stage::CAP.load(Ordering::Relaxed),
         stagedrop_enabled: providers::stagedrop::STAGEDROP_ENABLED.load(Ordering::Relaxed),
         stagedrop_open_panel: providers::stagedrop::STAGEDROP_OPEN_PANEL.load(Ordering::Relaxed),
+        stagedrop_position: providers::stagedrop::position_setting().to_string(),
         pwd_clear_secs: engine
             .get_setting(providers::appconfig::KEY_PWD_CLEAR_SECS)
             .and_then(|v| v.parse().ok())
@@ -359,6 +362,8 @@ fn save_settings(
     stagedrop_enabled: Option<bool>,
     // Option 容错：半新半旧的会话（前端未带上新键）保存时不再整单被拒
     stagedrop_open_panel: Option<bool>,
+    // Option 容错：半新半旧的会话（前端未带上新键）保存时不再整单被拒
+    stagedrop_position: Option<String>,
     pwd_clear_secs: i64,
     everything_autostart: bool,
     appearance: Option<String>,
@@ -529,6 +534,18 @@ fn save_settings(
             if on { "1" } else { "0" },
         )?;
     }
+    if let Some(pos) = stagedrop_position {
+        // 只收合法值（防前端脏数据把停靠角写坏；静默忽略同 appearance 口径）
+        if providers::stagedrop::Corner::parse(&pos).is_some() {
+            providers::stagedrop::set_position_setting(&pos);
+            state
+                .engine
+                .set_setting(providers::appconfig::KEY_STAGEDROP_POSITION, &pos)?;
+            // 改了就生效：条子正显示时按新角重排（动画方向由下轮会话起点
+            // 的 corner 推送自然跟上，无需在此发事件）
+            providers::stagedrop::relayout_if_shown(&app);
+        }
+    }
     if let Some(mode) = appearance {
         // 只收合法值（防前端脏数据把主题写坏）
         if matches!(mode.as_str(), "dark" | "light" | "system") {
@@ -589,6 +606,7 @@ fn config_settings_from(dto: &AppSettingsDto) -> providers::appconfig::ConfigSet
         stage_max: Some(dto.stage_max),
         stagedrop_enabled: Some(dto.stagedrop_enabled),
         stagedrop_open_panel: Some(dto.stagedrop_open_panel),
+        stagedrop_position: Some(dto.stagedrop_position.clone()),
         pwd_clear_secs: Some(dto.pwd_clear_secs),
         autostart: Some(dto.autostart),
         everything_autostart: Some(dto.everything_autostart),
@@ -1791,6 +1809,11 @@ pub fn run() {
                 .map(|v| v != "0")
                 .unwrap_or(providers::appconfig::DEFAULT_STAGEDROP_OPEN_PANEL);
             providers::stagedrop::STAGEDROP_OPEN_PANEL.store(stagedrop_open_on, Ordering::Relaxed);
+            let stagedrop_pos = engine
+                .get_setting(providers::appconfig::KEY_STAGEDROP_POSITION)
+                .unwrap_or_else(|| providers::appconfig::DEFAULT_STAGEDROP_POSITION.into());
+            // 非法存档值内部静默保持默认角（set_position_setting 自带校验）
+            providers::stagedrop::set_position_setting(&stagedrop_pos);
             providers::stagedrop::spawn(app.handle().clone());
             providers::stagedrop::register_drop_target(app.handle());
 
