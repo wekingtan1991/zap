@@ -85,6 +85,9 @@ fn hide_panel_window(app: &AppHandle) {
     app.state::<AppState>()
         .hold_panel
         .store(false, std::sync::atomic::Ordering::Relaxed);
+    // 面板已隐 = 中转站视图不复存在，落区条恢复常态（下轮拖拽会话出条）。
+    // 前端 view 状态在隐藏期间不重置，此清零与 set_stage_view 命令互补
+    providers::stagedrop::STAGE_VIEW_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
     let _ = app.emit("zap://hidden", ());
 }
 
@@ -97,6 +100,15 @@ fn hide_panel(app: AppHandle) {
 fn set_hold_panel(state: tauri::State<AppState>, hold: bool) {
     use std::sync::atomic::Ordering;
     state.hold_panel.store(hold, Ordering::Relaxed);
+}
+
+/// 前端同步中转站视图开合：视图展开期间右下角落区条不显示（视图内拖入
+/// 本身就是落点，角落条冗余且与面板叠放，用户拍板 2026-10-28）。视图打开时
+/// 条子若还在展示（上一轮 drop 的反馈驻留）立即收掉——放入结果由视图内的
+/// 列表刷新与处理反馈呈现
+#[tauri::command]
+fn set_stage_view(app: AppHandle, active: bool) {
+    providers::stagedrop::set_stage_view(&app, active);
 }
 
 // 除面板开关类轻量命令外，涉及 DB/DPAPI/剪贴板/HTTP 的命令一律 async +
@@ -1676,6 +1688,7 @@ pub fn run() {
             everything_ensure,
             everything_setup,
             set_hold_panel,
+            set_stage_view,
             vault_search,
             vault_add,
             vault_action,
