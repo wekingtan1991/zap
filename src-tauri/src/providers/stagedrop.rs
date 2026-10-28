@@ -96,6 +96,13 @@ static STATE: Mutex<DropState> = Mutex::new(DropState {
     generation: 0,
 });
 
+/// OLE 悬停镜像（DragEnter 带文件置真、DragLeave/Drop 复位；OLE 回调在主线程
+/// 无竞争）。轮询线程会话起点据此分流布局——悬停中说明 DragEnter 已把窗口
+/// 展开成大卡片并置前端 hot，Start 若照旧收条布局，窗口缩回细条而前端 hot
+/// 仍真 =「细条上溢出大图标、标题被裁」的错乱态（真机 2026-10-28：上一轮
+/// 反馈驻留期内立刻再拖、光标已在条矩形内时 DragEnter 先于本轮 Start 命中）
+static HOVERING: AtomicBool = AtomicBool::new(false);
+
 /// drop 事件触达即进入处理态：条子保持展示并换处理文案，返回会话代际
 /// （stage_add 完成回调凭代际写入，期间已开新会话则结果作废）
 pub fn begin_processing() -> u64 {
@@ -235,16 +242,23 @@ pub fn spawn(app: AppHandle) {
 
             match decide(&st, dragging, now) {
                 Poll::Start => {
-                    // 新会话：代际递增作废旧反馈、按当前光标重新定位（细条态）。
-                    // 只由图像可见性触发——左键按住（框选/普通点击）不得误开
+                    // 新会话：代际递增作废旧反馈、按当前光标重新定位。只由图像
+                    // 可见性触发——左键按住（框选/普通点击）不得误开。
+                    // 布局与 hot 双双依悬停镜像分流：悬停中保留 DragEnter 的
+                    // 展开布局并重申 hot=true（幂等），非悬停才走细条并清 hot
+                    // （顺带兜底任何失联的旧高亮，同 hide 的兜底语义）
+                    let hovering = HOVERING.load(Ordering::Relaxed);
                     st.session_active = true;
                     st.generation += 1;
                     st.feedback = None;
                     st.gone_since = None;
                     drop(st);
-                    layout_bar(&app, false);
+                    layout_bar(&app, hovering);
                     show(&app);
-                    super::diag::log("stagedrop: drag session start");
+                    let _ = app.emit_to("stagedrop", "zap://stagedrop-hot", hovering);
+                    super::diag::log(&format!(
+                        "stagedrop: drag session start hovering={hovering}"
+                    ));
                     // payload 分流：前端只对 start 重挂重播入场动画——
                     // stale 若也重挂，长拖拽中反馈到期会把滑入动画重播在拖拽中途
                     let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", "start");
@@ -372,8 +386,16 @@ fn layout_bar(app: &AppHandle, expanded: bool) {
     }
     // 尺寸与位置同用光标显示器 scale 的物理值（评审 P2-a：自定义缩放下
     // Logical 换算与位置公式取整路径不同会差 1px，物理值严格对齐）
-    let _ = win.set_size(tauri::PhysicalSize::new(w, h));
-    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    // 诊断：展开失效排查（2026-10-28 真机 hot 内容出现但窗口不放大，两条
+    // 结果此前被 let _ = 吞掉不可见）；DragEnter 级低频调用，日志量有界
+    let r_size = win.set_size(tauri::PhysicalSize::new(w, h));
+    let r_pos = win.set_position(tauri::PhysicalPosition::new(x, y));
+    super::diag::log(&format!(
+        "stagedrop: layout expanded={expanded} {w}x{h}@{x},{y} scale={scale} \
+         size_ok={} pos_ok={}",
+        r_size.is_ok(),
+        r_pos.is_ok()
+    ));
 }
 
 #[cfg(not(windows))]
@@ -594,6 +616,9 @@ impl windows::Win32::System::Ole::IDropTarget_Impl for StageDropTarget_Impl {
         }
         let has = !paths.is_empty();
         self.has_files.store(has, Ordering::Relaxed);
+        HOVERING.store(has, Ordering::Relaxed);
+        // 诊断：展开失效排查——hot 内容出现即证明本回调在跑，这里钉住 has
+        super::diag::log(&format!("stagedrop: drag enter has={has}"));
         unsafe {
             *pdwEffect = if has {
                 windows::Win32::System::Ole::DROPEFFECT_COPY
@@ -627,6 +652,8 @@ impl windows::Win32::System::Ole::IDropTarget_Impl for StageDropTarget_Impl {
 
     fn DragLeave(&self) -> windows::core::Result<()> {
         self.has_files.store(false, Ordering::Relaxed);
+        HOVERING.store(false, Ordering::Relaxed);
+        super::diag::log("stagedrop: drag leave");
         layout_bar(&self.app, false);
         let _ = self.app.emit_to("stagedrop", "zap://stagedrop-hot", false);
         Ok(())
@@ -640,6 +667,7 @@ impl windows::Win32::System::Ole::IDropTarget_Impl for StageDropTarget_Impl {
         pdwEffect: *mut windows::Win32::System::Ole::DROPEFFECT,
     ) -> windows::core::Result<()> {
         self.has_files.store(false, Ordering::Relaxed);
+        HOVERING.store(false, Ordering::Relaxed);
         // 收回细条再入库：反馈文案显示在细条里
         layout_bar(&self.app, false);
         let _ = self.app.emit_to("stagedrop", "zap://stagedrop-hot", false);
@@ -647,6 +675,7 @@ impl windows::Win32::System::Ole::IDropTarget_Impl for StageDropTarget_Impl {
         if let Some(hdrop) = hdrop {
             unsafe { windows::Win32::UI::Shell::DragFinish(hdrop) };
         }
+        super::diag::log(&format!("stagedrop: drop paths={}", paths.len()));
         unsafe {
             *pdwEffect = windows::Win32::System::Ole::DROPEFFECT_COPY;
         }
