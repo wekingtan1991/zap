@@ -142,7 +142,25 @@ pub fn store(conn: &Connection, rgba: &[u8], width: u32, height: u32) -> Option<
          )",
         params![super::clipboard::RETENTION_LIMIT.load(Ordering::Relaxed)],
     );
+    evict_over_budget(conn, super::clipboard::IMAGE_BUDGET_BYTES);
     Some((rowid, width, height))
+}
+
+/// 未固定图片总字节预算淘汰（评审 P1-08）：500 条×16MB 理论上限 8GB 且无
+/// VACUUM 永不回落。按「新→旧」累计 size，超出预算的旧行删除——窗口函数
+/// 累计求和，保留部分 ≦ budget。固定条目不在统计也不在删除范围（固定豁免
+/// 同条数淘汰口径；用户固定的大图尊重用户意图）。返回删除行数
+fn evict_over_budget(conn: &Connection, budget: i64) -> usize {
+    conn.execute(
+        "DELETE FROM clipboard_images WHERE pinned=0 AND id IN (
+             SELECT id FROM (
+                 SELECT id, SUM(size) OVER (ORDER BY created_at DESC, id DESC) AS running
+                 FROM clipboard_images WHERE pinned=0
+             ) WHERE running > ?1
+         )",
+        params![budget],
+    )
+    .unwrap_or(0)
 }
 
 /// 图片条目：id = "clipimg:{rowid}"，icon = 缩略图 data URL（列表直接渲染）。
@@ -474,5 +492,52 @@ mod tests {
         )
         .unwrap();
         assert!(get(&conn, keep).is_some(), "固定图片不被清理");
+    }
+
+    /// 未固定总字节预算淘汰（评审 P1-08）：新→旧累计超预算的旧行删除，
+    /// 固定条目豁免且不计入预算
+    #[test]
+    fn 字节预算淘汰固定豁免() {
+        let conn = mem_conn();
+        // 三张图，created_at 递增（A 最旧 C 最新），size 由 store 按编码实长记
+        let (a, _, _) = store(&conn, &sample(4, 2), 4, 2).expect("入库");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let (b, _, _) = {
+            let mut s = sample(4, 2);
+            s[0] = 1;
+            store(&conn, &s, 4, 2).expect("入库")
+        };
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let (c, _, _) = {
+            let mut s = sample(4, 2);
+            s[0] = 2;
+            store(&conn, &s, 4, 2).expect("入库")
+        };
+        let size_a: i64 = conn
+            .query_row("SELECT size FROM clipboard_images WHERE id=?1", [a], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // 预算 = A+B 的总大小：C 最旧方向超限 → A 删，B/C 存活
+        let (sb, sc): (i64, i64) = (
+            conn.query_row("SELECT size FROM clipboard_images WHERE id=?1", [b], |r| {
+                r.get(0)
+            })
+            .unwrap(),
+            conn.query_row("SELECT size FROM clipboard_images WHERE id=?1", [c], |r| {
+                r.get(0)
+            })
+            .unwrap(),
+        );
+        let removed = evict_over_budget(&conn, size_a + sb + sc - 1);
+        assert_eq!(removed, 1, "只删最旧的超额一张");
+        assert!(get(&conn, a).is_none(), "最旧的 A 被预算淘汰");
+        assert!(get(&conn, b).is_some() && get(&conn, c).is_some());
+        // 固定豁免：固定 B 后再压预算，B 存活（不在统计也不在删除范围）
+        super::super::clipboard::pin_toggle(&conn, b).unwrap();
+        let removed = evict_over_budget(&conn, sc);
+        assert_eq!(removed, 0, "只剩固定+最新一条，无未固定超额");
+        assert!(get(&conn, b).is_some(), "固定图片预算豁免");
+        assert!(get(&conn, c).is_some());
     }
 }

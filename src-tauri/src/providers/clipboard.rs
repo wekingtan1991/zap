@@ -216,6 +216,21 @@ pub static PASTE_TO_PREV: AtomicBool = AtomicBool::new(true);
 /// 历史保留条数（设置可调）
 pub static RETENTION_LIMIT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(500);
 
+/// 单条文本入库硬上限（评审 P1-08）：一次超长粘贴（如整本书）会以单条
+/// 抬升数 GB 库体积，且锁内 String 拷贝转嫁为主线程排队。超限拒收（诊断
+/// 留痕），剪贴板本体不受影响——粘贴功能与历史收录解耦
+pub const MAX_CLIP_TEXT_BYTES: usize = 1_000_000;
+
+/// 未固定图片总字节预算（评审 P1-08）：500 条×16MB 理论上限 8GB 不设防，
+/// 256MB 预算外从最旧删起。条数上限仍由 RETENTION_LIMIT 把守（双阈值）
+pub const IMAGE_BUDGET_BYTES: i64 = 256 * 1024 * 1024;
+
+/// 入库判定（纯函数）：空文本与超限文本不进历史。来源过滤（密码管理器/
+/// vault 密码集）在调用方（各自依赖系统 API 与连接）
+fn should_store(text: &str) -> bool {
+    !text.is_empty() && text.len() <= MAX_CLIP_TEXT_BYTES
+}
+
 /// 已知密码管理器的进程名标记：来源命中的复制不落盘（第一道隐私防线）
 const PASSWORD_MARKERS: [&str; 8] = [
     "keepass",
@@ -234,9 +249,12 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
         // busy_timeout 显式化（评审 P1-07）：rusqlite 默认已是 5000ms，但那是
         // 隐式依赖——显式设 1500ms 把「写-写冲突时最多等 1.5s」变成明文契约，
         // 宁可主线程命令快败重试，不让同步命令被 16MB 大图事务拖满 5 秒。
-        // 放在 journal_mode 之前，让 WAL 设置本身也受保护
+        // 放在 journal_mode 之前，让 WAL 设置本身也受保护。
+        // synchronous=NORMAL 是 WAL 模式推荐值（评审 P1-08）：fsync 只在
+        // checkpoint 时发生，断电最多丢最后事务、库不损坏
         "PRAGMA busy_timeout=1500;
          PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
          CREATE TABLE IF NOT EXISTS clipboard_history (
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              content TEXT NOT NULL UNIQUE,
@@ -251,7 +269,7 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
 }
 
 /// 当前 schema 版本：每次破坏性/加列演进 +1，对应 migrate 里的 `v < N` 步骤
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// schema 迁移器（评审 P1-14）：PRAGMA user_version 单向递增，BEGIN IMMEDIATE
 /// 内重读版本 → 按 `v < N` 逐步执行 → 写回 → commit。三个连接（engine/监听/
@@ -270,6 +288,20 @@ fn migrate(conn: &Connection) -> Result<(), String> {
             let _ = conn.execute_batch(
                 "ALTER TABLE clipboard_history ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
             );
+        }
+        if v < 2 {
+            // 步骤 2（v1→v2，评审 P1-08）：head/nl_count 物化列。搜索评分的
+            // substr 与换行数原来每击键对 top-300 全文现算（replace 全文扫描，
+            // 把 clip 锁持有时长转嫁为主线程排队）；入库时写一次、读取改读列。
+            // 回填对存量数据一次完成
+            conn.execute_batch(
+                "ALTER TABLE clipboard_history ADD COLUMN head TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE clipboard_history ADD COLUMN nl_count INTEGER NOT NULL DEFAULT 0;
+                 UPDATE clipboard_history SET
+                     head = substr(content, 1, 256),
+                     nl_count = length(content) - length(replace(content, char(10), ''));",
+            )
+            .map_err(|e| format!("物化列迁移失败: {e}"))?;
         }
         conn.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION}"))
             .map_err(|e| e.to_string())?;
@@ -429,10 +461,25 @@ pub fn spawn_watcher(db_path: PathBuf) {
                             );
                             return CallbackResult::Next;
                         }
+                        // 单条硬上限（评审 P1-08）：超长粘贴拒收录（诊断留痕），
+                        // 粘贴功能本身不受影响
+                        if !should_store(&text) {
+                            if !text.is_empty() {
+                                super::diag::log_warn(&format!(
+                                    "clip\t超长文本拒收录\t{} 字节",
+                                    text.len()
+                                ));
+                            }
+                            return CallbackResult::Next;
+                        }
                         if !text.is_empty() && !is_from_password_manager() {
                             let now = now_ms();
+                            // head/nl_count 物化在写路径（评审 P1-08）：SQL 侧
+                            // 一次算好，读取路径不再对全文现算
                             let _ = self.conn.execute(
-                                "INSERT INTO clipboard_history(content, created_at) VALUES(?1, ?2)
+                                "INSERT INTO clipboard_history(content, created_at, head, nl_count)
+                                 VALUES(?1, ?2, substr(?1, 1, 256),
+                                        length(?1) - length(replace(?1, char(10), '')))
                                  ON CONFLICT(content) DO UPDATE SET created_at=excluded.created_at",
                                 params![text, now],
                             );
@@ -514,9 +561,10 @@ fn is_from_password_manager() -> bool {
 /// （open_item 与 secondary_action 的 clip 分支）
 pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
     let now = now_ms();
+    // head/nl_count 读物化列（评审 P1-08）：旧实现每击键对 top-300 全文跑
+    // substr+replace 现算，把锁持有时长转嫁为主线程排队
     let Ok(mut stmt) = conn.prepare(
-        "SELECT id, created_at, pinned, substr(content, 1, 256),
-                length(content) - length(replace(content, char(10), ''))
+        "SELECT id, created_at, pinned, head, nl_count
          FROM clipboard_history
          ORDER BY pinned DESC, created_at DESC LIMIT 300",
     ) else {
@@ -812,20 +860,30 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 1, "版本写回");
+        assert_eq!(v, SCHEMA_VERSION, "版本写回");
         let pinned: i64 = conn
             .query_row("SELECT pinned FROM clipboard_history WHERE id=1", [], |r| {
                 r.get(0)
             })
             .unwrap();
         assert_eq!(pinned, 0, "旧数据默认未固定");
+        // 物化列回填（评审 P1-08）：存量数据的 head/nl_count 一次算好
+        let (head, nl): (String, i64) = conn
+            .query_row(
+                "SELECT head, nl_count FROM clipboard_history WHERE id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(head, "旧数据");
+        assert_eq!(nl, 0);
         drop(conn);
         // 幂等：重开不再执行步骤、不炸
         let conn2 = open_db_resilient(&db).expect("重开幂等");
         let v2: i64 = conn2
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v2, 1);
+        assert_eq!(v2, SCHEMA_VERSION);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -858,7 +916,9 @@ mod tests {
 
     fn insert(conn: &Connection, content: &str, created_at: i64) -> i64 {
         conn.execute(
-            "INSERT INTO clipboard_history(content, created_at) VALUES(?1, ?2)",
+            // 与监听线程写路径同款：head/nl_count 物化（评审 P1-08）
+            "INSERT INTO clipboard_history(content, created_at, head, nl_count)
+             VALUES(?1, ?2, substr(?1, 1, 256), length(?1) - length(replace(?1, char(10), '')))",
             params![content, created_at],
         )
         .expect("insert");
@@ -960,7 +1020,8 @@ mod tests {
         insert(&conn, "新内容", 2000);
         // 模拟监听线程的 upsert：重抄「旧内容」只更新时间，行号不变
         conn.execute(
-            "INSERT INTO clipboard_history(content, created_at) VALUES(?1, ?2)
+            "INSERT INTO clipboard_history(content, created_at, head, nl_count)
+             VALUES(?1, ?2, substr(?1, 1, 256), length(?1) - length(replace(?1, char(10), '')))
              ON CONFLICT(content) DO UPDATE SET created_at=excluded.created_at",
             params!["旧内容", 3000],
         )

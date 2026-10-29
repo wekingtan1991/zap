@@ -332,6 +332,13 @@ impl SearchEngine {
         Ok(n1 + n2)
     }
 
+    /// 退出前 WAL checkpoint（TRUNCATE）：把 -wal 文件收缩回主库（评审 P1-08）。
+    /// busy 连接（另一连接还在写）时静默放弃——下次退出再收
+    pub fn wal_checkpoint(&self) {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+    }
+
     /// 按给定顺序取多条剪贴板全文（合并粘贴用）：个别行号已被清理则跳过，
     /// 返回按入参顺序的存留文本。锁内纯库操作
     pub fn clip_texts(&self, ids: &[i64]) -> Vec<String> {

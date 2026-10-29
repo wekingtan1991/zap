@@ -499,6 +499,10 @@ fn save_settings(
     // 同步命令的主线程窗口。写库失败时内存态与存档短暂分叉（重启归一），
     // 与原实现的中途部分写同等级
     providers::clipboard::CLIP_ENABLED.store(clip_enabled, Ordering::Relaxed);
+    // 后端 clamp（评审 P1-08）：防前端脏数据把保留条数写成 0/负数（等于每次
+    // 复制都清空历史）或天文数字（淘汰永不生效）。前端选择集 100–5000 之外的
+    // 值在此收口
+    let clip_max = clip_max.clamp(10, 5000);
     providers::clipboard::RETENTION_LIMIT.store(clip_max, Ordering::Relaxed);
     if let Some(on) = clip_autopaste {
         providers::clipboard::PASTE_TO_PREV.store(on, Ordering::Relaxed);
@@ -2147,6 +2151,14 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // 退出前 WAL checkpoint（评审 P1-08）：TRUNCATE 把 -wal 收缩回主库，
+            // 库文件不会随长期运行无界增长；同步命令快速、失败静默（退出路径
+            // 不因诊断动作失败而卡住）
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<AppState>().engine.wal_checkpoint();
+            }
+        });
 }
