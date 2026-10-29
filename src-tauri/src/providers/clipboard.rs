@@ -243,12 +243,45 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
              created_at INTEGER NOT NULL
          );",
     )?;
-    // 旧库迁移：补 pinned 列（已存在时报错可忽略）
-    let _ = conn.execute_batch(
-        "ALTER TABLE clipboard_history ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
-    );
     super::clipimage::init_table(&conn);
+    if let Err(e) = migrate(&conn) {
+        super::diag::log_err(&format!("db\tschema 迁移失败: {e}"));
+    }
     Ok(conn)
+}
+
+/// 当前 schema 版本：每次破坏性/加列演进 +1，对应 migrate 里的 `v < N` 步骤
+const SCHEMA_VERSION: i64 = 1;
+
+/// schema 迁移器（评审 P1-14）：PRAGMA user_version 单向递增，BEGIN IMMEDIATE
+/// 内重读版本 → 按 `v < N` 逐步执行 → 写回 → commit。三个连接（engine/监听/
+/// 图片 worker）并发调用天然幂等——后到者在事务内看到已升级的版本号直接
+/// 跳过。旧版「吞错 ALTER」收编为步骤 1：新库建表已走同款 ALTER（列已存在
+/// 时该语句失败但事务内语句失败只回滚自身，版本照常写回）
+fn migrate(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| e.to_string())?;
+    let result = (|| -> Result<(), String> {
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if v < 1 {
+            // 步骤 1（v0→v1）：历史行固定标记列。已存在时失败可忽略（同旧版语义）
+            let _ = conn.execute_batch(
+                "ALTER TABLE clipboard_history ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+            );
+        }
+        conn.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION}"))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(|e| e.to_string()),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
 
 /// 带损坏自愈的打开（评审 P0-1②）：open 成功还要过 quick_check——页头有效
@@ -753,6 +786,46 @@ mod tests {
             kept, b"this is definitely not a sqlite database",
             "现场字节原样"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 迁移器补列幂等() {
+        let dir = std::env::temp_dir().join(format!("zap-migtest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("zap.db");
+        // 造 v0 旧库：无 pinned 列、user_version=0、有存量数据
+        {
+            let raw = rusqlite::Connection::open(&db).unwrap();
+            raw.execute_batch(
+                "CREATE TABLE clipboard_history (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     content TEXT NOT NULL UNIQUE,
+                     created_at INTEGER NOT NULL);
+                 INSERT INTO clipboard_history(content, created_at) VALUES('旧数据', 1);
+                 PRAGMA user_version=0;",
+            )
+            .unwrap();
+        }
+        // open_db_resilient 过迁移：pinned 补上、版本写回、旧数据保留
+        let conn = open_db_resilient(&db).expect("v0 旧库应平滑迁移");
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 1, "版本写回");
+        let pinned: i64 = conn
+            .query_row("SELECT pinned FROM clipboard_history WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(pinned, 0, "旧数据默认未固定");
+        drop(conn);
+        // 幂等：重开不再执行步骤、不炸
+        let conn2 = open_db_resilient(&db).expect("重开幂等");
+        let v2: i64 = conn2
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v2, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
