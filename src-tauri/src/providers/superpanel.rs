@@ -33,6 +33,45 @@ pub struct SuperActionsPayload {
 pub static LAST_PAYLOAD: std::sync::Mutex<Option<SuperActionsPayload>> =
     std::sync::Mutex::new(None);
 
+/// 抓取结束后的处置（纯函数，真值表单测锁定）：seq 未变 = Ctrl+C 没有生效、
+/// 剪贴板未被改动，静默放弃且无需恢复；seq 变了 = 用户原剪贴板已被抓取结果
+/// 覆盖，**所有出口都必须恢复现场**——包括复制到的不是文本（文件选区）与
+/// 空文本两个旧实现直接 return 漏恢复的分支
+enum CaptureOutcome {
+    /// 显示动作菜单（text 已 trim 非空）
+    Show(String),
+    /// 只恢复现场，不显示
+    RestoreOnly,
+    /// 剪贴板未被改动，什么都不做
+    Noop,
+}
+
+fn capture_outcome(seq_changed: bool, captured: Option<String>) -> CaptureOutcome {
+    if !seq_changed {
+        return CaptureOutcome::Noop;
+    }
+    match captured {
+        Some(t) if !t.trim().is_empty() => CaptureOutcome::Show(t.trim().to_string()),
+        // 复制到非文本（arboard get_text 失败）或空文本：现场已覆盖，仍要恢复
+        _ => CaptureOutcome::RestoreOnly,
+    }
+}
+
+/// 恢复抓取前的剪贴板现场。文本走 set_text + retrying（剪贴板被占用可瞬时
+/// 失败）；图片走 set_image_dib 直写——arboard set_image 要先编码整张 PNG，
+/// 大图秒级（ccf7ac7 实测 39MB 5.8s），恢复路径同样不能踩
+fn restore_clipboard(orig_text: Option<String>, orig_img: Option<arboard::ImageData>) {
+    if let Some(t) = orig_text {
+        let _ = super::clipboard::retrying(move || {
+            let t = t.clone();
+            arboard::Clipboard::new().and_then(|mut cb| cb.set_text(t))
+        });
+    } else if let Some(img) = orig_img {
+        // arboard ImageData 的 width/height 本就是 usize，直接传
+        let _ = super::clipboard::set_image_dib(img.width, img.height, &img.bytes);
+    }
+}
+
 /// 前端拉取当前菜单内容
 pub fn current_payload() -> Option<SuperActionsPayload> {
     LAST_PAYLOAD.lock().expect("super payload poisoned").clone()
@@ -49,6 +88,8 @@ pub fn trigger_from_hotkey(app: &AppHandle) {
     {
         return;
     }
+    #[cfg(windows)]
+    let t0 = Instant::now();
     #[cfg(windows)]
     {
         let Some((x, y)) = cursor_pos() else {
@@ -77,38 +118,29 @@ pub fn trigger_from_hotkey(app: &AppHandle) {
                 break;
             }
             if Instant::now() >= deadline {
-                return; // 无选中内容/应用拦了 Ctrl+C：静默放弃
+                return; // 无选中内容/应用拦了 Ctrl+C：seq 未变剪贴板未动，静默放弃
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let Some(text) = arboard::Clipboard::new()
+        let seq_changed = unsafe { GetClipboardSequenceNumber() } != seq0;
+        let captured = arboard::Clipboard::new()
             .and_then(|mut cb| cb.get_text())
-            .ok()
-        else {
-            return; // 复制到的不是文本（文件选区等）：v1 静默
-        };
-        // 立即恢复现场：用户剪贴板不因抓取而改变
-        if let Some(t) = orig_text {
-            let _ = super::clipboard::retrying(|| {
-                let t = t.clone();
-                arboard::Clipboard::new().and_then(|mut cb| cb.set_text(t))
-            });
-        } else if let Some(img) = orig_img {
-            let _ = super::clipboard::retrying(|| {
-                let img = img.clone();
-                arboard::Clipboard::new().and_then(|mut cb| {
-                    cb.set_image(arboard::ImageData {
-                        width: img.width,
-                        height: img.height,
-                        bytes: std::borrow::Cow::Owned(img.bytes.to_vec()),
-                    })
-                })
-            });
+            .ok();
+        // 处置按真值表分流：恢复现场是所有「seq 变了」出口的必经步骤，
+        // 旧的散装实现漏掉了非文本与空文本两个出口（capture_outcome 锁契约）
+        match capture_outcome(seq_changed, captured) {
+            CaptureOutcome::Noop => {}
+            CaptureOutcome::RestoreOnly => restore_clipboard(orig_text, orig_img),
+            CaptureOutcome::Show(text) => {
+                restore_clipboard(orig_text, orig_img);
+                super::diag::log(&format!(
+                    "super\t抓取+识别耗时\t{}ms\t文本 {} 字符",
+                    t0.elapsed().as_millis(),
+                    text.chars().count()
+                ));
+                show_panel(app, x, y, text);
+            }
         }
-        if text.trim().is_empty() {
-            return;
-        }
-        show_panel(app, x, y, text.trim().to_string());
     }
     #[cfg(not(windows))]
     let _ = app;
@@ -158,12 +190,19 @@ fn inject_ctrl_c() {
     }
 }
 
+/// 超级面板输入卫兵：MB 级选文全文 serde_json 解析可把动作生成卡住数百毫秒
+/// （热键后台线程，但恢复现场在此之后——恢复越晚用户剪贴板错位越久）。
+/// 直接复用 jsontools 的 256KB 上限，同链路口径一致
+use super::jsontools::MAX_ANALYZE_BYTES as MAX_INPUT_BYTES;
+
 /// 按内容识别生成动作：特定识别在前（带答案），通用动作兜底，上限 5 条
 pub fn build_actions(text: &str) -> Vec<SuperAction> {
     let t = text.trim();
     let mut actions: Vec<SuperAction> = Vec::new();
-    // 文本工具识别（停用时 convert_all 报错 → 跳过特定动作）
-    if let Ok(bundle) = super::texttools::convert_all(t) {
+    // 文本工具识别（停用时 convert_all 报错 → 跳过特定动作）；超卫兵跳过
+    if t.len() <= MAX_INPUT_BYTES
+        && let Ok(bundle) = super::texttools::convert_all(t)
+    {
         if let Some(answer) = bundle.ts_to_date {
             actions.push(SuperAction {
                 id: "ts_answer".into(),
@@ -183,7 +222,7 @@ pub fn build_actions(text: &str) -> Vec<SuperAction> {
             });
         }
     }
-    if serde_json::from_str::<serde_json::Value>(t).is_ok() {
+    if t.len() <= MAX_INPUT_BYTES && serde_json::from_str::<serde_json::Value>(t).is_ok() {
         actions.push(SuperAction {
             id: "json_pretty".into(),
             label: "格式化 JSON 并复制".into(),
@@ -297,5 +336,39 @@ pub fn run_action(app: &AppHandle, action: &str, text: &str) -> Result<(), Strin
 pub fn superpanel_hide(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("superpanel") {
         let _ = win.hide();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 抓取处置真值表() {
+        use CaptureOutcome::*;
+        // seq 未变：无论抓没抓到，剪贴板都没被动过——静默放弃且不恢复
+        assert!(matches!(capture_outcome(false, None), Noop));
+        assert!(matches!(capture_outcome(false, Some("x".into())), Noop));
+        // seq 变 + 抓到非空文本：显示（trim 后）
+        assert!(matches!(capture_outcome(true, Some("  hi \n".into())), Show(t) if t == "hi"));
+        // seq 变 + 抓到空文本：现场已被覆盖，只恢复不显示（旧实现漏恢复）
+        assert!(matches!(
+            capture_outcome(true, Some("   ".into())),
+            RestoreOnly
+        ));
+        // seq 变 + 非文本（get_text 失败）：文件选区场景，仍要恢复（旧实现漏恢复）
+        assert!(matches!(capture_outcome(true, None), RestoreOnly));
+    }
+
+    #[test]
+    fn 超卫兵内容不产生json与换算动作() {
+        let big = format!("\"{}\"", "x".repeat(MAX_INPUT_BYTES + 1));
+        let actions = build_actions(&big);
+        assert!(
+            !actions.iter().any(|a| a.id.starts_with("json_")),
+            "超卫兵不跑 JSON 全文解析"
+        );
+        // 普通动作仍在（兜底不被裁掉）
+        assert!(actions.iter().any(|a| a.id == "copy"));
     }
 }
