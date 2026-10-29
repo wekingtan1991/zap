@@ -202,7 +202,12 @@ const PASSWORD_MARKERS: [&str; 8] = [
 pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
+        // busy_timeout 显式化（评审 P1-07）：rusqlite 默认已是 5000ms，但那是
+        // 隐式依赖——显式设 1500ms 把「写-写冲突时最多等 1.5s」变成明文契约，
+        // 宁可主线程命令快败重试，不让同步命令被 16MB 大图事务拖满 5 秒。
+        // 放在 journal_mode 之前，让 WAL 设置本身也受保护
+        "PRAGMA busy_timeout=1500;
+         PRAGMA journal_mode=WAL;
          CREATE TABLE IF NOT EXISTS clipboard_history (
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              content TEXT NOT NULL UNIQUE,

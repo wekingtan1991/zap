@@ -265,6 +265,23 @@ impl SearchEngine {
         appconfig::set(&conn, key, value)
     }
 
+    /// 批量写设置：单锁单事务（save_settings 等多处连写场景）。逐条 autocommit
+    /// 的 WAL fsync 累积会拉长同步命令的主线程窗口（评审 P1-07）；失败整批
+    /// 回滚，原子量动作由调用方在写库前原位完成（失败时内存态与存档短暂
+    /// 分叉，重启即归一——与原实现的中途部分写同等级）
+    pub fn set_many(&self, kvs: &[(&str, String)]) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        for (k, v) in kvs {
+            if let Err(e) = appconfig::set(&conn, k, v) {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())
+    }
+
     pub fn vault_search(&self, query: &str) -> Vec<SearchItem> {
         let conn = self.clip.lock().expect("clip db poisoned");
         vault::search(&conn, query)
@@ -274,6 +291,16 @@ impl SearchEngine {
     pub fn clip_row(&self, id: i64) -> Option<String> {
         let conn = self.clip.lock().expect("clip db poisoned");
         clipboard::get_by_id(&conn, id)
+    }
+
+    /// 行号存在性探查（open_item 两段式第一段，评审 P1-07）：毫秒级 PK 点查
+    /// 保「已被清理」即时报错语义；全文回查留给粘贴的后台线程
+    pub fn clip_row_exists(&self, id: i64) -> bool {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        conn.query_row("SELECT 1 FROM clipboard_history WHERE id=?1", [id], |_| {
+            Ok(())
+        })
+        .is_ok()
     }
 
     /// 按给定顺序取多条剪贴板全文（合并粘贴用）：个别行号已被清理则跳过，

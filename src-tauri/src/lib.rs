@@ -494,21 +494,27 @@ fn save_settings(
         }
     }
 
+    // 原子量与派生动作先原位完成（改了就生效）；存档键全部收集后走 set_many
+    // 单锁单事务一次落库（评审 P1-07）——逐条 autocommit 的 fsync 累积会拉长
+    // 同步命令的主线程窗口。写库失败时内存态与存档短暂分叉（重启归一），
+    // 与原实现的中途部分写同等级
     providers::clipboard::CLIP_ENABLED.store(clip_enabled, Ordering::Relaxed);
     providers::clipboard::RETENTION_LIMIT.store(clip_max, Ordering::Relaxed);
-    state.engine.set_setting(
-        providers::appconfig::KEY_CLIP_ENABLED,
-        if clip_enabled { "1" } else { "0" },
-    )?;
-    state
-        .engine
-        .set_setting(providers::appconfig::KEY_CLIP_MAX, &clip_max.to_string())?;
     if let Some(on) = clip_autopaste {
         providers::clipboard::PASTE_TO_PREV.store(on, Ordering::Relaxed);
-        state.engine.set_setting(
+    }
+    let mut kvs: Vec<(&'static str, String)> = vec![
+        (
+            providers::appconfig::KEY_CLIP_ENABLED,
+            if clip_enabled { "1" } else { "0" }.into(),
+        ),
+        (providers::appconfig::KEY_CLIP_MAX, clip_max.to_string()),
+    ];
+    if let Some(on) = clip_autopaste {
+        kvs.push((
             providers::appconfig::KEY_CLIP_AUTOPASTE,
-            if on { "1" } else { "0" },
-        )?;
+            if on { "1" } else { "0" }.into(),
+        ));
     }
     if let Some(cap) = stage_max {
         let cap = cap.clamp(10, 500);
@@ -516,52 +522,47 @@ fn save_settings(
         // 调小立即收敛已有超容条目：等下次放入才收敛不符合「改了就生效」直觉
         // （调大无需动作，多出的空间天然可用）
         state.engine.stage_enforce_cap();
-        state
-            .engine
-            .set_setting(providers::appconfig::KEY_STAGE_CAP, &cap.to_string())?;
+        kvs.push((providers::appconfig::KEY_STAGE_CAP, cap.to_string()));
     }
     if let Some(on) = stagedrop_enabled {
         providers::stagedrop::STAGEDROP_ENABLED.store(on, Ordering::Relaxed);
-        state.engine.set_setting(
+        kvs.push((
             providers::appconfig::KEY_STAGEDROP_ENABLED,
-            if on { "1" } else { "0" },
-        )?;
+            if on { "1" } else { "0" }.into(),
+        ));
     }
     if let Some(on) = stagedrop_open_panel {
         providers::stagedrop::STAGEDROP_OPEN_PANEL.store(on, Ordering::Relaxed);
-        state.engine.set_setting(
+        kvs.push((
             providers::appconfig::KEY_STAGEDROP_OPEN_PANEL,
-            if on { "1" } else { "0" },
-        )?;
+            if on { "1" } else { "0" }.into(),
+        ));
     }
     if let Some(pos) = stagedrop_position {
         // 只收合法值（防前端脏数据把停靠角写坏；静默忽略同 appearance 口径）
         if providers::stagedrop::Corner::parse(&pos).is_some() {
             providers::stagedrop::set_position_setting(&pos);
-            state
-                .engine
-                .set_setting(providers::appconfig::KEY_STAGEDROP_POSITION, &pos)?;
-            // 改了就生效：条子正显示时按新角重排（动画方向由下轮会话起点
-            // 的 corner 推送自然跟上，无需在此发事件）
-            providers::stagedrop::relayout_if_shown(&app);
+            kvs.push((providers::appconfig::KEY_STAGEDROP_POSITION, pos.clone()));
         }
+        // 改了就生效：条子正显示时按新角重排（动画方向由下轮会话起点
+        // 的 corner 推送自然跟上，无需在此发事件）
+        providers::stagedrop::relayout_if_shown(&app);
     }
     if let Some(mode) = appearance {
         // 只收合法值（防前端脏数据把主题写坏）
         if matches!(mode.as_str(), "dark" | "light" | "system") {
-            state
-                .engine
-                .set_setting(providers::appconfig::KEY_APPEARANCE, &mode)?;
+            kvs.push((providers::appconfig::KEY_APPEARANCE, mode));
         }
     }
-    state.engine.set_setting(
+    kvs.push((
         providers::appconfig::KEY_PWD_CLEAR_SECS,
-        &pwd_clear_secs.to_string(),
-    )?;
-    state.engine.set_setting(
+        pwd_clear_secs.to_string(),
+    ));
+    kvs.push((
         providers::appconfig::KEY_EVERYTHING_AUTOSTART,
-        if everything_autostart { "1" } else { "0" },
-    )?;
+        if everything_autostart { "1" } else { "0" }.into(),
+    ));
+    state.engine.set_many(&kvs)?;
     // 插件开关：逐个写存档并同步原子量（未知 id 直接报错，防前端脏数据静默丢失）
     for p in &plugins {
         state.engine.set_plugin_enabled(&p.id, p.enabled)?;
@@ -1097,12 +1098,19 @@ fn take_prev_foreground(app: &AppHandle) -> Option<isize> {
     }
 }
 
-/// 后台回填文本到剪贴板；有呼出前前台则交还焦点并注入 Ctrl+V。
+/// 后台「取文本→回填→注入」三连：fetch 的重活（DB 全文回查等）与粘贴前的
+/// 等待都在后台线程，主线程调用方只做同步存在性探查（评审 P1-07 两段式）。
 /// open_item 的 clip 文本分支与 clip_merge_paste 共用；回填会被自家监听
 /// 收录进历史顶部（重复内容自动去重）。retrying 退避（最坏 ~370ms）与
-/// 粘贴前的等待不能占主线程消息泵，压后台线程
-fn paste_text_async(text: String, prev: Option<isize>) {
+/// 粘贴前的等待不能占主线程消息泵
+fn paste_bg<F>(fetch: F, prev: Option<isize>)
+where
+    F: FnOnce() -> Option<String> + Send + 'static,
+{
     std::thread::spawn(move || {
+        let Some(text) = fetch() else {
+            return;
+        };
         let _ = providers::clipboard::retrying(|| {
             let text = text.clone();
             arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text))
@@ -1114,6 +1122,11 @@ fn paste_text_async(text: String, prev: Option<isize>) {
     });
 }
 
+/// 内容已在手的回填（合并粘贴等场景）：包一层即时 fetch 复用后台注入链路
+fn paste_text_async(text: String, prev: Option<isize>) {
+    paste_bg(move || Some(text), prev);
+}
+
 #[tauri::command]
 fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
     // 剪贴板「选中即粘贴」在后台线程完成焦点交还与按键注入：open_item 在主线程，
@@ -1121,11 +1134,15 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
     let mut paste_started = false;
     let result = match item.kind.as_str() {
         "app" | "recent" | "file" | "stage" => {
-            // 启动计数（frecency 排序依据）：仅应用类，按 target 路径累计
+            // 启动计数（frecency 排序依据）：仅应用类，按 target 路径累计。
+            // DB 写压 spawn_blocking（评审 P1-07）——frecency 无即时性要求，
+            // 不占用同步命令的主线程窗口
             if item.kind == "app" {
-                app.state::<AppState>()
-                    .engine
-                    .record_app_launch(&item.target);
+                let engine = app.state::<AppState>().engine.clone();
+                let target = item.target.clone();
+                drop(tauri::async_runtime::spawn_blocking(move || {
+                    engine.record_app_launch(&target);
+                }));
             }
             if item.target.starts_with("shell:") {
                 // UWP/商店应用：explorer 接管 shell:AppsFolder\<AUMID>
@@ -1168,7 +1185,9 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
         }
         "clip" | "clipimg" => {
             // 行号寻址（与列表线协议同构：target = 行号，与 clipimg 统一）。
-            // 行号同步探存在：「已被清理」要即时回前端 toast（不收面板），不能异步化
+            // 两段式（评审 P1-07）：主线程只做毫秒级 PK 存在性探查——「已被
+            // 清理」要即时回前端 toast（不收面板）不能异步化，但全文回查
+            // （MB 级锁内 String 拷贝）压到粘贴的后台线程，不占主线程消息泵
             let rowid = item.target.parse::<i64>().map_err(|_| {
                 if item.kind == "clipimg" {
                     "无效图片条目".to_string()
@@ -1177,28 +1196,26 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
                 }
             })?;
             let engine = app.state::<AppState>().engine.clone();
-            // 文本回贴按行号回查全文（列表不再携带内容本体）；图片点查存在性
-            let clip_text = if item.kind == "clip" {
-                Some(
-                    engine
-                        .clip_row(rowid)
-                        .ok_or("该条剪贴板已被清理".to_string())?,
-                )
-            } else if !engine.clip_image_exists(rowid) {
-                return Err("该条剪贴板图片已被清理".into());
+            let is_img = item.kind == "clipimg";
+            let exists = if is_img {
+                engine.clip_image_exists(rowid)
             } else {
-                None
+                engine.clip_row_exists(rowid)
             };
+            if !exists {
+                return Err(if is_img {
+                    "该条剪贴板图片已被清理".into()
+                } else {
+                    "该条剪贴板已被清理".into()
+                });
+            }
             // 选中即粘贴：焦点交还呼出前的窗口并注入 Ctrl+V，省掉手动一步
             let prev = take_prev_foreground(&app);
             paste_started = prev.is_some();
             if prev.is_some() {
                 hide_panel_window(&app);
             }
-            if let Some(text) = clip_text {
-                // 文本回填走共用 paste_text_async（内部自起线程）
-                paste_text_async(text, prev);
-            } else {
+            if is_img {
                 // 图片的点查全图 + PNG 解码不能占主线程消息泵，压后台线程：
                 // DIBV5 直写毫秒级，注入前的等待才不会随图放大成秒级
                 std::thread::spawn(move || {
@@ -1212,6 +1229,9 @@ fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> {
                         providers::winsys::paste_to_prev(hwnd);
                     }
                 });
+            } else {
+                // 文本：后台线程回查全文再回填（与图片同构的两段式后半段）
+                paste_bg(move || engine.clip_row(rowid), prev);
             }
             Ok(())
         }

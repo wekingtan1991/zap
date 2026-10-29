@@ -90,7 +90,10 @@ pub fn resolve_paths(paths: &[String]) -> Vec<Result<(String, bool), String>> {
     paths.iter().map(|p| resolve_one(p)).collect()
 }
 
-/// 锁内提交放入：逐条入库（个别失败不影响其余），返回新增数/总数/失败明细
+/// 锁内提交放入：逐条入库（个别失败不影响其余），返回新增数/总数/失败明细。
+/// 整批包一个事务（评审 P1-07）：逐条 autocommit 时 N 条放入 = N 次独立
+/// fsync，中途断电/被杀会留下「放了一半」的库存态。单条语句失败在事务内
+/// 只回滚自身不牵连其余，「个别失败不影响其余」语义保持
 pub fn commit_add(
     conn: &Connection,
     resolved: Vec<Result<(String, bool), String>>,
@@ -100,6 +103,7 @@ pub fn commit_add(
         total: 0,
         failed: Vec::new(),
     };
+    let _ = conn.execute_batch("BEGIN IMMEDIATE");
     for r in resolved {
         match r {
             Ok((p, is_dir)) => match insert_one(conn, &p, is_dir) {
@@ -109,6 +113,7 @@ pub fn commit_add(
             Err(e) => outcome.failed.push(e),
         }
     }
+    let _ = conn.execute_batch("COMMIT");
     outcome.total = count(conn);
     outcome
 }
