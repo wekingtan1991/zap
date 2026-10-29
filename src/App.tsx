@@ -41,6 +41,7 @@ import {
   type RevealInfo,
 } from "@/plugins/vault/VaultRevealOverlay";
 import { VaultImportView } from "@/plugins/vault/VaultImportView";
+import { useVaultActions } from "@/plugins/vault/useVaultActions";
 import { JsonWorkbench } from "@/plugins/json/JsonWorkbench";
 import { ToolWorkbench } from "@/plugins/text/ToolWorkbench";
 import { SettingsView } from "@/views/SettingsView";
@@ -56,8 +57,9 @@ type WorkbenchSource =
   | { kind: "empty" };
 
 /// 面板视图状态机：同一时刻恰有一个子页面，取代原先 8 个并列的布尔/对象状态。
-/// 新增子页面 = 加一个 kind + 渲染分支，zap://shown 复位与互斥天然成立
-type View =
+/// 新增子页面 = 加一个 kind + 渲染分支，zap://shown 复位与互斥天然成立。
+/// vault 域动作 hook（plugins/vault/useVaultActions）按此类型操作子视图
+export type View =
   | { kind: "main" }
   | { kind: "settings" }
   | { kind: "stage" }
@@ -494,237 +496,24 @@ function AppView() {
   });
 
   /// 账号库列表重拉（pin/delete/表单收尾后）：响应回来时关键词已变（用户
-  /// 继续输入）则丢弃，交还给账号库搜索 effect 的正常刷新链路
-  const refreshVault = useCallback(async (term: string) => {
-    try {
-      const res = await invoke<SearchItem[]>("vault_search", { query: term });
-      if (term !== vaultTermRef.current) return;
-      const list = [...res];
-      if (!term) list.push(VAULT_ADD_ENTRY, VAULT_IMPORT_ENTRY);
-      setItems(list);
-      setActive(0);
-    } catch {
-      // 忽略
-    }
-  }, []);
-
-  const vaultAction = useCallback(
-    async (
-      item: SearchItem,
-      action: "username" | "password" | "url" | "delete" | "reveal" | "pin"
-    ) => {
-      const id = Number(item.target);
-      if (Number.isNaN(id)) return;
-      try {
-        if (action === "url") {
-          const url = await invoke<string>("vault_action", { id, action });
-          if (url) {
-            invoke("open_item", {
-              item: {
-                id: "vault-url",
-                title: "",
-                subtitle: "",
-                kind: "url",
-                target: url,
-                score: 0,
-              },
-            }).catch((e) => feedback(false, "打开网址失败：" + String(e)));
-          }
-          return;
-        }
-        if (action === "reveal") {
-          const pw = await invoke<string>("vault_action", { id, action });
-          setView({
-            kind: "reveal",
-            data: {
-              id,
-              title: item.title.replace(/^📌 /, ""),
-              password: pw,
-            },
-          });
-          return;
-        }
-        const msg = await invoke<string>("vault_action", { id, action });
-        if (action === "pin" || action === "delete") {
-          await refreshVault(vaultTermRef.current);
-          return;
-        }
-        // 复制类：短暂显示成功反馈后自动关闭（密码/用户名均不入剪贴板历史）
-        setItems([
-          {
-            id: "vault-done",
-            title: "✓ " + msg,
-            subtitle: "稍后自动关闭",
-            kind: "info",
-            target: "",
-            score: 0,
-          },
-        ]);
-        setTimeout(() => invoke("hide_panel"), 900);
-      } catch (e) {
-        // 失败统一 toast（面板保持可见）；复制类成功反馈保留行内 ✓（随后面板收起，toast 会随之消失）
-        toast.error("操作失败：" + String(e));
-      }
-    },
-    [refreshVault]
-  );
+  /// 继续输入）则丢弃，交还给账号库搜索 effect 的正常刷新链路。
+  // ---------- 账号库域动作（评审 P1-19 抽离至 plugins/vault/useVaultActions）：
+  // refreshVault 与全部读写动作收拢进 hook，App 根降为装配层——actions 对象、
+  // Alt 键盘面、右键分发、子页面 props 全部引用返回值
+  const vault = useVaultActions({
+    view,
+    setView,
+    setItems,
+    setActive,
+    setQuery,
+    vaultTermRef,
+    inputRef,
+  });
 
   // Alt+6：取完整记录并打开编辑表单（密码明文预填，留空保存 = 保持不变）
-  const startEdit = useCallback(
-    async (item: SearchItem) => {
-      const id = Number(item.target);
-      if (Number.isNaN(id)) return;
-      try {
-        const [title, username, password, url, notes, pinned, totp] = await invoke<
-          [string, string, string, string, string, number, string]
-        >("vault_get", { id });
-        setView({
-          kind: "form",
-          data: {
-            id,
-            title,
-            username,
-            password,
-            url,
-            notes,
-            pinned: pinned === 1,
-            totp,
-          },
-        });
-      } catch {
-        // 忽略
-      }
-    },
-    []
-  );
-
-  // ---------- 账号详情：点击标题打开，逐行展示，行尾一键复制 ----------
-  // 反馈统一走 toast（滑入 + 图标动效）
-  const feedback = useCallback((ok: boolean, text: string) => {
-    if (ok) toast.success(text);
-    else toast.error(text);
-  }, []);
-
-  const closeDetail = useCallback(() => {
-    setView({ kind: "main" });
-    setTimeout(() => inputRef.current?.focus(), 30);
-  }, []);
-
-  const openDetail = useCallback(
-    async (item: SearchItem) => {
-      const id = Number(item.target);
-      if (Number.isNaN(id)) return;
-      try {
-        const [title, username, password, url, notes, pinned, totp] = await invoke<
-          [string, string, string, string, string, number, string]
-        >("vault_get", { id });
-        setView({
-          kind: "detail",
-          data: { id, title, username, password, url, notes, pinned, totp },
-        });
-      } catch (e) {
-        feedback(false, "打开失败：" + String(e));
-      }
-    },
-    [feedback]
-  );
-
-  /// Alt+3 删除入口：打开详情页并直接亮起确认删除条（复用详情页的二次确认，
-  /// 取消/Esc 回列表），列表里永不直接删除
-  const openDeleteConfirm = useCallback(
-    async (item: SearchItem) => {
-      const id = Number(item.target);
-      if (Number.isNaN(id)) return;
-      try {
-        const [title, username, password, url, notes, pinned, totp] = await invoke<
-          [string, string, string, string, string, number, string]
-        >("vault_get", { id });
-        setView({
-          kind: "detail",
-          data: { id, title, username, password, url, notes, pinned, totp },
-          askDelete: true,
-        });
-      } catch (e) {
-        feedback(false, "打开失败：" + String(e));
-      }
-    },
-    [feedback]
-  );
-
-  /// 详情页行尾复制：username / password / url / notes / totp
-  /// （密码带阅后即焚、验证码排除剪贴板历史，均不入历史）。
-  /// 返回成功与否，✓ 点亮状态由详情页本地持有
-  const copyField = useCallback(
-    async (
-      id: number,
-      field: "username" | "password" | "url" | "notes" | "totp"
-    ): Promise<boolean> => {
-      try {
-        const msg = await invoke<string>("vault_action", {
-          id,
-          action: field === "totp" ? "totp_copy" : field,
-        });
-        feedback(true, msg);
-        return true;
-      } catch (e) {
-        feedback(false, "复制失败：" + String(e));
-        return false;
-      }
-    },
-    [feedback]
-  );
-
-  const pinCurrent = useCallback(async () => {
-    setView((v) => {
-      if (v.kind !== "detail") return v;
-      void invoke("vault_action", { id: v.data.id, action: "pin" }).catch(
-        (e) => feedback(false, "操作失败：" + String(e))
-      );
-      return {
-        ...v,
-        data: { ...v.data, pinned: v.data.pinned === 1 ? 0 : 1 },
-      };
-    });
-    await refreshVault(vaultTermRef.current);
-  }, [feedback, refreshVault]);
-
-  /// 删除当前账号（详情页确认弹窗触发）：成功关详情 + 刷新列表，失败由详情页收回弹窗
-  const deleteCurrent = useCallback(async (): Promise<boolean> => {
-    if (view.kind !== "detail") return false;
-    try {
-      await invoke<string>("vault_action", {
-        id: view.data.id,
-        action: "delete",
-      });
-      setView({ kind: "main" });
-      await refreshVault(vaultTermRef.current);
-      return true;
-    } catch (e) {
-      feedback(false, "删除失败：" + String(e));
-      return false;
-    }
-  }, [view, feedback, refreshVault]);
-
-  /// 详情页编辑：记录已在手上，直接预填表单（无需再取一次）
-  const editCurrent = useCallback(() => {
-    setView((v) =>
-      v.kind === "detail"
-        ? {
-            kind: "form",
-            data: {
-              id: v.data.id,
-              title: v.data.title,
-              username: v.data.username,
-              password: v.data.password,
-              url: v.data.url,
-              notes: v.data.notes,
-              pinned: v.data.pinned === 1,
-              totp: v.data.totp,
-            },
-          }
-        : v
-    );
-  }, []);
+  // ——startEdit 已抽离至 useVaultActions（vault.startEdit）；
+  // feedback/closeDetail/openDetail/openDeleteConfirm/copyField/pinCurrent/
+  // deleteCurrent/editCurrent 同批抽离（vault.xxx），域内反馈统一 toast
 
   /// 固定后的列表重拉（clipPin 与图片预览面板共用）：按当前词重拉，
   /// 重拉期间词已变则丢弃（交还给搜索 effect）
@@ -968,7 +757,7 @@ function AppView() {
   // Enter 与点击共用：伪条目（新增/导入）→ 注册表 activate → 默认 openExternal。
   // kind 行为收敛在 plugins/registry.tsx，这里只接装配，不写 kind 特判
   const actions: ItemActions = {
-    openVaultDetail: (it) => void openDetail(it),
+    openVaultDetail: (it) => void vault.openDetail(it),
     openJson: (it) => openWorkbench("json", it),
     openTool: (it) => openWorkbench("tool", it),
     runCommand: (target) =>
@@ -978,7 +767,7 @@ function AppView() {
         setItems,
       } satisfies CommandCtx),
     openExternal: activate,
-    vaultPin: (it) => void vaultAction(it, "pin"),
+    vaultPin: (it) => void vault.vaultAction(it, "pin"),
     clipPin: (it) => void clipPin(it),
     openStage: () => void openStage(),
     openClipImagePreview: openClipImagePreview,
@@ -1029,7 +818,7 @@ function AppView() {
     },
     // actions 引用稳定的 useState setter / useCallback 闭包，逐项列出即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activate, openDetail, vaultAction, mergeMode]
+    [activate, vault.openDetail, vault.vaultAction, mergeMode]
   );
 
   // 表单数据更新器：与旧 setForm 同签名（Dispatch<SetStateAction<AccountForm|null>>），
@@ -1048,44 +837,8 @@ function AppView() {
     []
   );
 
-  // 表单保存成功：关表单 + 回账号库列表（空关键词列出全部）
-  const formSaved = useCallback(() => {
-    setView({ kind: "main" });
-    setQuery("pw");
-    void refreshVault("");
-  }, [refreshVault]);
-
-  // 表单取消：编辑态（有 id）返回该账号详情页（编辑入口在详情页，取消不应退到列表），
-  // 新增态回账号库列表；Esc 与「取消」按钮共用
-  const cancelForm = useCallback(() => {
-    if (view.kind !== "form") return;
-    const id = view.data.id;
-    setView({ kind: "main" });
-    if (id == null) {
-      setTimeout(() => inputRef.current?.focus(), 30);
-      return;
-    }
-    void (async () => {
-      try {
-        const [title, username, password, url, notes, pinned, totp] = await invoke<
-          [string, string, string, string, string, number, string]
-        >("vault_get", { id });
-        setView({
-          kind: "detail",
-          data: { id, title, username, password, url, notes, pinned, totp },
-        });
-      } catch {
-        // 详情打不开（账号已被删等）退回旧行为：列表 + 焦点回输入框
-        setTimeout(() => inputRef.current?.focus(), 30);
-      }
-    })();
-  }, [view]);
-
-  // 导入收尾：关视图 + 刷新列表（成功反馈由导入视图先展示 700ms）
-  const importDone = useCallback(() => {
-    setView({ kind: "main" });
-    void refreshVault(vaultTermRef.current);
-  }, [refreshVault]);
+  // 表单保存/取消、导入收尾（formSaved/cancelForm/importDone）已随 vault 域
+  // 动作抽离至 useVaultActions（vault.xxx）
 
   const closeImport = useCallback(() => {
     setView({ kind: "main" });
@@ -1125,13 +878,13 @@ function AppView() {
         e.preventDefault();
         const it = items[active];
         if (!it || it.kind !== "vault") return;
-        if (e.key === "1") vaultAction(it, "url");
-        if (e.key === "2") vaultAction(it, "password");
+        if (e.key === "1") vault.vaultAction(it, "url");
+        if (e.key === "2") vault.vaultAction(it, "password");
         // 删除是保护域里唯一的破坏性操作：不直接删，打开详情页的确认删除条
-        if (e.key === "3") void openDeleteConfirm(it);
-        if (e.key === "4") vaultAction(it, "reveal");
-        if (e.key === "5") vaultAction(it, "pin");
-        if (e.key === "6") void startEdit(it);
+        if (e.key === "3") void vault.openDeleteConfirm(it);
+        if (e.key === "4") vault.vaultAction(it, "reveal");
+        if (e.key === "5") vault.vaultAction(it, "pin");
+        if (e.key === "6") void vault.startEdit(it);
         return;
       }
       if (e.key === "Enter") {
@@ -1171,8 +924,8 @@ function AppView() {
       <VaultFormView
         form={view.data}
         setForm={updateFormData}
-        onSaved={formSaved}
-        onCancel={cancelForm}
+        onSaved={vault.formSaved}
+        onCancel={vault.cancelForm}
         focusRef={focusPanelRef}
       />
     );
@@ -1191,7 +944,7 @@ function AppView() {
   if (view.kind === "import") {
     return (
       <VaultImportView
-        onDone={importDone}
+        onDone={vault.importDone}
         onClose={closeImport}
         focusRef={focusPanelRef}
       />
@@ -1204,13 +957,13 @@ function AppView() {
         detail={view.data}
         initialConfirmDelete={view.askDelete === true}
         focusRef={focusPanelRef}
-        onClose={closeDetail}
-        onDelete={deleteCurrent}
-        onCopyField={copyField}
-        onEdit={editCurrent}
-        onPin={() => void pinCurrent()}
+        onClose={vault.closeDetail}
+        onDelete={vault.deleteCurrent}
+        onCopyField={vault.copyField}
+        onEdit={vault.editCurrent}
+        onPin={() => void vault.pinCurrent()}
         onOpenUrl={() =>
-          void vaultAction(
+          void vault.vaultAction(
             {
               id: `vault:${view.data.id}`,
               title: view.data.title,
@@ -1435,14 +1188,15 @@ function AppView() {
                       openClipImagePreview(ctxMenu.item);
                     // vault 域（评审 P1-04）：与 Alt 快捷键同一 vault_action 分发
                     else if (act === "vault_reveal")
-                      void vaultAction(ctxMenu.item, "reveal");
+                      void vault.vaultAction(ctxMenu.item, "reveal");
                     else if (act === "vault_url")
-                      void vaultAction(ctxMenu.item, "url");
-                    else if (act === "vault_edit") void startEdit(ctxMenu.item);
+                      void vault.vaultAction(ctxMenu.item, "url");
+                    else if (act === "vault_edit")
+                      void vault.startEdit(ctxMenu.item);
                     else if (act === "vault_pin")
-                      void vaultAction(ctxMenu.item, "pin");
+                      void vault.vaultAction(ctxMenu.item, "pin");
                     else if (act === "vault_delete")
-                      void openDeleteConfirm(ctxMenu.item);
+                      void vault.openDeleteConfirm(ctxMenu.item);
                     else void secondaryAction(
                       act as "admin" | "reveal" | "copy_path" | "clip_copy" | "close_window",
                       ctxMenu.item
