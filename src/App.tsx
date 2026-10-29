@@ -273,6 +273,8 @@ function AppView() {
       // 合并勾选是即时意图：跨呼出保留没有意义，隐藏即清
       setMergeMode(false);
       setMergeSel([]);
+      // 右键菜单同理：跨呼出的菜单是陈旧状态（呼出即重置视图）
+      setCtxMenu(null);
     });
     return () => {
       un.then((f) => f());
@@ -286,6 +288,10 @@ function AppView() {
       setView({ kind: "main" });
       stopHkCapture();
       setActive(0);
+      setCtxMenu(null); // 兜底：hidden 已清，这里对齐 hidden 的复位口径
+      // 呼出重置为 main 后合并模式若残留会重新可用：与 hidden 同款全清
+      setMergeMode(false);
+      setMergeSel([]);
       // 重播呼出动画：面板窗口只隐藏不销毁，跨 shown 组件不重挂——
       // 移除→reflow→重挂让 panel-in 重新起播；从子视图返回走重挂的静态类
       const panel = panelRef.current;
@@ -802,26 +808,58 @@ function AppView() {
     }
   }, [isVault, mergeMode]);
 
+  // 右键菜单键盘面挂窗口捕获——模式化键盘面纪律第四次收口：菜单项是真实
+  // button，点击执行后按钮卸载焦点掉 body，面板 onKeyDown 收不到任何键
+  // （2026-10-22 表单 Esc / 2026-10-28 合并模式 / 2026-10-28 StageView 同根因）。
+  // 定义顺序必须在合并捕获之前：两监听同为 window capture，先注册者先拦，
+  // Esc 由这里关菜单并 stopPropagation，合并面不再重复处理。
+  // 菜单存活时：Esc=关菜单；方向键/Enter 在菜单 DOM 之外一律拦下——不该穿透
+  // 菜单去操作被遮挡的列表行；焦点在菜单项内时放行（Enter 原生 click）。
+  // isComposing 卫兵挡 IME。view 非 main 时菜单 DOM 已卸载，顺手清 state
+  // 防「回主面板时菜单复活」；不传依赖数组每次渲染重挂保闭包新鲜
+  useEffect(() => {
+    if (!ctxMenu) return;
+    if (view.kind !== "main") {
+      setCtxMenu(null);
+      return;
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setCtxMenu(null);
+        return;
+      }
+      const inMenu =
+        e.target instanceof HTMLElement &&
+        e.target.closest("[data-ctx-menu]") !== null;
+      if (
+        !inMenu &&
+        (e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp")
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  });
+
   // 合并模式的键盘面挂窗口捕获——**不能挂面板/输入框 onKeyDown**：点击
   // 底栏按钮或条目后焦点掉到按钮/body，输入框的 onKeyDown 收不到任何键
   // （与 2026-10-22 表单 Esc 失效同根因，本次在合并功能上重犯后按同一
   // 修法收口）。捕获阶段拦下合并语义键并 stopPropagation，防输入框的
   // onKeyDown 对同一按键再处理一遍；其余按键放行不干扰打字。
   // 不传依赖数组：每次渲染重挂保闭包新鲜（VaultFormView Esc 同款）。
-  // isComposing 卫兵挡 IME 选词键（合成期 keydown 不该触发勾选/合并）
+  // isComposing 卫兵挡 IME 选词键（合成期 keydown 不该触发勾选/合并）。
+  // view 守卫：合并是 main 视图内的模式，进设置/工作台等子页面期间整体
+  // 休眠——旧实现泄漏进设置页，备份弹窗的 Enter 提交被合并勾选劫持。
+  // 右键菜单的 Esc 已由上方 ctxMenu 捕获拦掉（stopPropagation 收不到），无重复
   useEffect(() => {
-    if (!mergeMode) return;
+    if (!mergeMode || view.kind !== "main") return;
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return;
-      // 右键菜单存活时 Esc 只关菜单，其余键放行给菜单语义（同 onKeyDown 口径）
-      if (ctxMenu) {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          e.stopPropagation();
-          setCtxMenu(null);
-        }
-        return;
-      }
       if (e.key === "Enter" && e.ctrlKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -1031,15 +1069,11 @@ function AppView() {
   }, []);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    // 各子页面的 Esc 已由其自身 useEscCapture（窗口捕获）处理；这里只剩
-    // 右键菜单与主面板自身的导航键——view 非 main 时子页面自持，直接放行
-    if (ctxMenu) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setCtxMenu(null);
-      }
-      return;
-    }
+    // 各子页面的 Esc 已由其自身 useEscCapture（窗口捕获）处理；右键菜单的
+    // Esc/方向键/Enter 已由 ctxMenu 窗口捕获独占（互斥显式化：面板 onKeyDown
+    // 不再接菜单语义——焦点掉 body 后它收不到任何键，是 2026-10-22 以来的
+    // 三次键盘面事故同根因）。这里只剩主面板自身的导航键——view 非 main 时
+    // 子页面自持，直接放行
     if (view.kind !== "main") return;
 
     // 条目次级操作（普通域）：Ctrl+Shift+Enter 管理员 / Ctrl+Enter 所在文件夹 /
@@ -1335,6 +1369,7 @@ function AppView() {
           />
           <div
             className="zap-ctx-menu"
+            data-ctx-menu=""
             style={clampMenuPos(
               ctxMenu.x,
               ctxMenu.y,

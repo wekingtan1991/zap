@@ -47,11 +47,14 @@ export function SuperPanel({ text, actions }: Props) {
   };
 
   // Esc 收起 / ↑↓ 移动选中 / Enter 执行——键盘语义与主面板一致
-  // （调起/Esc/方向键/Enter）。不传依赖数组：每次渲染重挂监听保闭包
-  // 新鲜（useEscCapture 同款约定）。Enter 的 preventDefault 会一并压掉
+  // （调起/Esc/方向键/Enter）。捕获阶段挂 window（模式化键盘面纪律：bubble
+  // 在焦点掉 body 且中途被 stopPropagation 时收不到）+ isComposing 卫兵挡
+  // IME 选词键，与全项目键盘面口径统一。不传依赖数组：每次渲染重挂监听保
+  // 闭包新鲜（useEscCapture 同款约定）。Enter 的 preventDefault 会一并压掉
   // 聚焦按钮的原生 click，不会双触发
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
       if (e.key === "Escape") hide();
       else if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -65,8 +68,8 @@ export function SuperPanel({ text, actions }: Props) {
         if (act) run(act.id);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   });
 
   return (

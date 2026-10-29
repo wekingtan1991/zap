@@ -10,6 +10,9 @@ export function useEscCapture(onEsc: () => void, enabled = true) {
     if (!enabled) return;
     const onWinKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // IME 卫兵：合成期的 Esc 是取消选词，不是退出页面（全项目键盘面统一口径，
+      // 与 App 合并面 / SuperPanel / StageView 的 isComposing 同款）
+      if (e.isComposing) return;
       e.preventDefault();
       e.stopPropagation();
       onEsc();

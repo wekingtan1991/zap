@@ -27,6 +27,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "vitest run",
+    "check:kb": "node scripts/check-keyboard-faces.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

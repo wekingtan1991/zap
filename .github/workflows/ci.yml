@@ -39,6 +39,10 @@ jobs:
       - name: 前端单元测试
         run: pnpm test
 
+      # 键盘面纪律自检：模式化键盘面一律 window 捕获，新增容器级 onKeyDown 直接红灯
+      - name: 键盘面纪律自检
+        run: pnpm check:kb
+
       - name: 前端类型检查与构建
         run: pnpm build
 
