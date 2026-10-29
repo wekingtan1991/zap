@@ -176,7 +176,10 @@ pub struct SearchEngine {
 
 impl SearchEngine {
     pub fn new(db_path: &Path) -> Self {
-        let conn = clipboard::open_db(db_path).expect("打开剪贴板数据库失败");
+        // 坏库软着陆（open_db_resilient 隔离重建）；走到 panic 只剩磁盘/权限级
+        // 故障，panic hook（run 最前）会落盘死因——比静默残废可诊断
+        let conn = clipboard::open_db_resilient(db_path)
+            .unwrap_or_else(|e| panic!("数据库打开与隔离重建均失败: {e}"));
         vault::init_table(&conn);
         appconfig::init_table(&conn);
         apps::init_stats(&conn);

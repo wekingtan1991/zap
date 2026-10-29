@@ -217,6 +217,66 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// 带损坏自愈的打开（评审 P0-1②）：open 成功还要过 quick_check——页头有效
+/// 但页损坏时建表可能侥幸通过，首查才炸，把「能打开」当「健康」会留下更深的
+/// 静默故障。判定失败则关闭连接后把库连同 -wal/-shm 三件套隔离改名
+/// （zap.db.broken-<ts>[…]），现场保留供诊断，重建空库继续启动。
+/// SearchEngine::new 与两个监听线程都走这里：主路径自愈后，后启动的
+/// watcher 打开的已是新库。重建再失败只能是磁盘/权限级故障，向上传错误。
+pub fn open_db_resilient(path: &Path) -> Result<Connection, String> {
+    match try_open_checked(path) {
+        Ok(conn) => Ok(conn),
+        Err(why) => {
+            super::diag::log(&format!(
+                "db\t库不健康，隔离重建\t{why}\t{}",
+                path.display()
+            ));
+            quarantine_db(path);
+            open_db(path).map_err(|e| {
+                super::diag::log(&format!("db\t隔离后重建仍失败\t{e}\t{}", path.display()));
+                format!("隔离重建仍失败: {e}（原始问题: {why}）")
+            })
+        }
+    }
+}
+
+fn try_open_checked(path: &Path) -> Result<Connection, String> {
+    let conn = open_db(path).map_err(|e| e.to_string())?;
+    // quick_check 轻量校验（B-tree 结构级，不读全量数据）；非 "ok" 一律按坏库处理
+    match conn.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)) {
+        Ok(s) if s == "ok" => Ok(conn),
+        Ok(s) => Err(format!("quick_check: {s}")),
+        Err(e) => Err(format!("quick_check 执行失败: {e}")),
+    }
+}
+
+/// 坏库三件套改名隔离。Windows 下文件被占用时改名失败，尽力而为逐个处理：
+/// 主文件改不动时 -wal/-shm 大概率同样改不动，重建 open 会原样报错给上层。
+fn quarantine_db(path: &Path) {
+    let ts = now_ms();
+    for suffix in ["", "-wal", "-shm"] {
+        let mut src = std::ffi::OsString::from(path.as_os_str());
+        src.push(suffix);
+        let src = PathBuf::from(src);
+        if !src.exists() {
+            continue;
+        }
+        let mut dst = std::ffi::OsString::from(path.as_os_str());
+        dst.push(format!(".broken-{ts}{suffix}"));
+        match std::fs::rename(&src, PathBuf::from(dst)) {
+            Ok(()) => super::diag::log(&format!("db\t已隔离\t{}\t{}", src.display(), suffix)),
+            Err(e) => {
+                super::diag::log(&format!("db\t隔离失败\t{}\t{e}", src.display()));
+                // 主文件改不动就别留半套现场：伴生文件留在原地与新库同名会
+                // 被 SQLite 当成恢复源——能删则删
+                if !suffix.is_empty() {
+                    let _ = std::fs::remove_file(&src);
+                }
+            }
+        }
+    }
+}
+
 /// 待入库的图片任务：回调线程只负责取 RGBA，编码/哈希/缩略图/写库在独立线程
 struct ImageTask {
     rgba: Vec<u8>,
@@ -241,7 +301,7 @@ pub fn spawn_watcher(db_path: PathBuf) {
     let (img_tx, img_rx) = std::sync::mpsc::sync_channel::<ImageTask>(4);
     let worker_path = db_path.clone();
     std::thread::spawn(move || {
-        let conn = match open_db(&worker_path) {
+        let conn = match open_db_resilient(&worker_path) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("zap: 剪贴板图片入库线程打开数据库失败: {e}");
@@ -251,7 +311,7 @@ pub fn spawn_watcher(db_path: PathBuf) {
         let _ = image_store_loop(conn, img_rx);
     });
     std::thread::spawn(move || {
-        let conn = match open_db(&db_path) {
+        let conn = match open_db_resilient(&db_path) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("zap: 剪贴板数据库打开失败: {e}");
@@ -578,6 +638,57 @@ mod tests {
 
     fn mem_db() -> Connection {
         open_db(Path::new(":memory:")).expect("mem db")
+    }
+
+    #[test]
+    fn 坏库隔离重建_好库原样通过() {
+        let dir = std::env::temp_dir().join(format!("zap-dbtest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("zap.db");
+
+        // 好库：写入后 resilient 重开，数据原样、不产生 broken 文件
+        {
+            let conn = open_db(&db).unwrap();
+            conn.execute(
+                "INSERT INTO clipboard_history(content, created_at) VALUES('存活样本', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = open_db_resilient(&db).expect("好库应直通");
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM clipboard_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "好库数据不受自愈路径影响");
+        drop(conn);
+        let broken: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".broken-"))
+            .collect();
+        assert!(broken.is_empty(), "好库不得触发隔离");
+
+        // 坏库：非 SQLite 字节 → open 失败 → 隔离改名 + 空库重建
+        std::fs::write(&db, b"this is definitely not a sqlite database").unwrap();
+        let conn = open_db_resilient(&db).expect("坏库应被隔离并重建空库");
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM clipboard_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "重建后是空库");
+        drop(conn);
+        let broken: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("zap.db.broken-"))
+            .collect();
+        assert_eq!(broken.len(), 1, "坏库现场应保留一份 {broken:?}");
+        let kept = std::fs::read(dir.join(&broken[0])).unwrap();
+        assert_eq!(
+            kept, b"this is definitely not a sqlite database",
+            "现场字节原样"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

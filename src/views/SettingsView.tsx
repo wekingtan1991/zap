@@ -974,7 +974,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             <span className="flex min-w-0 flex-col gap-px">
               <span className="text-[13px] text-foreground">备份与恢复</span>
               <span className="text-[11px] leading-snug text-muted-foreground">
-                口令加密导出全部账号（含置顶），可跨机器恢复
+                口令加密导出全部账号（含置顶），可跨机器恢复；数据库异常被重置时，数据可由备份找回
               </span>
             </span>
             <span className="flex shrink-0 items-center gap-2">
