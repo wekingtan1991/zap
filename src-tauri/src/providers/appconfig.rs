@@ -46,6 +46,9 @@ pub const DEFAULT_STAGEDROP_POSITION: &str = "bottom_right";
 /// 中转站未固定条目容量上限
 pub const KEY_STAGE_CAP: &str = "stage_cap";
 pub const DEFAULT_STAGE_CAP: i64 = 50;
+/// 账号库上次成功导出的 Unix 毫秒时间戳（仅 vault_backup_export 落盘成功后写，
+/// 供设置页显示「上次备份 N 天前」与 30 天提醒；0/缺键 = 从未备份）
+pub const KEY_VAULT_LAST_EXPORT: &str = "vault_last_export";
 
 pub fn init_table(conn: &Connection) {
     let _ = conn.execute_batch(

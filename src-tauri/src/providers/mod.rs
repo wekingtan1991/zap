@@ -461,6 +461,13 @@ impl SearchEngine {
         let entries = vault::backup_read_all(&conn)?;
         let content = backup::encrypt_backup(&entries, passphrase)?;
         std::fs::write(path, content).map_err(|e| e.to_string())?;
+        // 落盘成功才记时间：设置页「上次备份 N 天前 / 30 天提醒」的事实源
+        // （备份文件走用户自选路径，zap 无注册表，库里这个时间戳就是唯一凭证）
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let _ = appconfig::set(&conn, appconfig::KEY_VAULT_LAST_EXPORT, &now.to_string());
         Ok(entries.len())
     }
 

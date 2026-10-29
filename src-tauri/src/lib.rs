@@ -973,6 +973,16 @@ async fn vault_backup_export(
         .map_err(|e| e.to_string())?
 }
 
+/// 账号库上次成功导出的 Unix 毫秒（0 = 从未备份）：设置页备份提醒的事实源
+#[tauri::command]
+async fn vault_last_export_at(state: tauri::State<'_, AppState>) -> Result<i64, String> {
+    Ok(state
+        .engine
+        .get_setting(providers::appconfig::KEY_VAULT_LAST_EXPORT)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0))
+}
+
 /// 解密备份文件为预览（条目 + 疑似重复标记，恢复前交前端确认）
 #[tauri::command]
 async fn vault_backup_decrypt(
@@ -1779,6 +1789,7 @@ pub fn run() {
             vault_backup_export,
             vault_backup_decrypt,
             vault_backup_restore,
+            vault_last_export_at,
             secondary_action,
             json_analyze_full,
             json_to_yaml,

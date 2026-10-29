@@ -54,6 +54,7 @@ import {
   applyPanelTransparency,
   type Appearance,
 } from "@/lib/appearance";
+import { backupReminder } from "@/lib/vaultBackup";
 
 export interface PluginState {
   id: string;
@@ -219,6 +220,15 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   const [bkPreview, setBkPreview] = useState<BackupPreview | null>(null);
   /// 恢复模式：跳过疑似重复（默认推荐）/ 全部追加
   const [bkSkip, setBkSkip] = useState(true);
+  /// 上次成功导出的 Unix 毫秒（null = 尚未取到；0 = 从未备份）
+  const [bkLast, setBkLast] = useState<number | null>(null);
+
+  const pullBkLast = useCallback(() => {
+    invoke<number>("vault_last_export_at")
+      .then((v) => setBkLast(v))
+      .catch(() => {}); // 提醒是辅助信息，取不到就静默
+  }, []);
+  useEffect(pullBkLast, [pullBkLast]);
 
   const closeBkDialog = () => {
     setBkDialog(null);
@@ -243,6 +253,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         passphrase: bkPass,
       });
       toast.success(`已导出 ${n} 条账号`);
+      pullBkLast(); // 提醒行随新导出即时收敛
       closeBkDialog();
     } catch (e) {
       setBkErr(String(e));
@@ -990,6 +1001,25 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
               </Button>
             </span>
           </div>
+          {bkLast !== null &&
+            (() => {
+              const r = backupReminder(bkLast, Date.now());
+              const text =
+                r.level === "never"
+                  ? "尚未备份 · 数据只在本地一份，建议立即导出"
+                  : r.level === "stale"
+                    ? `上次备份已 ${r.days} 天 · 建议尽快导出`
+                    : `上次备份：${r.days === 0 ? "今天" : `${r.days} 天前`}`;
+              return (
+                <div
+                  className={`mt-1 text-[11px] ${
+                    r.level === "ok" ? "text-muted-foreground" : "text-destructive"
+                  }`}
+                >
+                  {text}
+                </div>
+              );
+            })()}
         </div>
         <div className="mt-3 border-t border-border pt-3">
           <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
