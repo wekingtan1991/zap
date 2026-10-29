@@ -44,6 +44,35 @@ pub fn retrying<T>(mut op: impl FnMut() -> Result<T, arboard::Error>) -> Result<
     Err(last)
 }
 
+/// 敏感内容专用复制：排除 Windows 剪贴板历史（Win+V）与云剪贴板同步。
+/// 不排 monitor：zap 自身的剪贴板监听依赖变更事件做入库抑制（begin_self_copy
+/// 时间窗），排 monitor 有让监听收不到事件、抑制错位的风险。
+/// vault 密码/用户名/备注与超级面板复制统一走此通道（评审 P1-13）——
+/// 凡「内容来自受保护域」的复制都不进 Win+V 与云剪贴板
+#[cfg(windows)]
+pub fn copy_text_private(text: &str) -> Result<(), String> {
+    use arboard::SetExtWindows;
+    let owned = text.to_string();
+    retrying(|| {
+        arboard::Clipboard::new().and_then(|mut cb| {
+            cb.set()
+                .exclude_from_history()
+                .exclude_from_cloud()
+                .text(owned.clone())
+        })
+    })
+    .map(|_| ())
+}
+
+#[cfg(not(windows))]
+pub fn copy_text_private(text: &str) -> Result<(), String> {
+    retrying(|| {
+        let owned = text.to_string();
+        arboard::Clipboard::new().and_then(|mut cb| cb.set_text(owned))
+    })
+    .map(|_| ())
+}
+
 /// 剪贴板图片直写 CF_DIBV5，绕开 arboard set_image——它在 DIBV5 之外还用
 /// image 库编码一份 PNG 格式，39MB 长截图仅编码就要 5-6 秒（「仅复制没反应」
 /// 的实测根因：按钮全程静默，粘贴路径的 Ctrl+V 注入也跟着迟到）。DIBV5 直写

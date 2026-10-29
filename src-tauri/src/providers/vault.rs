@@ -90,64 +90,36 @@ fn now_ms() -> i64 {
 
 // ---------- 剪贴板 ----------
 
-fn copy_text(text: &str) -> Result<(), String> {
-    let owned = text.to_string();
-    super::clipboard::retrying(|| {
-        arboard::Clipboard::new().and_then(|mut cb| cb.set_text(owned.clone()))
-    })
-    .map(|_| ())
+use super::clipboard::copy_text_private;
+
+/// 焚除窗口活跃标志（评审 P1-13）：密码复制后到焚除完成（或放弃）期间为真。
+/// 快速粘贴直达热键在此窗口内跳过——此时剪贴板上还挂着密码明文，快速粘贴
+/// 会把它原样注入前台窗口（焦点若已漂移即泄给错误应用），且注入的回填/
+/// 覆盖会搅乱焚除判定的序列号基准
+static BURN_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 焚除窗口是否活跃（lib.rs quick_paste_latest 的跳过判定）
+pub fn burn_window_active() -> bool {
+    BURN_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// 敏感内容专用复制：排除 Windows 剪贴板历史（Win+V）与云剪贴板同步。
-/// 不排 monitor：zap 自身的剪贴板监听依赖变更事件做入库抑制（begin_self_copy 时间窗），
-/// 排 monitor 有让监听收不到事件、抑制错位的风险。
-#[cfg(windows)]
-fn copy_text_private(text: &str) -> Result<(), String> {
-    use arboard::SetExtWindows;
-    let owned = text.to_string();
-    super::clipboard::retrying(|| {
-        arboard::Clipboard::new().and_then(|mut cb| {
-            cb.set()
-                .exclude_from_history()
-                .exclude_from_cloud()
-                .text(owned.clone())
-        })
-    })
-    .map(|_| ())
-}
-
-#[cfg(not(windows))]
-fn copy_text_private(text: &str) -> Result<(), String> {
-    copy_text(text)
-}
-
-/// 当前剪贴板序列号：任何剪贴板变更都会使其递增，用于"内容是否还是我们复制的那一份"判定
-#[cfg(windows)]
-fn clipboard_seq() -> u32 {
-    unsafe { GetClipboardSequenceNumber() }
-}
-
-#[cfg(not(windows))]
-fn clipboard_seq() -> u32 {
-    0
-}
-
-/// 阅后即焚：延时后若剪贴板仍是这段密码则清空；secs<=0 关闭。
-/// 判定用「序列号未变（快路径）或回读文本仍是这段密码」双保险：
-/// - 序列号没变 = 没人动过剪贴板，直接清；
-/// - 序列号变了也再回读确认——他程序重设了同样内容照样清；
-///   是别的内容（用户复制了新东西）才放弃，绝不覆盖用户的新复制。
-///
-/// Windows 上 OpenClipboard 可能被其他窗口短暂占用（IM/浏览器常驻监听），
-/// arboard 自带 5×5ms 重试窗口太窄，这里 6 次递进重试（合计约 4.2s）并全程落盘日志。
-#[cfg(windows)]
 fn schedule_clear(password: String, seq: u32, secs: i64) {
     if secs <= 0 {
         super::diag::log("焚除未启用（pwd_clear_secs<=0）");
         return;
     }
+    BURN_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     super::diag::log(&format!("密码已复制：seq={seq}，{secs}s 后焚除"));
     std::thread::spawn(move || {
+        // 窗口结束统一收口：正常焚除 / 放弃（用户复制了新内容）/ 重试耗尽，
+        // 任何出口都翻回 false——快速粘贴的跳过只该覆盖焚除窗口本身
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                BURN_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let _guard = Guard;
         std::thread::sleep(Duration::from_secs(secs as u64));
         for attempt in 1..=6u32 {
             // ① 判定剪贴板是否还是这段密码
@@ -181,6 +153,26 @@ fn schedule_clear(password: String, seq: u32, secs: i64) {
     });
 }
 
+/// 当前剪贴板序列号：任何剪贴板变更都会使其递增，用于"内容是否还是我们复制的那一份"判定
+#[cfg(windows)]
+fn clipboard_seq() -> u32 {
+    unsafe { GetClipboardSequenceNumber() }
+}
+
+#[cfg(not(windows))]
+fn clipboard_seq() -> u32 {
+    0
+}
+
+/// 阅后即焚：延时后若剪贴板仍是这段密码则清空；secs<=0 关闭。
+/// 判定用「序列号未变（快路径）或回读文本仍是这段密码」双保险：
+/// - 序列号没变 = 没人动过剪贴板，直接清；
+/// - 序列号变了也再回读确认——他程序重设了同样内容照样清；
+///   是别的内容（用户复制了新东西）才放弃，绝不覆盖用户的新复制。
+///
+/// Windows 上 OpenClipboard 可能被其他窗口短暂占用（IM/浏览器常驻监听），
+/// arboard 自带 5×5ms 重试窗口太窄，这里 6 次递进重试（合计约 4.2s）并全程落盘日志。
+#[cfg(windows)]
 #[cfg(not(windows))]
 fn schedule_clear(_password: String, _seq: u32, _secs: i64) {}
 
@@ -324,7 +316,8 @@ pub fn action(
                 )
                 .map_err(|e| e.to_string())?;
             super::clipboard::begin_self_copy();
-            copy_text(&username)?;
+            // 用户名与密码成对泄露才是完整凭证：与密码同走受保护通道（评审 P1-13）
+            copy_text_private(&username)?;
             bump(conn);
             Ok("用户名已复制".into())
         }
@@ -365,7 +358,7 @@ pub fn action(
                 })
                 .map_err(|e| e.to_string())?;
             super::clipboard::begin_self_copy();
-            copy_text(&notes)?;
+            copy_text_private(&notes)?;
             bump(conn);
             Ok("备注已复制".into())
         }

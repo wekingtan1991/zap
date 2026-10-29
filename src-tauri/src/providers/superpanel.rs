@@ -292,11 +292,9 @@ fn show_panel(app: &AppHandle, _x: i32, _y: i32, text: String) {
 pub fn run_action(app: &AppHandle, action: &str, text: &str) -> Result<(), String> {
     let copy = |content: String| -> Result<(), String> {
         super::clipboard::begin_self_copy();
-        super::clipboard::retrying(|| {
-            let c = content.clone();
-            arboard::Clipboard::new().and_then(|mut cb| cb.set_text(c))
-        })
-        .map(|_| ())
+        // 抓取内容可能含敏感信息（来自任意前台应用的选中文本）：与 vault
+        // 域复制统一走受保护通道，不进 Win+V 与云剪贴板（评审 P1-13）
+        super::clipboard::copy_text_private(&content)
     };
     match action {
         "copy" => copy(text.to_string()),

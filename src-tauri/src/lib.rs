@@ -1620,6 +1620,14 @@ pub(crate) fn open_stage_panel(app: &AppHandle) {
 /// 直接读库会把刚复制的内容覆盖成上一条历史）；空/非文本才回源历史库并回填。
 /// 重活（剪贴板读写退避、SQLite 点查）压后台线程，不占热键回调所在的主线程
 fn quick_paste_latest(app: &AppHandle) {
+    // 焚除窗口内跳过（评审 P1-13）：密码复制后到焚除完成前，剪贴板上挂着
+    // 密码明文——快速粘贴会把它原样注入前台（焦点漂移即泄给错误应用），
+    // 回填覆盖也会搅乱焚除判定的序列号基准。窗口极短（默认 30s 内的直达
+    // 热键按下），静默跳过落一条日志
+    if providers::vault::burn_window_active() {
+        providers::diag::log("quickpaste\t焚除窗口内跳过注入");
+        return;
+    }
     // 前台窗口在回调内先取（无阻塞）；面板自身在前台时不注入（会贴进搜索框）
     let Some(hwnd) = foreground_hwnd() else {
         return;
