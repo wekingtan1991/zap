@@ -160,6 +160,8 @@ function AppView() {
   /// runItem 同条目去重锚点（双击行 = 两次 click，见 runItem 注释）
   const lastRunRef = useRef({ t: 0, key: "" });
   const vaultTermRef = useRef("");
+  /// 视图状态机的上一帧 kind（外观重拉只在「从设置页退出」时触发）
+  const prevKindRef = useRef(view.kind);
   const activeItemRef = useRef<HTMLDivElement | null>(null);
   const kbNavRef = useRef(false);
   /// 主面板根节点：zap://shown 时重播呼出动画（见 shown 监听内注释）
@@ -232,7 +234,12 @@ function AppView() {
     refreshAppearance();
   }, [refreshAppearance]);
   useEffect(() => {
-    if (view.kind !== "settings") refreshAppearance();
+    // 只在「从设置页退出」时重拉外观（评审 F8/P1-03 顺路）：其余视图切换
+    // 与外观无关，进出工作台/中转站都拉一次 get_app_settings 是无谓 IPC
+    if (prevKindRef.current === "settings" && view.kind !== "settings") {
+      refreshAppearance();
+    }
+    prevKindRef.current = view.kind;
   }, [view.kind, refreshAppearance]);
   useEffect(() => {
     vaultTermRef.current = vaultTerm;

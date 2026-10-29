@@ -1,7 +1,7 @@
 /// 设置页（从 App.tsx 迁出的自包含视图）：设置加载/保存、热键录制、
 /// 各分区渲染。更新区消费 AppView 传入的 useUpdater 状态机。
 /// 挂载即拉取设置，卸载即停热键钩子——开关状态由父级 view 状态机决定
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -28,6 +28,7 @@ import {
   RotateCw,
   Search,
   Settings as SettingsIcon,
+  TriangleAlert,
   X,
   Zap,
 } from "lucide-react";
@@ -204,6 +205,16 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   /// 搜索捷径清单：随「保存」整单提交（校验失败留页修正）
   const [scList, setScList] = useState<Shortcut[]>([]);
   const [scErr, setScErr] = useState("");
+  // ---------- 脏态保护（评审 P1-03） ----------
+  // 基线快照（挂载到齐 / 保存成功后写）：设置 + 捷径整体 JSON 化对比——
+  // 字段改回原值仍算脏是可接受的保守语义，换取零侵入（不包 20+ 个 setSt）
+  const baselineRef = useRef<string | null>(null);
+  /// Esc 触发的退出确认条（有未保存更改时拦截，防静默丢弃）
+  const [exitConfirm, setExitConfirm] = useState(false);
+  const dirty =
+    !!st &&
+    baselineRef.current !== null &&
+    JSON.stringify({ st, scList }) !== baselineRef.current;
 
   // ---------- 账号库备份（加密导出/恢复，弹窗承载流程，动作即时执行不随「保存」） ----------
   // 导出：弹窗填口令（二次确认）→ save 对话框 → 加密落盘
@@ -376,10 +387,14 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   };
 
   useEffect(() => {
-    // 归一化：半新半旧会话里旧后端不下发新键，undefined 会导致保存时丢键
-    invoke<AppSettings>("get_app_settings")
-      .then((res) =>
-        setSt({
+    // 设置与捷径清单并行拉取，双双到齐后记脏判定基线（评审 P1-03）：
+    // 归一化补全半新半旧会话缺失的新键（undefined 会导致保存时丢键）
+    void Promise.all([
+      invoke<AppSettings>("get_app_settings"),
+      invoke<Shortcut[]>("shortcuts_list"),
+    ])
+      .then(([res, sc]) => {
+        const normalized: AppSettings = {
           ...res,
           clipAutoPaste: res.clipAutoPaste ?? true,
           stageMax: res.stageMax ?? 50,
@@ -397,12 +412,11 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             entries: p.entries ?? [],
             conflicts: p.conflicts ?? [],
           })),
-        })
-      )
-      .catch(() => {});
-    // 搜索捷径清单（独立命令：与主设置分开读写）
-    invoke<Shortcut[]>("shortcuts_list")
-      .then(setScList)
+        };
+        setSt(normalized);
+        setScList(sc);
+        baselineRef.current = JSON.stringify({ st: normalized, sc });
+      })
       .catch(() => {});
     // 版本号异步读取（tauri.conf.json 的 version），失败时留空
     getVersion()
@@ -508,6 +522,8 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   // 窗口捕获兜 Esc 关设置页（焦点掉 body 后面板 onKeyDown 收不到）。
   // 录制态让位（enabled=false，录制监听自己管 Esc=取消录制）；备份弹窗存活时
   // Esc 只关弹窗（重置口令与预览状态），不连设置页一起退。
+  // 脏态拦截（评审 P1-03）：有未保存更改先弹确认条——再按 Esc=留在页面，
+  // 「放弃更改」才真正退出；无更改直接退出零打扰
   useEscCapture(
     () => {
       if (bkDialog) {
@@ -517,6 +533,14 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         setBkErr("");
         setBkPreview(null);
         setBkSkip(true);
+        return;
+      }
+      if (exitConfirm) {
+        setExitConfirm(false);
+        return;
+      }
+      if (dirty) {
+        setExitConfirm(true);
         return;
       }
       onClose();
@@ -583,7 +607,10 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         // 任一热键失败都重拉实际生效值：直达槽位冲突/占用时存档串与显示值会漂移；
         // 且此场景不算保存成功，不显示「已保存 ✓」
         if (res.hotkeyError) setHkError(res.hotkeyError);
-        setSt(await invoke<AppSettings>("get_app_settings"));
+        const fresh = await invoke<AppSettings>("get_app_settings");
+        setSt(fresh);
+        // 保存成功即对齐基线（权威值来自后端重拉）：dirty 归零
+        baselineRef.current = JSON.stringify({ st: fresh, scList });
       } else {
         setHkError("");
         setSaveMsg("已保存 ✓");
@@ -1381,18 +1408,43 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             {saveMsg}
           </span>
         )}
-        <Button size="sm" className="shrink-0" onClick={() => void saveSettings()}>
+        <Button size="sm" className="shrink-0" disabled={!dirty} onClick={() => void saveSettings()}>
           保存
         </Button>
       </div>
+      {/* 退出确认条（评审 P1-03）：有未保存更改时 Esc/关闭被拦下——
+          放弃更改走 onClose（外观预览由 App 从 settings 退出的重拉自动回滚），
+          再按 Esc = 留在页面。样式复用 vault 删除确认同款 zap-dialog */}
+      {exitConfirm && (
+        <div className="zap-dialog-backdrop" onClick={() => setExitConfirm(false)}>
+          <div
+            className="zap-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="zap-confirm-text">
+              <TriangleAlert className="size-3.5" />
+              有未保存的更改，确定放弃并退出？
+            </div>
+            <div className="zap-confirm-actions">
+              <Button autoFocus variant="outline" onClick={() => setExitConfirm(false)}>
+                留在页面
+              </Button>
+              <Button variant="destructive" onClick={onClose}>
+                放弃更改
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
       {bkDialog && (
         <div className="zap-dialog-backdrop" onClick={closeBkDialog}>
           <div
             className="zap-dialog zap-bk-dialog"
             role="dialog"
             aria-modal="true"
-            onClick={(e) => e.stopPropagation()}
-          >
+            onClick={(e) => e.stopPropagation()}          >
             {bkDialog.kind === "export" ? (
               <>
                 <div className="zap-bk-title">导出备份</div>
