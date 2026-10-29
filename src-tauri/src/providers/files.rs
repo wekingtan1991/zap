@@ -12,6 +12,9 @@ const RETRY_BACKOFF: Duration = Duration::from_secs(30);
 static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 static PORT: Mutex<Option<u16>> = Mutex::new(None);
 static LAST_FAIL: Mutex<Option<Instant>> = Mutex::new(None);
+/// 托管实例 Basic 凭证缓存：外层 Option=已读过 ini，内层=有无凭证。
+/// ini 只在托管 setup 时改写，缓存与 PORT 同生命周期足够
+static AUTH: Mutex<Option<Option<(String, String)>>> = Mutex::new(None);
 
 fn client() -> &'static reqwest::blocking::Client {
     CLIENT.get_or_init(|| {
@@ -20,6 +23,48 @@ fn client() -> &'static reqwest::blocking::Client {
             .build()
             .expect("构建 HTTP 客户端失败")
     })
+}
+
+/// 从 ini 文本提取 HTTP Basic 凭证（纯函数）。两键齐备且非空才算有认证——
+/// 半缺状态（只配了用户名）按无凭证处理，与 Everything 自身的认证行为一致
+fn auth_from_ini(text: &str) -> Option<(String, String)> {
+    let mut user = None;
+    let mut pass = None;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if let Some(v) = t.strip_prefix("http_server_username=") {
+            user = Some(v.trim().to_string());
+        } else if let Some(v) = t.strip_prefix("http_server_password=") {
+            pass = Some(v.trim().to_string());
+        }
+    }
+    match (user, pass) {
+        (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => Some((u, p)),
+        _ => None,
+    }
+}
+
+/// 托管实例凭证（评审 P1-12）：与端口同路径从托管 ini 读，进程内缓存。
+/// 手动安装实例无托管 ini → None → 请求不带认证头
+fn managed_auth() -> Option<(String, String)> {
+    let mut g = AUTH.lock().expect("auth poisoned");
+    if g.is_none() {
+        *g = Some(
+            std::fs::read_to_string(managed_ini_path())
+                .ok()
+                .and_then(|t| auth_from_ini(&t)),
+        );
+    }
+    g.clone().flatten()
+}
+
+/// 带 Basic Auth 的 GET（托管实例有凭证则带上；无认证实例忽略多余头）
+fn get(url: &str) -> Option<reqwest::blocking::Response> {
+    let mut req = client().get(url);
+    if let Some((u, p)) = managed_auth() {
+        req = req.basic_auth(u, Some(p));
+    }
+    req.send().ok()
 }
 
 fn recently_failed() -> bool {
@@ -40,7 +85,7 @@ fn resolve_port() -> Option<u16> {
     }
     for &port in &port_candidates() {
         let url = format!("http://127.0.0.1:{port}/?json=1&n=1&s=zap-probe");
-        if client().get(&url).send().is_ok() {
+        if get(&url).is_some() {
             *PORT.lock().expect("port poisoned") = Some(port);
             return Some(port);
         }
@@ -90,7 +135,7 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
         "http://127.0.0.1:{port}/?json=1&n={limit}&path_column=1&s={}",
         urlencoding::encode(query)
     );
-    let Ok(resp) = client().get(&url).send() else {
+    let Ok(resp) = get(&url).ok_or(()) else {
         eprintln!("zap: files 请求失败: {url}");
         PORT.lock().expect("port poisoned").take();
         mark_failed();
@@ -142,5 +187,25 @@ pub struct FilesPlugin;
 impl super::plugin::Plugin for FilesPlugin {
     fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
         search(query, 8)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::auth_from_ini;
+
+    #[test]
+    fn 凭证提取两键齐备才算() {
+        let ini = "http_server_port=54321\r\nhttp_server_username=u\r\nhttp_server_password=p\r\n";
+        assert_eq!(auth_from_ini(ini), Some(("u".into(), "p".into())));
+        // 半缺：只配了用户名按无凭证（与 Everything 自身认证行为一致）
+        assert_eq!(auth_from_ini("http_server_username=u\r\n"), None);
+        // 空值不算
+        assert_eq!(
+            auth_from_ini("http_server_username=\r\nhttp_server_password=p\r\n"),
+            None
+        );
+        // 手动安装实例无托管 ini 内容
+        assert_eq!(auth_from_ini(""), None);
     }
 }

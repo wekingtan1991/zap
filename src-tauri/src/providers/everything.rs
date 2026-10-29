@@ -152,20 +152,21 @@ fn extract(dest_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 预置/修补 ini：确保 -local 本地配置里 HTTP 服务器是开着的。
+/// 预置/修补 ini：确保 -local 本地配置里 HTTP 服务器可用且带认证。
 /// 行尾必须用 CRLF——Everything 的解析器按 Windows 惯例处理换行。
 /// 注意 allow_http_server 是 1.4.1.1027+ 的安全策略键：
 /// 不声明它时，http_server_enabled=1 会在加载时被强制归零。
 /// 端口策略：已有配置沿用其端口；全新安装取 40000-59999 随机端口，避开常用端口。
+///
+/// 「只补缺、不覆盖」（评审 P1-12）：用户显式写过的键一律保留原值——旧实现
+/// 把 FIXED 三键每次 setup 强制改回 1，用户手动关闭的 HTTP 服务被静默复活
+/// （红队实证）。认证（评审 P1-12/R3 P1-1）：生成随机用户名/口令写
+/// http_server_username/password——绑定 127.0.0.1 挡不住浏览器沙箱/网页类
+/// 攻击面（能连回环端口但读不了文件系统，DNS rebinding 可绕 CORS 读响应），
+/// 匿名查询全盘文件名的口子必须关；同用户进程本就能读 ini 拿到凭证，
+/// 认证挡的从来不是它们。凭证与 files.rs 的 Basic Auth 同源（ini 是唯一载体）
 fn seed_ini() {
-    const EOL: &str = "\r\n";
-    const FIXED: [&str; 3] = [
-        "allow_http_server=1",
-        "http_server_enabled=1",
-        "http_server_bindings=127.0.0.1",
-    ];
-    let ini = ini_path();
-    let existing = std::fs::read_to_string(&ini).ok();
+    let existing = std::fs::read_to_string(ini_path()).ok();
     let port = existing
         .as_deref()
         .and_then(|text| {
@@ -176,57 +177,61 @@ fn seed_ini() {
             })
         })
         .unwrap_or_else(random_port);
-    let port_line = format!("http_server_port={port}");
+    let content = merge_ini(existing.as_deref(), port, &random_token(), &random_token());
+    let _ = std::fs::write(ini_path(), content);
+}
 
-    let content = match existing {
-        Some(text) => {
-            let mut out = String::with_capacity(text.len() + 96);
-            let mut seen = [false; 4];
-            for line in text.lines() {
-                let t = line.trim_start();
-                let mut replaced = false;
-                for (k, req) in FIXED.iter().enumerate() {
-                    if t.starts_with(req.split('=').next().unwrap_or(req)) {
-                        out.push_str(req);
-                        seen[k] = true;
-                        replaced = true;
-                        break;
-                    }
-                }
-                if !replaced && t.starts_with("http_server_port") {
-                    out.push_str(&port_line);
-                    seen[3] = true;
-                    replaced = true;
-                }
-                if !replaced {
-                    out.push_str(line);
-                }
-                out.push_str(EOL);
+/// ini 合并（纯函数）：existing 已有的键原值保留，缺失键按 wanted 追加到尾部。
+/// 全部 wanted 键：allow_http_server（1.4.1.1027+ 安全策略）、HTTP 开关/绑定/
+/// 端口、Basic Auth 凭证
+fn merge_ini(existing: Option<&str>, port: u16, username: &str, password: &str) -> String {
+    const EOL: &str = "\r\n";
+    let mut wanted: Vec<(&str, String)> = vec![
+        ("allow_http_server", "1".into()),
+        ("http_server_enabled", "1".into()),
+        ("http_server_bindings", "127.0.0.1".into()),
+        ("http_server_port", port.to_string()),
+        ("http_server_username", username.into()),
+        ("http_server_password", password.into()),
+    ];
+    let mut out = String::new();
+    if let Some(text) = existing {
+        for line in text.lines() {
+            let key = line
+                .trim_start()
+                .split('=')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if let Some(pos) = wanted.iter().position(|(k, _)| *k == key) {
+                wanted.remove(pos); // 用户已有该键：原值保留，从补缺清单移除
             }
-            for (k, req) in FIXED.iter().enumerate() {
-                if !seen[k] {
-                    out.push_str(req);
-                    out.push_str(EOL);
-                }
-            }
-            if !seen[3] {
-                out.push_str(&port_line);
-                out.push_str(EOL);
-            }
-            out
-        }
-        None => {
-            let mut out = String::new();
-            for req in FIXED {
-                out.push_str(req);
-                out.push_str(EOL);
-            }
-            out.push_str(&port_line);
+            out.push_str(line);
             out.push_str(EOL);
-            out
         }
-    };
-    let _ = std::fs::write(&ini, content);
+    }
+    for (k, v) in &wanted {
+        out.push_str(k);
+        out.push('=');
+        out.push_str(v);
+        out.push_str(EOL);
+    }
+    out
+}
+
+/// 随机凭证 token：系统 CSPRNG 16 字节 hex（getrandom 与 uuid_v4 同源）。
+/// 熵源异常的时间+pid 兜底——本机环回口令非密钥材料，够抗网页端枚举
+fn random_token() -> String {
+    let mut bytes = [0u8; 16];
+    if getrandom::fill(&mut bytes).is_err() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        return format!("{nanos:x}{:x}", std::process::id());
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn random_port() -> u16 {
@@ -346,7 +351,7 @@ pub fn ensure() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_versions;
+    use super::{extract_versions, merge_ini};
 
     #[test]
     fn 官网页面解析版本号() {
@@ -364,5 +369,36 @@ mod tests {
     #[test]
     fn 无匹配页面返回空表() {
         assert!(extract_versions("<html>no downloads here</html>").is_empty());
+    }
+
+    #[test]
+    fn ini合并只补缺不覆盖() {
+        // 全新安装：六键齐备含凭证
+        let fresh = merge_ini(None, 54321, "u1", "p1");
+        for key in [
+            "allow_http_server=1",
+            "http_server_enabled=1",
+            "http_server_bindings=127.0.0.1",
+            "http_server_port=54321",
+            "http_server_username=u1",
+            "http_server_password=p1",
+        ] {
+            assert!(fresh.contains(key), "缺 {key}");
+        }
+        // 用户已有关闭态：原值保留（旧实现会强制改回 1——红队实证的复活 bug）
+        let existing = "http_server_enabled=0\r\nhttp_server_port=12345\r\nhome=xxx\r\n";
+        let out = merge_ini(Some(existing), 54321, "u2", "p2");
+        assert!(out.contains("http_server_enabled=0"), "用户关闭不被复活");
+        assert!(out.contains("http_server_port=12345"), "用户端口不被覆盖");
+        assert!(out.contains("home=xxx"), "无关行原样保留");
+        assert!(out.contains("http_server_username=u2"), "凭证只补缺");
+        assert!(out.contains("allow_http_server=1"), "缺的安全策略键补上");
+        assert!(!out.contains("http_server_port=54321"), "已有端口不重复写");
+        // 用户已配凭证：不覆盖
+        let with_creds = "http_server_username=myu\r\nhttp_server_password=myp\r\n";
+        let out = merge_ini(Some(with_creds), 54321, "u3", "p3");
+        assert!(out.contains("http_server_username=myu"));
+        assert!(out.contains("http_server_password=myp"));
+        assert!(!out.contains("u3"), "用户凭证不被覆盖");
     }
 }
