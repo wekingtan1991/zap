@@ -128,10 +128,12 @@ pnpm build            # 仅前端类型检查 + 构建（tsc && vite build）
 测试与规范（在 `src-tauri/` 下）：
 
 ```bash
-cargo test --lib                                    # 后端单元测试（113 个）
+cargo test --lib                                    # 后端单元测试（数量以实跑为准）
 cargo test --lib -- --ignored --nocapture           # 真实开始菜单图标提取冒烟（机器相关）
 cargo fmt --check                                   # 格式检查（CI 同款）
 cargo clippy --all-targets -- -D warnings           # lint（CI 同款，零警告）
+node scripts/verify-version.mjs                     # 四处版本一致性（发版 bump 后自检）
+node scripts/check-keyboard-faces.mjs               # 键盘面纪律自检（pnpm check:kb）
 ```
 
 前端（仓库根目录）：

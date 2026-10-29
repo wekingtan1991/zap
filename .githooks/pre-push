@@ -10,8 +10,11 @@ cargo fmt --check
 echo "[pre-push] cargo clippy --all-targets -- -D warnings"
 cargo clippy -q --all-targets -- -D warnings
 
-echo "[pre-push] pnpm exec tsc --noEmit"
 cd "$root"
+echo "[pre-push] 版本一致性（四处 bump 同步）"
+node scripts/verify-version.mjs
+
+echo "[pre-push] pnpm exec tsc --noEmit"
 pnpm exec tsc --noEmit
 
 echo "[pre-push] pnpm test"

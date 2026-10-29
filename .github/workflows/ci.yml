@@ -43,6 +43,10 @@ jobs:
       - name: 键盘面纪律自检
         run: pnpm check:kb
 
+      # 四处版本一致性（发版 bump 漏改即红灯）
+      - name: 版本一致性校验
+        run: node scripts/verify-version.mjs
+
       - name: 前端类型检查与构建
         run: pnpm build
 
