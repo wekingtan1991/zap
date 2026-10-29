@@ -5,7 +5,7 @@
 /// 2) 根节点 <div className="zap-panel outline-none" tabIndex={-1} ref={focusRef}>
 /// 3) Esc 一律 useEscCapture(onBack, true) 窗口捕获——焦点掉 body 后面板 onKeyDown
 ///    收不到，这是栽过两次的坑（2026-10-22 表单 Esc / 2026-10-28 合并模式键盘面）
-/// 4) 行号源 / 粘贴替换 / 复制闪烁 / 头部条用下方 hooks 与 PanelHeader，
+/// 4) 行号源 / 粘贴常驻监听 / 复制闪烁 / 头部条用下方 hooks 与 PanelHeader，
 ///    工作台面板不再各自复制这份生命周期
 /// 新增面板 = App 的 View 加一个 kind + 渲染分支 + ItemActions 注册动作，
 /// 不新增模式特判；消费者：图片预览（clipimg）、JSON 工作台、文本工具工作台
@@ -43,30 +43,24 @@ export function usePanelSource(props: { text?: string; clipRow?: number }) {
   return { srcText, setSrcText, loadErr, active: srcText ?? "" };
 }
 
-/// 粘贴替换等待态：startAwait 后下一次 Ctrl+V 整体替换内容（onPasted 回调），
-/// 5 秒无粘贴自动取消。捕获阶段挂 window——焦点在非可编辑元素时 paste 事件
-/// 仍会到达。onPasted 传 setState（稳定引用）：仅 awaitPaste 变化才重挂，
-/// 等待期间的 5 秒计时不被无关渲染重置
-export function useAwaitPaste(onPasted: (text: string) => void) {
-  const [awaitPaste, setAwaitPaste] = useState(false);
+/// 粘贴常驻监听（评审 P1-02）：面板挂载期 window 捕获 paste，任何时刻
+/// Ctrl+V（焦点在非可编辑元素时事件仍到达，本 hook 存在的前提）即整体替换
+/// 内容——空态文案「按 Ctrl+V 粘贴」从此恒真。旧实现监听只在点过「粘贴替换」
+/// 按钮后挂载，新用户按空态提示操作第一次必然哑火，且 5 秒无粘贴还得重按
+/// 按钮。消费者均为只读展示面板（无 textarea/input），capture 拦截不会吃掉
+/// 编辑区粘贴；新面板引入可编辑元素时必须重新审视这条假设。onPasted 传
+/// setState（稳定引用）：监听只挂载一次
+export function usePanelPaste(onPasted: (text: string) => void) {
   useEffect(() => {
-    if (!awaitPaste) return;
     const onPaste = (e: ClipboardEvent) => {
       const t = e.clipboardData?.getData("text");
       if (!t) return;
       e.preventDefault();
       onPasted(t);
-      setAwaitPaste(false);
     };
     window.addEventListener("paste", onPaste, true);
-    const timer = setTimeout(() => setAwaitPaste(false), 5000);
-    return () => {
-      window.removeEventListener("paste", onPaste, true);
-      clearTimeout(timer);
-    };
-  }, [awaitPaste, onPasted]);
-  const startAwait = useCallback(() => setAwaitPaste(true), []);
-  return { awaitPaste, startAwait };
+    return () => window.removeEventListener("paste", onPaste, true);
+  }, [onPasted]);
 }
 
 /// 复制成功闪烁：key 标记哪一行在闪，ms 后自动熄灭；同 key 重复复制由

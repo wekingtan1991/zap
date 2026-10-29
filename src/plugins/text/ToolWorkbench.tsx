@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
   Check,
-  ClipboardPaste,
   Copy,
   Hash,
   Link2,
@@ -19,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { useEscCapture } from "@/hooks/useEscCapture";
 import {
   PanelHeader,
-  useAwaitPaste,
+  usePanelPaste,
   useCopyFlash,
   usePanelSource,
   type PanelProps,
@@ -102,7 +101,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
   const [cmdErr, setCmdErr] = useState("");
   const [uuid, setUuid] = useState("");
   const { copied, flash } = useCopyFlash();
-  const { awaitPaste, startAwait } = useAwaitPaste(setSrcText);
+  usePanelPaste(setSrcText);
 
   // 独立面板：窗口捕获兜 Esc（焦点掉 body 后面板 onKeyDown 收不到）
   useEscCapture(onBack, true);
@@ -170,16 +169,6 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
         variant="ghost"
         size="sm"
         className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-        disabled={awaitPaste}
-        onClick={startAwait}
-      >
-        <ClipboardPaste className="size-3" />
-        {awaitPaste ? "按 Ctrl+V 粘贴…" : "粘贴替换"}
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
         onClick={onBack}
       >
         <ArrowLeft className="size-3" />
@@ -331,9 +320,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
       </div>
       {!active.trim() && !loadErr && (
         <div className="zap-tool-empty-all">
-          {text !== undefined
-            ? "按 Ctrl+V 粘贴，或点右上「粘贴替换」"
-            : "正在读取剪贴板…"}
+          {text !== undefined ? "按 Ctrl+V 粘贴" : "正在读取剪贴板…"}
         </div>
       )}
     </div>

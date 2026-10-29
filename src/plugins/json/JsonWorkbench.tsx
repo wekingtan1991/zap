@@ -5,7 +5,6 @@ import {
   Braces,
   Check,
   ChevronRight,
-  ClipboardPaste,
   Copy,
   TriangleAlert,
 } from "lucide-react";
@@ -14,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { useEscCapture } from "@/hooks/useEscCapture";
 import {
   PanelHeader,
-  useAwaitPaste,
+  usePanelPaste,
   useCopyFlash,
   usePanelSource,
   type PanelProps,
@@ -55,7 +54,7 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
   const { copied, flash } = useCopyFlash();
   /// 后端命令级错误（插件停用等）：与内容级校验错误（report.error）分开呈现
   const [cmdErr, setCmdErr] = useState("");
-  const { awaitPaste, startAwait } = useAwaitPaste(setSrcText);
+  usePanelPaste(setSrcText);
 
   // 独立面板：窗口捕获兜 Esc（焦点掉 body 后面板 onKeyDown 收不到）
   useEscCapture(onBack, true);
@@ -153,16 +152,6 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
         variant="ghost"
         size="sm"
         className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-        disabled={awaitPaste}
-        onClick={startAwait}
-      >
-        <ClipboardPaste className="size-3" />
-        {awaitPaste ? "按 Ctrl+V 粘贴…" : "粘贴替换"}
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
         onClick={onBack}
       >
         <ArrowLeft className="size-3" />
@@ -208,7 +197,7 @@ export function JsonWorkbench({ text, clipRow, onBack, focusRef }: Props) {
               {loadErr
                 ? "无法加载内容"
                 : text !== undefined
-                  ? "按 Ctrl+V 粘贴，或点右上「粘贴替换」"
+                  ? "按 Ctrl+V 粘贴"
                   : "正在读取剪贴板…"}
             </span>
           </div>
