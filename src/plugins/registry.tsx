@@ -120,6 +120,16 @@ const REGISTRY: Record<string, KindUi> = {
     rowAction: (it, act) => (
       <VaultRowPin pinned={isPinned(it)} onPin={() => act.vaultPin(it)} />
     ),
+    // 行右键菜单（评审 P1-04——vault 曾是唯一无 ctxActions 的 kind，右键
+    // 点了毫无反馈）。全走既有 vault_action 通道：查看/编辑/删除与 Alt
+    // 快捷键同一分发；置顶 toggle、打开网址经 vault:url open_item
+    ctxActions: [
+      ["vault_reveal", "查看密码"],
+      ["vault_url", "打开网址"],
+      ["vault_edit", "编辑"],
+      ["vault_pin", "置顶 / 取消置顶"],
+      ["vault_delete", "删除…"],
+    ],
   },
   web: {
     label: "搜索",

@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Check,
   Copy,
+  ExternalLink,
   Eye,
   EyeOff,
   KeyRound,
@@ -54,6 +55,8 @@ interface Props {
   onCopyField: (id: number, field: CopyableField) => Promise<boolean>;
   onEdit: () => void;
   onPin: () => void;
+  /// 网址行「打开」（评审 P1-04 鼠标等价物，与 Alt+1 同一 vault_action url 通道）
+  onOpenUrl: () => void;
 }
 
 /// 账号详情：逐行展示，行尾一键复制（密码带掩码切换与阅后即焚，均不入剪贴板历史）。
@@ -67,6 +70,7 @@ export function VaultDetailView({
   onCopyField,
   onEdit,
   onPin,
+  onOpenUrl,
 }: Props) {
   const [showPw, setShowPw] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(initialConfirmDelete);
@@ -195,6 +199,19 @@ export function VaultDetailView({
                 <span className="zap-detail-value">{r.value || "（空）"}</span>
               )}
               <span className="zap-detail-ops">
+                {/* 网址行的鼠标「打开」路径（评审 P1-04）：打开此前只有 Alt+1
+                    键盘入口，鼠标用户无等价动作。与 vault_action url 同通道 */}
+                {r.field === "url" && r.value && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => onOpenUrl()}
+                  >
+                    <ExternalLink className="size-3" />
+                    打开
+                  </Button>
+                )}
                 {r.field === "password" && detail.password && (
                   <Button
                     variant="secondary"

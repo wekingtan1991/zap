@@ -988,11 +988,15 @@ function AppView() {
     (it: SearchItem | undefined) => {
       if (!it || busyRef.current) return;
       // 合并粘贴模式：点击文本剪贴板条目 = 勾选/取消（保序），不打开、不触发
-      // 分发；放在同条目去重之前——快速二连点取消勾选不能被双击防抖吞掉
+      // 分发；放在同条目去重之前——快速二连点取消勾选不能被双击防抖吞掉。
+      // 非 clip 行禁用（评审 P1-05）：合并模式「点=选」的心智下，误点非 clip
+      // 行直接启动应用/打开文件是真实副作用——禁用态由渲染层降透明度提示，
+      // 这里静默忽略
       if (mergeMode && it.kind === "clip") {
         toggleClipSelection(it);
         return;
       }
+      if (mergeMode) return;
       // 同一条目 300ms 内去重：双击行（Explorer 迁移习惯）= 两次 click，
       // 文件/应用类会 ShellExecute 两次开两份；Enter 连击同理
       const now = performance.now();
@@ -1205,6 +1209,19 @@ function AppView() {
         onCopyField={copyField}
         onEdit={editCurrent}
         onPin={() => void pinCurrent()}
+        onOpenUrl={() =>
+          void vaultAction(
+            {
+              id: `vault:${view.data.id}`,
+              title: view.data.title,
+              subtitle: "",
+              kind: "vault",
+              target: String(view.data.id),
+              score: 0,
+            },
+            "url"
+          )
+        }
       />
     );
   }
@@ -1334,7 +1351,13 @@ function AppView() {
             <div
               key={it.id + String(i)}
               ref={i === active ? activeItemRef : undefined}
-              className={"zap-item" + (i === active ? " active" : "")}
+              className={
+                "zap-item" +
+                (i === active ? " active" : "") +
+                // 合并模式的非 clip 行禁用态（评审 P1-05）：点=选 心智下
+                // 非目标行降透明度并吞点击，防误启动/误打开
+                (mergeMode && it.kind !== "clip" ? " merge-disabled" : "")
+              }
               onMouseEnter={() => setActive(i)}
               onClick={() => runItem(it)}
               onContextMenu={(e) => {
@@ -1410,6 +1433,16 @@ function AppView() {
                       void clipDelete(ctxMenu.item);
                     else if (act === "clipimg_preview")
                       openClipImagePreview(ctxMenu.item);
+                    // vault 域（评审 P1-04）：与 Alt 快捷键同一 vault_action 分发
+                    else if (act === "vault_reveal")
+                      void vaultAction(ctxMenu.item, "reveal");
+                    else if (act === "vault_url")
+                      void vaultAction(ctxMenu.item, "url");
+                    else if (act === "vault_edit") void startEdit(ctxMenu.item);
+                    else if (act === "vault_pin")
+                      void vaultAction(ctxMenu.item, "pin");
+                    else if (act === "vault_delete")
+                      void openDeleteConfirm(ctxMenu.item);
                     else void secondaryAction(
                       act as "admin" | "reveal" | "copy_path" | "clip_copy" | "close_window",
                       ctxMenu.item
@@ -1492,15 +1525,19 @@ function AppView() {
                   </button>
                 </>
               ) : (
-                <button
-                  type="button"
-                  className="zap-merge-enter"
-                  onClick={toggleMerge}
-                  title="连续点选多条剪贴板文本条目，按点选顺序合并成一条粘贴"
-                >
-                  <Layers className="size-3" />
-                  <span>合并粘贴</span>
-                </button>
+                // 合并入口只在列表实际含 clip 条目时露出（评审 P1-05）：
+                // 对纯应用/文件结果显示「合并粘贴」是无指向的死按钮
+                items.some((x) => x.kind === "clip") && (
+                  <button
+                    type="button"
+                    className="zap-merge-enter"
+                    onClick={toggleMerge}
+                    title="连续点选多条剪贴板文本条目，按点选顺序合并成一条粘贴"
+                  >
+                    <Layers className="size-3" />
+                    <span>合并粘贴</span>
+                  </button>
+                )
               )}
               <span className="zap-footer-sep" />
               <Kbd>pw</Kbd>
@@ -1556,7 +1593,8 @@ function AppView() {
           <span>设置</span>
           <span className="zap-footer-sep" />
           <Kbd>Esc</Kbd>
-          <span>清空 / 关闭</span>
+          {/* 合并模式下 Esc 的实际语义是退出合并（评审 P1-05）：提示随模式切换 */}
+          <span>{mergeMode ? "退出合并" : "清空 / 关闭"}</span>
         </span>
       </div>
     </div>

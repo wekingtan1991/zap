@@ -18,6 +18,7 @@ import {
   Download,
   Globe,
   Inbox,
+  Info,
   KeyRound,
   Loader2,
   Palette,
@@ -1296,7 +1297,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                 )}
                 {updateStatus === "ready" && (
                   <span className="truncate text-xs text-muted-foreground">
-                    更新已就绪，重启 zap 完成安装
+                    安装即将自动完成，zap 稍后自行重启（按钮供手动触发）
                   </span>
                 )}
               </span>
@@ -1340,9 +1341,37 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                 onClick={() => void relaunch()}
               >
                 <RotateCw className="size-3.5" />
-                重启以完成更新
+                重启 zap
               </Button>
             )}
+          </div>
+        </div>
+        {/* 关于（评审 P1-16）：版本/数据位置/诊断三要素的家——SECURITY.md 的
+            「设置→关于」引用在此落地，bug 反馈的日志入口（与「软件更新」区的
+            版本号互补：这里是数据与诊断，不重复展示版本行） */}
+        <div className="mt-3 border-t border-border pt-3">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+            <Info className="size-3 text-primary/75" />
+            关于
+          </div>
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <span className="text-[13px] text-foreground">数据与诊断</span>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                全部数据在本地目录；反馈问题请附其中的 zap.log
+              </span>
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void invoke("open_data_dir")
+                  .then(() => toast.success("已打开数据目录"))
+                  .catch((e) => toast.error(String(e)));
+              }}
+            >
+              打开数据目录
+            </Button>
           </div>
         </div>
       </div>

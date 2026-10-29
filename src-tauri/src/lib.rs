@@ -823,6 +823,17 @@ async fn clip_clear_unpinned(state: tauri::State<'_, AppState>) -> Result<usize,
         .map_err(|e| e.to_string())?
 }
 
+/// 打开数据目录（评审 P1-16「关于」区）：版本/数据位置/诊断三要素的家，
+/// 也是 SECURITY.md「设置→关于」引用的落地——用户排障取 zap.log 的入口
+#[tauri::command]
+async fn open_data_dir(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// 合并粘贴结果：count = 实际合并条数（已被清理的跳过）；pasted = 是否带了
 /// 焦点交还+注入（自动粘贴关闭时只回填，措辞应说「到剪贴板」而非「粘贴」）
 #[derive(serde::Serialize)]
@@ -1875,7 +1886,8 @@ pub fn run() {
             superpanel_hide,
             superpanel_payload,
             start_hotkey_capture,
-            stop_hotkey_capture
+            stop_hotkey_capture,
+            open_data_dir
         ])
         .setup(|app| {
             // 数据库与剪贴板监听线程

@@ -45,16 +45,23 @@ export function useUpdater(): Updater {
   }, []);
 
   // 启动静默检查一次：离线/网络失败不打扰；面板隐藏时 toast 不可见，
-  // 命中新版本只记标记，等下次面板呼出再提示
+  // 命中新版本只记标记，等下次面板呼出再提示。
+  // 常驻托盘应用可能数月不重启（评审 P1-20）：24h 间隔重查——check 已幂等
+  // （checking/downloading 态由 checkForUpdate 门控，此处静默路径直接调 check
+  // 也不会打断下载），失败静默不打扰
   useEffect(() => {
-    check()
-      .then((u) => {
-        if (u) {
-          applyUpdate(u);
-          updateNotifiedRef.current = true;
-        }
-      })
-      .catch(() => {});
+    const silentCheck = () =>
+      check()
+        .then((u) => {
+          if (u) {
+            applyUpdate(u);
+            updateNotifiedRef.current = true;
+          }
+        })
+        .catch(() => {});
+    silentCheck();
+    const timer = setInterval(silentCheck, 24 * 60 * 60 * 1000);
+    return () => clearInterval(timer);
   }, [applyUpdate]);
 
   useEffect(() => {
@@ -108,7 +115,16 @@ export function useUpdater(): Updater {
       setUpdateStatus("ready");
     } catch (e) {
       setUpdateStatus("available");
-      toast.error("下载更新失败：" + String(e));
+      // catch 覆盖「下载失败」与「安装器启动失败」两种故障：updater 插件把
+      // 安装器启动失败也抛在这里，文案区分开避免误导用户重试下载（评审 P2-09；
+      // Windows 默认装完自动重启——tauri-plugin-updater restart_after_install）
+      const msg = String(e);
+      if (msg.includes("exit") || msg.includes("installer")) {
+        toast.error("安装程序启动失败：" + msg);
+        setUpdateStatus("ready"); // 安装包已就绪，可手动重启触发
+      } else {
+        toast.error("下载更新失败：" + msg);
+      }
     } finally {
       await invoke("set_hold_panel", { hold: false }).catch(() => {});
     }

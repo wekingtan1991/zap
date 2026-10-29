@@ -96,8 +96,16 @@ describe("kindUi 注册表", () => {
     // 网页/捷径结果（kind=web）与网址：仅复制链接
     expect(kindUi("web")?.ctxActions).toEqual([["copy_path", "复制链接"]]);
     expect(kindUi("url")?.ctxActions).toEqual([["copy_path", "复制链接"]]);
-    // 工具/状态/功能/设置/账号无右键菜单（undefined = 只压默认菜单）
-    for (const kind of ["json", "tool", "cmd", "info", "settings", "vault"]) {
+    // 账号：五项右键菜单（查看/打开/编辑/置顶/删除，全走 vault_action）
+    expect(kindUi("vault")?.ctxActions).toEqual([
+      ["vault_reveal", "查看密码"],
+      ["vault_url", "打开网址"],
+      ["vault_edit", "编辑"],
+      ["vault_pin", "置顶 / 取消置顶"],
+      ["vault_delete", "删除…"],
+    ]);
+    // 工具/状态/功能/设置无右键菜单（undefined = 只压默认菜单）
+    for (const kind of ["json", "tool", "cmd", "info", "settings"]) {
       expect(kindUi(kind)?.ctxActions, kind).toBeUndefined();
     }
   });
