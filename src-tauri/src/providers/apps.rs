@@ -450,14 +450,14 @@ fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
             None,
         )
         .ok() else {
-            eprintln!("zap: shell:AppsFolder 打开失败，UWP 应用未收录");
+            super::diag::log_warn("shell:AppsFolder 打开失败，UWP 应用未收录");
             return;
         };
         let Some(items) = folder
             .BindToHandler::<Option<&IBindCtx>, IEnumShellItems>(None, &BHID_EnumItems)
             .ok()
         else {
-            eprintln!("zap: shell:AppsFolder 枚举失败");
+            super::diag::log_warn("shell:AppsFolder 枚举失败");
             return;
         };
 

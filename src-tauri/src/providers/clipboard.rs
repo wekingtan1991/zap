@@ -338,103 +338,120 @@ pub fn spawn_watcher(db_path: PathBuf) {
         let conn = match open_db_resilient(&worker_path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("zap: 剪贴板图片入库线程打开数据库失败: {e}");
+                super::diag::log_err(&format!("剪贴板图片入库线程打开数据库失败: {e}"));
                 return;
             }
         };
         let _ = image_store_loop(conn, img_rx);
     });
     std::thread::spawn(move || {
-        let conn = match open_db_resilient(&db_path) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("zap: 剪贴板数据库打开失败: {e}");
-                return;
+        // watcher 自愈（评审 P1-11）：master.run() 退出（消息循环异常）或
+        // arboard 初始化失败都曾是「线程静默死亡」——剪贴板历史无声停摆，
+        // 唯一线索是 release 下没人看得见的 eprintln。respawn 循环 + 上限
+        // 3 次退避（5s 间隔）：持续失败说明系统性故障（如剪贴板被别的
+        // 进程锁死），无限重试只会空转刷日志
+        const MAX_RESPAWN: u32 = 3;
+        for attempt in 0..=MAX_RESPAWN {
+            if attempt > 0 {
+                super::diag::log_warn(&format!(
+                    "watcher 第 {attempt}/{MAX_RESPAWN} 次 respawn（5s 后）"
+                ));
+                std::thread::sleep(std::time::Duration::from_secs(5));
             }
-        };
-        struct Handler {
-            conn: Connection,
-            cb: arboard::Clipboard,
-            img_tx: std::sync::mpsc::SyncSender<ImageTask>,
-        }
-        impl ClipboardHandler for Handler {
-            fn on_clipboard_change(&mut self) -> CallbackResult {
-                // 账号库阅后即焚：自身复制窗口内的变更一律不入库（高频路径，不落日志）
-                if in_suppress_window() {
-                    return CallbackResult::Next;
-                }
-                // 总开关关闭：照常消费事件但不入库
-                if !CLIP_ENABLED.load(Ordering::Relaxed) {
-                    return CallbackResult::Next;
-                }
-                if let Ok(text) = self.cb.get_text() {
-                    let text = text.trim_end().to_string();
-                    // 账号库密码防护（评审 P1-09）：来源过滤只认桌面密码管理器，
-                    // 浏览器内置 PM/用户手动复制的密码会漏——入库前与 vault
-                    // 密码明文集比对，命中不入库并顺手清掉历史同值行（改密/
-                    // 导入后的旧值同样不可从历史翻出）。比对走 O(1) 内存集，
-                    // 首次惰性全量解密一次
-                    let vault_hit =
-                        !text.is_empty() && super::vault::password_cache_hit(&self.conn, &text);
-                    if vault_hit {
-                        let _ = self.conn.execute(
-                            "DELETE FROM clipboard_history WHERE content=?1",
-                            params![text],
-                        );
-                        return CallbackResult::Next;
-                    }
-                    if !text.is_empty() && !is_from_password_manager() {
-                        let now = now_ms();
-                        let _ = self.conn.execute(
-                            "INSERT INTO clipboard_history(content, created_at) VALUES(?1, ?2)
-                             ON CONFLICT(content) DO UPDATE SET created_at=excluded.created_at",
-                            params![text, now],
-                        );
-                        // 清理让位于固定：置顶条目不参与保留条数淘汰
-                        let _ = self.conn.execute(
-                            "DELETE FROM clipboard_history WHERE pinned=0 AND id NOT IN (
-                                 SELECT id FROM clipboard_history ORDER BY created_at DESC LIMIT ?1
-                             )",
-                            params![RETENTION_LIMIT.load(Ordering::Relaxed)],
-                        );
-                    }
-                } else if let Ok(img) = self.cb.get_image() {
-                    // 无文本可取时尝试图片（截图类）：只取 RGBA 丢队列，编码/哈希/
-                    // 缩略图在独立线程；队列满丢弃（风暴保护，见 spawn_watcher 注释）
-                    let _ = self.img_tx.try_send(ImageTask {
-                        rgba: img.bytes.into_owned(),
-                        width: img.width as u32,
-                        height: img.height as u32,
-                    });
-                }
-                CallbackResult::Next
-            }
-
-            fn on_clipboard_error(&mut self, error: io::Error) -> CallbackResult {
-                eprintln!("zap: 剪贴板监听错误: {error}");
-                CallbackResult::Next
-            }
-        }
-
-        let handler = Handler {
-            conn,
-            img_tx,
-            cb: match arboard::Clipboard::new() {
+            let conn = match open_db_resilient(&db_path) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("zap: 剪贴板初始化失败: {e}");
-                    return;
+                    super::diag::log_err(&format!("剪贴板数据库打开失败: {e}"));
+                    continue;
                 }
-            },
-        };
-        match Master::new(handler) {
-            Ok(mut master) => {
-                if let Err(e) = master.run() {
-                    eprintln!("zap: 剪贴板监听退出: {e}");
+            };
+            struct Handler {
+                conn: Connection,
+                cb: arboard::Clipboard,
+                img_tx: std::sync::mpsc::SyncSender<ImageTask>,
+            }
+            impl ClipboardHandler for Handler {
+                fn on_clipboard_change(&mut self) -> CallbackResult {
+                    // 账号库阅后即焚：自身复制窗口内的变更一律不入库（高频路径，不落日志）
+                    if in_suppress_window() {
+                        return CallbackResult::Next;
+                    }
+                    // 总开关关闭：照常消费事件但不入库
+                    if !CLIP_ENABLED.load(Ordering::Relaxed) {
+                        return CallbackResult::Next;
+                    }
+                    if let Ok(text) = self.cb.get_text() {
+                        let text = text.trim_end().to_string();
+                        // 账号库密码防护（评审 P1-09）：来源过滤只认桌面密码管理器，
+                        // 浏览器内置 PM/用户手动复制的密码会漏——入库前与 vault
+                        // 密码明文集比对，命中不入库并顺手清掉历史同值行（改密/
+                        // 导入后的旧值同样不可从历史翻出）。比对走 O(1) 内存集，
+                        // 首次惰性全量解密一次
+                        let vault_hit =
+                            !text.is_empty() && super::vault::password_cache_hit(&self.conn, &text);
+                        if vault_hit {
+                            let _ = self.conn.execute(
+                                "DELETE FROM clipboard_history WHERE content=?1",
+                                params![text],
+                            );
+                            return CallbackResult::Next;
+                        }
+                        if !text.is_empty() && !is_from_password_manager() {
+                            let now = now_ms();
+                            let _ = self.conn.execute(
+                                "INSERT INTO clipboard_history(content, created_at) VALUES(?1, ?2)
+                                 ON CONFLICT(content) DO UPDATE SET created_at=excluded.created_at",
+                                params![text, now],
+                            );
+                            // 清理让位于固定：置顶条目不参与保留条数淘汰
+                            let _ = self.conn.execute(
+                                "DELETE FROM clipboard_history WHERE pinned=0 AND id NOT IN (
+                                     SELECT id FROM clipboard_history ORDER BY created_at DESC LIMIT ?1
+                                 )",
+                                params![RETENTION_LIMIT.load(Ordering::Relaxed)],
+                            );
+                        }
+                    } else if let Ok(img) = self.cb.get_image() {
+                        // 无文本可取时尝试图片（截图类）：只取 RGBA 丢队列，编码/哈希/
+                        // 缩略图在独立线程；队列满丢弃（风暴保护，见 spawn_watcher 注释）
+                        let _ = self.img_tx.try_send(ImageTask {
+                            rgba: img.bytes.into_owned(),
+                            width: img.width as u32,
+                            height: img.height as u32,
+                        });
+                    }
+                    CallbackResult::Next
+                }
+
+                fn on_clipboard_error(&mut self, error: io::Error) -> CallbackResult {
+                    super::diag::log_warn(&format!("剪贴板监听错误: {error}"));
+                    CallbackResult::Next
                 }
             }
-            Err(e) => eprintln!("zap: 剪贴板监听启动失败: {e}"),
+
+            let cb = match arboard::Clipboard::new() {
+                Ok(c) => c,
+                Err(e) => {
+                    super::diag::log_err(&format!("剪贴板初始化失败: {e}"));
+                    continue; // respawn 再试
+                }
+            };
+            let handler = Handler {
+                conn,
+                cb,
+                img_tx: img_tx.clone(),
+            };
+            match Master::new(handler) {
+                Ok(mut master) => {
+                    super::diag::log("watcher\t监听启动");
+                    if let Err(e) = master.run() {
+                        super::diag::log_err(&format!("剪贴板监听退出: {e}"));
+                    }
+                }
+                Err(e) => super::diag::log_err(&format!("剪贴板监听启动失败: {e}")),
+            }
         }
+        super::diag::log_err("watcher 放弃 respawn：连续退出已达上限，剪贴板历史停摆");
     });
 }
 

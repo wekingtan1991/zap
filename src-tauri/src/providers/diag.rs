@@ -14,6 +14,24 @@ pub fn init(path: std::path::PathBuf) {
 /// 追加一行日志（时间戳为 Unix 毫秒）。超过 1MB 时轮转为 .old（只保留一代），
 /// 轮转与其他写入方的竞争一律忽略失败——诊断不能影响主流程。
 pub fn log(msg: &str) {
+    write_line(msg);
+}
+
+/// 错误日志：zap.log 落盘（[E] 前缀，远程排障可 grep）+ stderr 双写
+/// （debug 构建终端可见；release 的 windows_subsystem 下 stderr 无处去，
+/// 文件是唯一留痕）。迁移自散装 eprintln（评审 P1-10）
+pub fn log_err(msg: &str) {
+    eprintln!("zap: {msg}");
+    write_line(&format!("[E] {msg}"));
+}
+
+/// 警告日志：同 log_err 但语义为可恢复异常
+pub fn log_warn(msg: &str) {
+    eprintln!("zap: {msg}");
+    write_line(&format!("[W] {msg}"));
+}
+
+fn write_line(msg: &str) {
     let Some(path) = LOG_PATH.get() else {
         return;
     };

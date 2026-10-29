@@ -332,18 +332,18 @@ pub fn ensure() -> String {
     *last = Some(Instant::now());
     drop(last);
 
-    eprintln!("zap: everything 未运行，自动启动中…（UAC 请点“是”）");
+    super::diag::log("everything\t未运行，自动启动中…（UAC 请点“是”）");
     match setup() {
         Ok(s) if s == "running" => {
-            eprintln!("zap: everything 自动启动成功 ✓ 全盘文件搜索已就绪");
+            super::diag::log("everything\t自动启动成功 ✓ 全盘文件搜索已就绪");
             s
         }
         Ok(s) => {
-            eprintln!("zap: everything 已启动但 HTTP 服务未就绪（{s}）");
+            super::diag::log_warn(&format!("everything\t已启动但 HTTP 服务未就绪（{s}）"));
             s
         }
         Err(e) => {
-            eprintln!("zap: everything 自动启动失败: {e}");
+            super::diag::log_err(&format!("everything\t自动启动失败: {e}"));
             "error".into()
         }
     }

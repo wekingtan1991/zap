@@ -1,6 +1,7 @@
 //! 录制热键：GetAsyncKeyState 轮询物理按键状态（不经消息/钩子投递，免疫输入法高层拦截与
 //! 本进程钩子不投递的问题）。轮询粒度 15ms，对热键录制足够。前台不在面板时丢弃采集。
-//! 诊断日志：%APPDATA%\com.ais.zap\capture.log
+//! 诊断日志并入 zap.log（hk\t 前缀，评审 P1-10）——独立 capture.log 让排障
+//! 要看两个文件，且无轮转控制
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,22 +17,7 @@ static PENDING: Mutex<Option<String>> = Mutex::new(None);
 static STARTED: Mutex<Option<Instant>> = Mutex::new(None);
 
 fn log(msg: &str) {
-    use std::io::Write;
-    if let Ok(base) = std::env::var("APPDATA") {
-        let path = std::path::Path::new(&base)
-            .join("com.ais.zap")
-            .join("capture.log");
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
-            let _ = writeln!(f, "[{now:?}] {msg}");
-        }
-    }
+    crate::providers::diag::log(&format!("hk\t{msg}"));
 }
 
 fn key_down(vk: i32) -> bool {

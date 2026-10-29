@@ -136,19 +136,19 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
         urlencoding::encode(query)
     );
     let Ok(resp) = get(&url).ok_or(()) else {
-        eprintln!("zap: files 请求失败: {url}");
+        super::diag::log_warn(&format!("files 请求失败: {url}"));
         PORT.lock().expect("port poisoned").take();
         mark_failed();
         return Vec::new();
     };
     let status = resp.status();
     let Ok(value) = resp.json::<serde_json::Value>() else {
-        eprintln!("zap: files JSON 解析失败（HTTP {status}）");
+        super::diag::log_warn(&format!("files JSON 解析失败（HTTP {status}）"));
         return Vec::new();
     };
 
     let Some(results) = value.get("results").and_then(serde_json::Value::as_array) else {
-        eprintln!("zap: files 响应无 results 字段（HTTP {status}）");
+        super::diag::log_warn(&format!("files 响应无 results 字段（HTTP {status}）"));
         return Vec::new();
     };
     let items: Vec<SearchItem> = results

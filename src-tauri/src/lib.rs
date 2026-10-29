@@ -381,14 +381,14 @@ fn save_settings(
         match hotkey.parse::<Shortcut>() {
             Ok(sc) => match gs.register(sc) {
                 Ok(_) => {
-                    eprintln!("zap: 呼出热键已切换 {current} → {hotkey}");
+                    providers::diag::log(&format!("hotkey\t呼出热键已切换 {current} → {hotkey}"));
                     state
                         .engine
                         .set_setting(providers::appconfig::KEY_HOTKEY, &hotkey)?;
                     *state.hotkey.lock().expect("hotkey poisoned") = hotkey.clone();
                 }
                 Err(e) => {
-                    eprintln!("zap: 热键 {hotkey} 注册失败: {e}");
+                    providers::diag::log_err(&format!("热键 {hotkey} 注册失败: {e}"));
                     hotkey_error = Some(format!("注册失败，可能已被其他程序占用：{e}"));
                     if let Ok(old) = current.parse::<Shortcut>() {
                         let _ = gs.register(old);
@@ -396,7 +396,7 @@ fn save_settings(
                 }
             },
             Err(e) => {
-                eprintln!("zap: 热键 {hotkey} 无法解析: {e}");
+                providers::diag::log_err(&format!("热键 {hotkey} 无法解析: {e}"));
                 hotkey_error = Some(format!("无法识别的按键组合：{e}"));
                 if let Ok(old) = current.parse::<Shortcut>() {
                     let _ = gs.register(old);
@@ -1763,7 +1763,9 @@ pub fn run() {
                                 }));
                             }
                             None => {
-                                eprintln!("zap: 收到热键事件但不匹配当前设置（当前 {current:?}）")
+                                providers::diag::log_warn(&format!(
+                                    "收到热键事件但不匹配当前设置（当前 {current:?}）"
+                                ))
                             }
                         }
                     }
@@ -1946,8 +1948,7 @@ pub fn run() {
             let hotkey_now =
                 active_hotkey.unwrap_or_else(|| providers::appconfig::DEFAULT_HOTKEY.into());
             if !registered_ok {
-                eprintln!("zap: 呼出热键注册失败，仅可通过托盘呼出面板");
-                providers::diag::log("hotkey\t主呼出热键注册失败（含默认键兜底），仅托盘可呼出");
+                providers::diag::log_err("呼出热键注册失败（含默认键兜底），仅托盘可呼出");
             }
 
             // 直达热键：账号库 / 快速粘贴 / 超级面板 / 中转站
@@ -1977,7 +1978,7 @@ pub fn run() {
                     Ok(sc) if gs.register(sc).is_ok() => {
                         direct.insert(hk, kind);
                     }
-                    _ => eprintln!("zap: 直达热键 {hk} 注册失败"),
+                    _ => providers::diag::log_warn(&format!("直达热键 {hk} 注册失败")),
                 }
             }
 
@@ -1988,7 +1989,7 @@ pub fn run() {
                 .map(|v| v != "0")
                 .unwrap_or(providers::appconfig::DEFAULT_PANEL_TRANSPARENCY);
             if let Err(e) = apply_window_effects(app.handle(), transparency_on) {
-                eprintln!("zap: 透明效果应用失败（面板保持不透明）: {e}");
+                providers::diag::log_warn(&format!("透明效果应用失败（面板保持不透明）: {e}"));
                 // 偏好落 0 收敛状态：否则前端按存档偏好挂 zap-trans 类，
                 // 得到无模糊底的纯半透明面板（设置页路径失败本就不落偏好，此处对齐）
                 if transparency_on {
@@ -2120,6 +2121,12 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            // 启动诊断行（评审 P1-10）：远程排障四问（版本/热键/注册成败/剪贴板
+            // 开关）一条回答；watcher/索引等的后续异常都有了时间基准
+            providers::diag::log(&format!(
+                "startup\tversion={}\thotkey={hotkey_now}\tregistered={registered_ok}\tclip_enabled={clip_enabled}",
+                app.package_info().version
+            ));
             // 首启引导（评审 P0-3）：呼出热键的产品内露出只有设置页，而进设置
             // 的前提恰是先呼出——首装第一次自动呼出一次，第一眼即见「空面板
             // 即功能首页」。标记缺键即首启；与 single_instance 的二次启动呼出
