@@ -1893,6 +1893,7 @@ pub fn run() {
                 active_hotkey.unwrap_or_else(|| providers::appconfig::DEFAULT_HOTKEY.into());
             if !registered_ok {
                 eprintln!("zap: 呼出热键注册失败，仅可通过托盘呼出面板");
+                providers::diag::log("hotkey\t主呼出热键注册失败（含默认键兜底），仅托盘可呼出");
             }
 
             // 直达热键：账号库 / 快速粘贴 / 超级面板 / 中转站
@@ -1957,7 +1958,7 @@ pub fn run() {
 
             app.manage(AppState {
                 engine: std::sync::Arc::new(engine),
-                hotkey: Mutex::new(hotkey_now),
+                hotkey: Mutex::new(hotkey_now.clone()),
                 direct_hotkeys: Mutex::new(direct),
                 clip_item: Mutex::new(None),
                 shown_at: Mutex::new(None),
@@ -2003,9 +2004,17 @@ pub fn run() {
                 .clip_item
                 .lock()
                 .expect("clip_item poisoned") = Some(clip_toggle.clone());
+            // 托盘 tooltip 是呼出热键在产品内最大的静态露出面（评审 P0-3）：
+            // 正常态直接告诉用户呼出键；注册失败态把「还能怎么呼出」写在
+            // tooltip 里——鼠标悬停即见，不需要用户先猜
+            let tooltip = if registered_ok {
+                format!("zap — {hotkey_now} 呼出")
+            } else {
+                "热键被占用：左键点此呼出，右键进设置修改".to_string()
+            };
             TrayIconBuilder::with_id("zap-tray")
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("zap — 个人效率入口")
+                .tooltip(&tooltip)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -2057,6 +2066,24 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            // 首启引导（评审 P0-3）：呼出热键的产品内露出只有设置页，而进设置
+            // 的前提恰是先呼出——首装第一次自动呼出一次，第一眼即见「空面板
+            // 即功能首页」。标记缺键即首启；与 single_instance 的二次启动呼出
+            // 同路径，前端未就绪时窗口照常显示聚焦，列表由前端挂载自拉
+            {
+                let state = app.state::<AppState>();
+                if state
+                    .engine
+                    .get_setting(providers::appconfig::KEY_FIRST_RUN_DONE)
+                    .is_none()
+                {
+                    let _ = state
+                        .engine
+                        .set_setting(providers::appconfig::KEY_FIRST_RUN_DONE, "1");
+                    providers::diag::log("startup\t首启引导：自动呼出面板");
+                    toggle_panel(app.handle(), None);
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

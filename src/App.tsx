@@ -1272,11 +1272,6 @@ function AppView() {
                 ? "换个关键词，或清空后按 Enter 新增账号"
                 : "应用 · 文件 · 窗口 · 剪贴板 · 最近使用"}
             </span>
-            {!isVault && (
-              <span className="zap-empty-sub">
-                试试 pw 账号库 · 右键条目有更多操作 · Ctrl+, 设置
-              </span>
-            )}
           </div>
         ) : (
           items.map((it, i) => {

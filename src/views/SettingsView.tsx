@@ -678,7 +678,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           <span className="flex min-w-0 flex-col gap-px">
             <span className="text-[13px]">超级面板</span>
             <span className="text-[11px] leading-snug text-muted-foreground">
-              按热键抓取当前选中的文字，光标旁弹出换算/复制/搜索菜单
+              绑定热键后，选中文字按键即抓取，光标旁弹出换算/复制/搜索菜单（默认未绑定）
             </span>
           </span>
           <HotkeyButton

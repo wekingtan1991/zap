@@ -49,6 +49,10 @@ pub const DEFAULT_STAGE_CAP: i64 = 50;
 /// 账号库上次成功导出的 Unix 毫秒时间戳（仅 vault_backup_export 落盘成功后写，
 /// 供设置页显示「上次备份 N 天前」与 30 天提醒；0/缺键 = 从未备份）
 pub const KEY_VAULT_LAST_EXPORT: &str = "vault_last_export";
+/// 首启引导标记：缺键 = 首次安装，setup 末尾自动呼出一次面板后写 "1"。
+/// 刻意不进设置页与 configfile 导入导出——这是机器本地状态而非用户偏好，
+/// 配置导入到新机器后重新引导一次是合理行为
+pub const KEY_FIRST_RUN_DONE: &str = "first_run_done";
 
 pub fn init_table(conn: &Connection) {
     let _ = conn.execute_batch(
