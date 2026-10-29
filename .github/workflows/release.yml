@@ -77,6 +77,27 @@ jobs:
           echo "latest.json 已生成："
           cat latest.json
 
+      # 未签名安装包的分发信任第一块拼图（评审 P0-2①）：把 SHA256 随 Release
+      # 发布并写进 notes 尾部，用户可自行核对下载完整性；SmartScreen 提示时
+      # 也多一个「哈希对得上」的判断依据
+      - name: 生成安装包 SHA256
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          ART="src-tauri/target/release/bundle/nsis/zap_${VERSION}_x64-setup.exe"
+          SHA256="$(sha256sum "$ART" | awk '{print $1}')"
+          printf '%s\n' "$SHA256" > setup.sha256
+          {
+            echo ""
+            echo "## SHA256"
+            echo ""
+            echo '```'
+            echo "$SHA256  zap_${VERSION}_x64-setup.exe"
+            echo '```'
+          } >> .github/release-notes.md
+          echo "setup.sha256: $SHA256"
+
       - name: Create release
         shell: bash
         env:
@@ -90,4 +111,4 @@ jobs:
           gh release create "$TAG" \
             --title "zap $TAG" \
             --notes-file .github/release-notes.md \
-            "$ART" "$ART.sig" latest.json
+            "$ART" "$ART.sig" latest.json setup.sha256
