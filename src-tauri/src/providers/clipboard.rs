@@ -216,6 +216,14 @@ pub static PASTE_TO_PREV: AtomicBool = AtomicBool::new(true);
 /// 历史保留条数（设置可调）
 pub static RETENTION_LIMIT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(500);
 
+/// 剪贴板设置三项的值对象（评审 P1-18 owner 链路）：load/apply 的载体，
+/// 字段与 KEY_CLIP_* 三键一一对应
+pub struct ClipSettings {
+    pub enabled: bool,
+    pub max: i64,
+    pub autopaste: bool,
+}
+
 /// 单条文本入库硬上限（评审 P1-08）：一次超长粘贴（如整本书）会以单条
 /// 抬升数 GB 库体积，且锁内 String 拷贝转嫁为主线程排队。超限拒收（诊断
 /// 留痕），剪贴板本体不受影响——粘贴功能与历史收录解耦

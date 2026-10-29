@@ -44,6 +44,14 @@ pub static STAGEDROP_ENABLED: AtomicBool = AtomicBool::new(true);
 /// appconfig 加载、设置保存时同步
 pub static STAGEDROP_OPEN_PANEL: AtomicBool = AtomicBool::new(false);
 
+/// 落区条设置三项的值对象（评审 P1-18 owner 链路）：load/apply 的载体，
+/// position 为存档/配置文件/前端 Select 共用的字符串口径
+pub struct StagedropSettings {
+    pub enabled: bool,
+    pub open_panel: bool,
+    pub position: String,
+}
+
 /// 落区条停靠角（设置项 stagedrop_position）：相对拖拽发生时**光标所在**
 /// 显示器的工作区。字符串值与存档/配置文件/前端 Select 共用
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

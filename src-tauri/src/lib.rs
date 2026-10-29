@@ -494,64 +494,44 @@ fn save_settings(
         }
     }
 
-    // 原子量与派生动作先原位完成（改了就生效）；存档键全部收集后走 set_many
-    // 单锁单事务一次落库（评审 P1-07）——逐条 autocommit 的 fsync 累积会拉长
-    // 同步命令的主线程窗口。写库失败时内存态与存档短暂分叉（重启归一），
-    // 与原实现的中途部分写同等级
-    providers::clipboard::CLIP_ENABLED.store(clip_enabled, Ordering::Relaxed);
-    // 后端 clamp（评审 P1-08）：防前端脏数据把保留条数写成 0/负数（等于每次
-    // 复制都清空历史）或天文数字（淘汰永不生效）。前端选择集 100–5000 之外的
-    // 值在此收口
+    // 剪贴板/中转站/落区条三组走 owner（评审 P1-18）——原子量与落库的镜像
+    // 收敛在 SearchEngine 单处。None 参数（旧前端未带键）以当前生效值回填，
+    // 语义与原「跳过不写」等价（同值重写无副作用）
     let clip_max = clip_max.clamp(10, 5000);
-    providers::clipboard::RETENTION_LIMIT.store(clip_max, Ordering::Relaxed);
-    if let Some(on) = clip_autopaste {
-        providers::clipboard::PASTE_TO_PREV.store(on, Ordering::Relaxed);
-    }
-    let mut kvs: Vec<(&'static str, String)> = vec![
-        (
-            providers::appconfig::KEY_CLIP_ENABLED,
-            if clip_enabled { "1" } else { "0" }.into(),
-        ),
-        (providers::appconfig::KEY_CLIP_MAX, clip_max.to_string()),
-    ];
-    if let Some(on) = clip_autopaste {
-        kvs.push((
-            providers::appconfig::KEY_CLIP_AUTOPASTE,
-            if on { "1" } else { "0" }.into(),
-        ));
-    }
+    state
+        .engine
+        .apply_clip_settings(&providers::clipboard::ClipSettings {
+            enabled: clip_enabled,
+            max: clip_max,
+            autopaste: clip_autopaste
+                .unwrap_or_else(|| providers::clipboard::PASTE_TO_PREV.load(Ordering::Relaxed)),
+        })?;
     if let Some(cap) = stage_max {
-        let cap = cap.clamp(10, 500);
-        providers::stage::CAP.store(cap, Ordering::Relaxed);
+        state.engine.apply_stage_cap(cap)?;
         // 调小立即收敛已有超容条目：等下次放入才收敛不符合「改了就生效」直觉
         // （调大无需动作，多出的空间天然可用）
         state.engine.stage_enforce_cap();
-        kvs.push((providers::appconfig::KEY_STAGE_CAP, cap.to_string()));
     }
-    if let Some(on) = stagedrop_enabled {
-        providers::stagedrop::STAGEDROP_ENABLED.store(on, Ordering::Relaxed);
-        kvs.push((
-            providers::appconfig::KEY_STAGEDROP_ENABLED,
-            if on { "1" } else { "0" }.into(),
-        ));
-    }
-    if let Some(on) = stagedrop_open_panel {
-        providers::stagedrop::STAGEDROP_OPEN_PANEL.store(on, Ordering::Relaxed);
-        kvs.push((
-            providers::appconfig::KEY_STAGEDROP_OPEN_PANEL,
-            if on { "1" } else { "0" }.into(),
-        ));
-    }
-    if let Some(pos) = stagedrop_position {
-        // 只收合法值（防前端脏数据把停靠角写坏；静默忽略同 appearance 口径）
-        if providers::stagedrop::Corner::parse(&pos).is_some() {
-            providers::stagedrop::set_position_setting(&pos);
-            kvs.push((providers::appconfig::KEY_STAGEDROP_POSITION, pos.clone()));
-        }
+    state
+        .engine
+        .apply_stagedrop_settings(&providers::stagedrop::StagedropSettings {
+            enabled: stagedrop_enabled
+                .unwrap_or(providers::stagedrop::STAGEDROP_ENABLED.load(Ordering::Relaxed)),
+            open_panel: stagedrop_open_panel
+                .unwrap_or(providers::stagedrop::STAGEDROP_OPEN_PANEL.load(Ordering::Relaxed)),
+            position: stagedrop_position
+                .clone()
+                .unwrap_or_else(|| providers::stagedrop::position_setting().to_string()),
+        })?;
+    if let Some(pos) = &stagedrop_position
+        && providers::stagedrop::Corner::parse(pos).is_some()
+    {
         // 改了就生效：条子正显示时按新角重排（动画方向由下轮会话起点
         // 的 corner 推送自然跟上，无需在此发事件）
         providers::stagedrop::relayout_if_shown(&app);
     }
+    // 其余无原子量的存档键仍走单事务批量写（评审 P1-07 的 set_many）
+    let mut kvs: Vec<(&'static str, String)> = Vec::new();
     if let Some(mode) = appearance {
         // 只收合法值（防前端脏数据把主题写坏）
         if matches!(mode.as_str(), "dark" | "light" | "system") {
@@ -1898,48 +1878,15 @@ pub fn run() {
             let engine = SearchEngine::new(&db_path);
             providers::clipboard::spawn_watcher(db_path);
 
-            // 应用设置：静态量 + 热键（存档失效回退默认；都失败则仅托盘可呼出）
-            let clip_enabled = engine
-                .get_setting(providers::appconfig::KEY_CLIP_ENABLED)
-                .map(|v| v != "0")
-                .unwrap_or(true);
-            providers::clipboard::CLIP_ENABLED.store(clip_enabled, Ordering::Relaxed);
-            let clip_max: i64 = engine
-                .get_setting(providers::appconfig::KEY_CLIP_MAX)
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(providers::appconfig::DEFAULT_CLIP_MAX);
-            providers::clipboard::RETENTION_LIMIT.store(clip_max, Ordering::Relaxed);
-            let clip_autopaste = engine
-                .get_setting(providers::appconfig::KEY_CLIP_AUTOPASTE)
-                .map(|v| v != "0")
-                .unwrap_or(providers::appconfig::DEFAULT_CLIP_AUTOPASTE);
-            providers::clipboard::PASTE_TO_PREV.store(clip_autopaste, Ordering::Relaxed);
-
-            // 中转站容量：存档失效回退默认（10–500 之外视为坏值）
-            let stage_cap: i64 = engine
-                .get_setting(providers::appconfig::KEY_STAGE_CAP)
-                .and_then(|v| v.parse().ok())
-                .filter(|v| (10..=500).contains(v))
-                .unwrap_or(providers::appconfig::DEFAULT_STAGE_CAP);
-            providers::stage::CAP.store(stage_cap, Ordering::Relaxed);
+            // 应用设置装载（owner 单一来源，评审 P1-18）：存档失效回退默认；
+            // 「读键→解析→原子量」的镜像不再散落本文件
+            let clip = engine.load_clip_settings();
+            let clip_enabled = clip.enabled;
+            engine.load_stage_cap();
+            engine.load_stagedrop_settings();
 
             // 拖拽落区条：检测线程无条件启动（互验 P1——冷启动关闭态下运行时
             // 重开也要即时生效），线程内按存档开关门控（关闭态仅空闲探测）
-            let stagedrop_on = engine
-                .get_setting(providers::appconfig::KEY_STAGEDROP_ENABLED)
-                .map(|v| v != "0")
-                .unwrap_or(providers::appconfig::DEFAULT_STAGEDROP_ENABLED);
-            providers::stagedrop::STAGEDROP_ENABLED.store(stagedrop_on, Ordering::Relaxed);
-            let stagedrop_open_on = engine
-                .get_setting(providers::appconfig::KEY_STAGEDROP_OPEN_PANEL)
-                .map(|v| v != "0")
-                .unwrap_or(providers::appconfig::DEFAULT_STAGEDROP_OPEN_PANEL);
-            providers::stagedrop::STAGEDROP_OPEN_PANEL.store(stagedrop_open_on, Ordering::Relaxed);
-            let stagedrop_pos = engine
-                .get_setting(providers::appconfig::KEY_STAGEDROP_POSITION)
-                .unwrap_or_else(|| providers::appconfig::DEFAULT_STAGEDROP_POSITION.into());
-            // 非法存档值内部静默保持默认角（set_position_setting 自带校验）
-            providers::stagedrop::set_position_setting(&stagedrop_pos);
             providers::stagedrop::spawn(app.handle().clone());
             providers::stagedrop::register_drop_target(app.handle());
 
@@ -2102,19 +2049,21 @@ pub fn run() {
                     }
                     "clip-toggle" => {
                         let now = !providers::clipboard::CLIP_ENABLED.load(Ordering::Relaxed);
-                        providers::clipboard::CLIP_ENABLED.store(now, Ordering::Relaxed);
                         let st = app.state::<AppState>();
                         // 显式回写勾选态：不押注 muda 在 MenuEvent 前自动翻转
                         // （各平台行为不一），与 save_settings 路径的 set_checked 同口径
-                        if let Some(item) =
-                            st.clip_item.lock().expect("clip_item poisoned").as_ref()
+                        if let Some(item) = st
+                            .clip_item
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .as_ref()
                         {
                             let _ = item.set_checked(now);
                         }
-                        let _ = st.engine.set_setting(
-                            providers::appconfig::KEY_CLIP_ENABLED,
-                            if now { "1" } else { "0" },
-                        );
+                        // 托盘是 clip_enabled 的第三写者（评审 P1-18）：走 owner 单键形态
+                        if let Err(e) = st.engine.set_clip_enabled(now) {
+                            providers::diag::log_err(&format!("托盘切换剪贴板记录失败: {e}"));
+                        }
                     }
                     "autostart" => {
                         if app.autolaunch().is_enabled().unwrap_or(false) {
