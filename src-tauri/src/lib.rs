@@ -1470,10 +1470,13 @@ pub(crate) fn toggle_panel(app: &AppHandle, preset: Option<&str>) {
     // 视图切换路径（如中转站→设置）可能漏释放，呼出时统一清零兜底
     state.hold_panel.store(false, Ordering::Relaxed);
     // 前台窗口必须在 show 之前记：show+set_focus 后前台就换成面板了
+    // （本函数与热键回调/on_window_event 的锁取值不用 expect：poison-tolerant
+    // 与 stage.rs 既有写法统一，万一未来恢复 unwind 也不让 UI 交互路径成为
+    // 二次 panic 点；panic="abort" 下 poison 本不可达，纯防御）
     *state
         .prev_foreground
         .lock()
-        .expect("prev_foreground poisoned") = capture_prev_foreground(&win);
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = capture_prev_foreground(&win);
     // 显示时定位到光标所在显示器的正中央（窗口隐藏状态下移动不触发焦点事件）
     if let Ok(pos) = app.cursor_position()
         && let Ok(Some(monitor)) = app.monitor_from_point(pos.x, pos.y)
@@ -1490,7 +1493,10 @@ pub(crate) fn toggle_panel(app: &AppHandle, preset: Option<&str>) {
     }
     let _ = win.show();
     let _ = win.set_focus();
-    *state.shown_at.lock().expect("shown_at poisoned") = Some(Instant::now());
+    *state
+        .shown_at
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
     let _ = win.emit("zap://shown", ());
     if let Some(p) = preset {
         let _ = app.emit("zap://preset", p.to_string());
@@ -1630,6 +1636,26 @@ fn foreground_hwnd() -> Option<isize> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // panic hook 最先挂：panic="abort" 下任何一处 panic 直接终止进程，release
+    // 的 windows_subsystem 连 stderr 都不可见——这条 hook 是唯一的死因留痕
+    // （P0-1 阶段0）。hook 内只做无锁操作（diag 的 LOG_PATH 是 OnceLock、
+    // 文件 append 不持锁）：持锁线程 panic 时 hook 不再碰任何锁，杜绝 hook
+    // 自死锁；diag::init 之前的极早期崩溃由 log_panic 落临时目录兜底。
+    std::panic::set_hook(Box::new(|info| {
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown payload".into()
+        };
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        providers::diag::log_panic(&format!("panic\t{payload}\t{loc}"));
+        eprintln!("zap panic: {payload} at {loc}");
+    }));
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 二次启动 = 呼出面板
@@ -1643,8 +1669,12 @@ pub fn run() {
                     // 呼出热键可被用户改，按当前生效值匹配；其余查直达热键表
                     if event.state() == ShortcutState::Pressed {
                         let state = app.state::<AppState>();
-                        let current: Option<Shortcut> =
-                            state.hotkey.lock().expect("hotkey poisoned").parse().ok();
+                        let current: Option<Shortcut> = state
+                            .hotkey
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .parse()
+                            .ok();
                         if current.as_ref() == Some(shortcut) {
                             toggle_panel(app, None);
                             return;
@@ -1655,7 +1685,7 @@ pub fn run() {
                         let direct = state
                             .direct_hotkeys
                             .lock()
-                            .expect("direct poisoned")
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .iter()
                             .find(|(k, _)| k.parse::<Shortcut>().ok().as_ref() == Some(shortcut))
                             .map(|(_, v)| *v);
@@ -1710,7 +1740,7 @@ pub fn run() {
                     let within_grace = state
                         .shown_at
                         .lock()
-                        .expect("shown_at poisoned")
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .is_some_and(|t| t.elapsed() < Duration::from_millis(300));
                     let fg_in_panel = foreground_belongs_to_panel(window);
                     if !within_grace && !fg_in_panel {
