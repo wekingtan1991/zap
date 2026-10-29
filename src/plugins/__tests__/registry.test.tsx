@@ -79,15 +79,18 @@ describe("kindUi 注册表", () => {
       ["copy_path", "复制路径"],
     ]);
     expect(kindUi("file")?.ctxActions).toEqual(kindUi("recent")?.ctxActions);
-    // 剪贴板：仅复制（不粘贴）+ 固定；窗口：关闭
+    // 剪贴板：仅复制（不粘贴）+ 固定 + 删除（敏感内容误入库的单条补救）；
+    // 窗口：关闭
     expect(kindUi("clip")?.ctxActions).toEqual([
       ["clip_copy", "仅复制（不粘贴）"],
       ["clip_pin", "固定 / 取消固定"],
+      ["clip_delete", "删除"],
     ]);
-    // 剪贴板图片：预览大图排首位（右键专属入口，Enter 保留回贴）+ 固定
+    // 剪贴板图片：预览大图排首位（右键专属入口，Enter 保留回贴）+ 固定 + 删除
     expect(kindUi("clipimg")?.ctxActions).toEqual([
       ["clipimg_preview", "预览大图"],
       ["clip_pin", "固定 / 取消固定"],
+      ["clip_delete", "删除"],
     ]);
     expect(kindUi("win")?.ctxActions).toEqual([["close_window", "关闭窗口"]]);
     // 网页/捷径结果（kind=web）与网址：仅复制链接

@@ -795,6 +795,30 @@ async fn clip_row(state: tauri::State<'_, AppState>, id: i64) -> Result<String, 
     .map_err(|e| e.to_string())?
 }
 
+/// 删除单条剪贴板条目（kind 分流两表）：id 为完整条目 id（clip:123 /
+/// clipimg:45），敏感内容误入库时的单条补救通道（评审 P1-09）
+#[tauri::command]
+async fn clip_delete(state: tauri::State<'_, AppState>, id: String) -> Result<bool, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (kind, rowid) = id.split_once(':').ok_or("无效剪贴板条目")?;
+        let rowid: i64 = rowid.parse().map_err(|_| "无效剪贴板条目")?;
+        engine.clip_delete_row(kind, rowid)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 清空未固定剪贴板历史（文本+图片两表），返回删除条数：手动复制的敏感
+/// 内容的批量补救通道（评审 P1-09），固定条目豁免
+#[tauri::command]
+async fn clip_clear_unpinned(state: tauri::State<'_, AppState>) -> Result<usize, String> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.clip_clear_unpinned())
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// 合并粘贴结果：count = 实际合并条数（已被清理的跳过）；pasted = 是否带了
 /// 焦点交还+注入（自动粘贴关闭时只回填，措辞应说「到剪贴板」而非「粘贴」）
 #[derive(serde::Serialize)]
@@ -1817,6 +1841,8 @@ pub fn run() {
             tool_convert_all,
             tool_uuid,
             clip_row,
+            clip_delete,
+            clip_clear_unpinned,
             clip_merge_paste,
             clipimg_preview,
             clipimg_copy,

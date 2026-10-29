@@ -15,6 +15,52 @@ use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 // 智能导入的类型与入口经 vault 再导出（lib.rs 命令沿用 vault:: 路径）
 pub use super::acctparse::{ParsedAccount, parse_blob};
 
+/// vault 密码明文集缓存（评审 P1-09）：watcher 入库前比对的内存镜像。
+/// 惰性构建（首次比对时全量解密一次，之后 O(1) 命中查询），任何 vault
+/// 写操作后由调用方 invalidate——宁可重建缓存也不放过新写入的密码。
+/// 锁序：调用方先持 clip 连接锁，再进本锁（单向，无反向获取）
+static PWD_CACHE: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+
+/// vault 写操作（add/update/import/backup_restore）后调用：下次比对重建
+pub fn invalidate_password_cache() {
+    *PWD_CACHE.lock().expect("vault pwd cache poisoned") = None;
+}
+
+/// 复制内容是否命中账号库密码明文（命中即不应入剪贴板历史）。
+/// 构建失败（DPAPI 异常等）按「空集」处理——防护是尽力而为，不能反把
+/// 正常复制拦下；未配置任何密码时集合为空，contains 恒 false 零开销
+pub fn password_cache_hit(conn: &Connection, text: &str) -> bool {
+    let mut guard = PWD_CACHE.lock().expect("vault pwd cache poisoned");
+    if guard.is_none() {
+        let set: std::collections::HashSet<String> = match backup_read_all(conn) {
+            Ok(entries) => entries
+                .into_iter()
+                .filter(|e| !e.password.is_empty())
+                .map(|e| e.password)
+                .collect(),
+            Err(_) => Default::default(),
+        };
+        *guard = Some(set);
+    }
+    guard.as_ref().is_some_and(|s| s.contains(text))
+}
+
+/// 历史中与给定明文等值的行清掉（watcher 拦截后 / 批量导入后的补救路径）：
+/// 用户改密或导入后，旧密码不再可从剪贴板历史翻出
+pub fn purge_clip_history(conn: &Connection, texts: &[String]) -> usize {
+    let mut n = 0;
+    for t in texts {
+        if t.is_empty() {
+            continue;
+        }
+        if let Ok(c) = conn.execute("DELETE FROM clipboard_history WHERE content=?1", params![t]) {
+            n += c;
+        }
+    }
+    n
+}
+
 pub fn init_table(conn: &Connection) {
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS accounts (
@@ -623,6 +669,47 @@ mod crud_tests {
         let conn = Connection::open_in_memory().unwrap();
         init_table(&conn);
         conn
+    }
+
+    /// 密码防护（评审 P1-09）：命中比对 + 历史等值清除 + 写后失效重建
+    #[test]
+    fn 密码集命中与历史清除() {
+        let conn = mem_db();
+        add(&conn, "站点A", "user", "secret1", "", "", "").unwrap();
+        add(&conn, "站点B", "user", "secret2", "", "", "").unwrap();
+        invalidate_password_cache();
+        assert!(password_cache_hit(&conn, "secret1"), "密码明文应命中");
+        assert!(password_cache_hit(&conn, "secret2"));
+        assert!(!password_cache_hit(&conn, "普通文本"), "非密码不误伤");
+        // 历史里同值行清掉，其余保留（content 有 UNIQUE，每个明文至多一行）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS clipboard_history (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 content TEXT NOT NULL UNIQUE,
+                 created_at INTEGER NOT NULL,
+                 pinned INTEGER NOT NULL DEFAULT 0)",
+            [],
+        )
+        .unwrap();
+        for (c, t) in [(1i64, "secret1"), (2, "secret2"), (3, "普通文本")] {
+            conn.execute(
+                "INSERT INTO clipboard_history(content, created_at) VALUES(?1, ?2)",
+                rusqlite::params![t, c],
+            )
+            .unwrap();
+        }
+        let purged = purge_clip_history(&conn, &["secret1".into(), "secret2".into()]);
+        assert_eq!(purged, 2, "密码同值行全部清除");
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM clipboard_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 1, "非密码行保留");
+        // 写后失效：新增账号的密码立即可命中（缓存重建而非用旧集）
+        add(&conn, "站点C", "user", "secret3", "", "", "").unwrap();
+        invalidate_password_cache();
+        assert!(password_cache_hit(&conn, "secret3"));
+        // 测试间的缓存必须复位：其他测试的库没有这些密码
+        invalidate_password_cache();
     }
 
     #[test]

@@ -758,6 +758,26 @@ function AppView() {
     [repullClips]
   );
 
+  /// 删除单条剪贴板条目（右键菜单，文本与图片通用）：完整条目 id（clip:123 /
+  /// clipimg:45）后端按前缀分流两表（撞号陷阱同 clipimg_pin）。敏感内容误
+  /// 入库的单条补救（评审 P1-09），固定条目也可删（用户意图优先）
+  const clipDelete = useCallback(
+    async (item: SearchItem) => {
+      try {
+        const ok = await invoke<boolean>("clip_delete", { id: item.id });
+        if (ok) {
+          toast.success("已删除");
+          repullClips();
+        } else {
+          toast.error("该条已被清理");
+        }
+      } catch (e) {
+        toast.error(String(e));
+      }
+    },
+    [repullClips]
+  );
+
   // ---------- 剪贴板合并粘贴 ----------
   /// 模式开关：退出即清勾选（重进从零开始，避免残留旧意图）
   const toggleMerge = useCallback(() => {
@@ -1386,6 +1406,8 @@ function AppView() {
                     setCtxMenu(null);
                     if (act === "stage_add") void stageAdd(ctxMenu.item);
                     else if (act === "clip_pin") void clipPin(ctxMenu.item);
+                    else if (act === "clip_delete")
+                      void clipDelete(ctxMenu.item);
                     else if (act === "clipimg_preview")
                       openClipImagePreview(ctxMenu.item);
                     else void secondaryAction(

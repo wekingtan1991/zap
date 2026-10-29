@@ -745,6 +745,27 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
             />
           </div>
           <div className="flex min-h-[42px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <span className="text-[13px] text-foreground">清空未固定历史</span>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                立即删除全部未固定的文本与图片条目（手动复制的敏感内容补救）
+              </span>
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void invoke<number>("clip_clear_unpinned")
+                  .then((n) =>
+                    toast.success(n > 0 ? `已清空 ${n} 条` : "没有可清空的条目")
+                  )
+                  .catch((e) => toast.error(String(e)));
+              }}
+            >
+              清空
+            </Button>
+          </div>
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
             <Label className="text-[13px] font-normal text-foreground">
               保留条数
             </Label>

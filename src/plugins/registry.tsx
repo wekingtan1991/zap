@@ -70,6 +70,7 @@ const REGISTRY: Record<string, KindUi> = {
     ctxActions: [
       ["clip_copy", "仅复制（不粘贴）"],
       ["clip_pin", "固定 / 取消固定"],
+      ["clip_delete", "删除"],
     ],
   },
   // 剪贴板图片条目：Enter=回贴（external 落 open_item 的 clipimg 分支，
@@ -84,6 +85,7 @@ const REGISTRY: Record<string, KindUi> = {
     ctxActions: [
       ["clipimg_preview", "预览大图"],
       ["clip_pin", "固定 / 取消固定"],
+      ["clip_delete", "删除"],
     ],
   },
   file: {

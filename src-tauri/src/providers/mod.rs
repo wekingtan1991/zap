@@ -303,6 +303,35 @@ impl SearchEngine {
         .is_ok()
     }
 
+    /// 按行号删剪贴板条目：kind 分流两表——两表自增行号独立，clipimg 必须打
+    /// 图片表（与 clipimg_pin 同款撞号陷阱）。固定条目允许显式删除（用户
+    /// 意图优先于固定豁免），返回是否确有删除
+    pub fn clip_delete_row(&self, kind: &str, id: i64) -> Result<bool, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let table = if kind == "clipimg" {
+            "clipboard_images"
+        } else {
+            "clipboard_history"
+        };
+        let n = conn
+            .execute(&format!("DELETE FROM {table} WHERE id=?1"), [id])
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    /// 清空未固定剪贴板历史（文本+图片两表）：手动复制的敏感内容的用户补救
+    /// 通道（评审 P1-09），返回删除总条数
+    pub fn clip_clear_unpinned(&self) -> Result<usize, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let n1 = conn
+            .execute("DELETE FROM clipboard_history WHERE pinned=0", [])
+            .map_err(|e| e.to_string())?;
+        let n2 = conn
+            .execute("DELETE FROM clipboard_images WHERE pinned=0", [])
+            .map_err(|e| e.to_string())?;
+        Ok(n1 + n2)
+    }
+
     /// 按给定顺序取多条剪贴板全文（合并粘贴用）：个别行号已被清理则跳过，
     /// 返回按入参顺序的存留文本。锁内纯库操作
     pub fn clip_texts(&self, ids: &[i64]) -> Vec<String> {
@@ -440,7 +469,16 @@ impl SearchEngine {
         totp: &str,
     ) -> Result<(), String> {
         let conn = self.clip.lock().expect("clip db poisoned");
-        vault::add(&conn, title, username, password, url, notes, totp)
+        let r = vault::add(&conn, title, username, password, url, notes, totp);
+        if r.is_ok() {
+            // 新密码若与历史同值（用户复制过后才想起入库），顺手清掉
+            let pwd = password.trim().to_string();
+            if !pwd.is_empty() {
+                vault::purge_clip_history(&conn, &[pwd]);
+            }
+            vault::invalidate_password_cache();
+        }
+        r
     }
 
     pub fn vault_action(
@@ -472,14 +510,32 @@ impl SearchEngine {
         totp: &str,
     ) -> Result<(), String> {
         let conn = self.clip.lock().expect("clip db poisoned");
-        vault::update(
+        let r = vault::update(
             &conn, id, title, username, password, url, notes, pinned, totp,
-        )
+        );
+        if r.is_ok() {
+            // 改密后旧值不再可从历史翻出；密码集缓存同步失效
+            let pwd = password.trim().to_string();
+            if !pwd.is_empty() {
+                vault::purge_clip_history(&conn, &[pwd]);
+            }
+            vault::invalidate_password_cache();
+        }
+        r
     }
 
     pub fn vault_import(&self, entries: Vec<vault::ParsedAccount>) -> Result<usize, String> {
+        // 导入的密码若与历史同值（用户此前手动复制过），按原文等值清掉（评审 P1-09）
+        let pwds: Vec<String> = entries
+            .iter()
+            .map(|e| e.password.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
         let conn = self.clip.lock().expect("clip db poisoned");
-        vault::import(&conn, entries)
+        let n = vault::import(&conn, entries)?;
+        vault::purge_clip_history(&conn, &pwds);
+        vault::invalidate_password_cache();
+        Ok(n)
     }
 
     /// 加密导出全部账号到备份文件，返回条目数
@@ -522,8 +578,19 @@ impl SearchEngine {
         entries: Vec<backup::BackupEntry>,
         skip_duplicates: bool,
     ) -> Result<(usize, usize), String> {
+        // 恢复进来的密码同样按原文清历史同值行 + 失效密码缓存（评审 P1-09）
+        let pwds: Vec<String> = entries
+            .iter()
+            .map(|e| e.password.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
         let conn = self.clip.lock().expect("clip db poisoned");
-        vault::backup_restore(&conn, entries, skip_duplicates)
+        let r = vault::backup_restore(&conn, entries, skip_duplicates);
+        if r.is_ok() {
+            vault::purge_clip_history(&conn, &pwds);
+            vault::invalidate_password_cache();
+        }
+        r
     }
 
     pub fn search(&self, query: &str) -> Vec<SearchItem> {

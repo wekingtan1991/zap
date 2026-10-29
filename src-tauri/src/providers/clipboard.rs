@@ -340,6 +340,20 @@ pub fn spawn_watcher(db_path: PathBuf) {
                 }
                 if let Ok(text) = self.cb.get_text() {
                     let text = text.trim_end().to_string();
+                    // 账号库密码防护（评审 P1-09）：来源过滤只认桌面密码管理器，
+                    // 浏览器内置 PM/用户手动复制的密码会漏——入库前与 vault
+                    // 密码明文集比对，命中不入库并顺手清掉历史同值行（改密/
+                    // 导入后的旧值同样不可从历史翻出）。比对走 O(1) 内存集，
+                    // 首次惰性全量解密一次
+                    let vault_hit =
+                        !text.is_empty() && super::vault::password_cache_hit(&self.conn, &text);
+                    if vault_hit {
+                        let _ = self.conn.execute(
+                            "DELETE FROM clipboard_history WHERE content=?1",
+                            params![text],
+                        );
+                        return CallbackResult::Next;
+                    }
                     if !text.is_empty() && !is_from_password_manager() {
                         let now = now_ms();
                         let _ = self.conn.execute(
