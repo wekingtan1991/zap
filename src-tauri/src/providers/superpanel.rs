@@ -33,6 +33,15 @@ pub struct SuperActionsPayload {
 pub static LAST_PAYLOAD: std::sync::Mutex<Option<SuperActionsPayload>> =
     std::sync::Mutex::new(None);
 
+/// 「在 zap 中打开」动作回调（评审 P1-17 步 0）：providers 不反向依赖
+/// crate 根的 toggle_panel，lib.rs setup 时经 register_open_panel 注入
+type OpenPanel = std::sync::Arc<dyn Fn(&tauri::AppHandle, String) + Send + Sync>;
+static ON_OPEN_PANEL: std::sync::OnceLock<OpenPanel> = std::sync::OnceLock::new();
+
+pub fn register_open_panel(f: OpenPanel) {
+    let _ = ON_OPEN_PANEL.set(f);
+}
+
 /// 抓取结束后的处置（纯函数，真值表单测锁定）：seq 未变 = Ctrl+C 没有生效、
 /// 剪贴板未被改动，静默放弃且无需恢复；seq 变了 = 用户原剪贴板已被抓取结果
 /// 覆盖，**所有出口都必须恢复现场**——包括复制到的不是文本（文件选区）与
@@ -312,8 +321,12 @@ pub fn run_action(app: &AppHandle, action: &str, text: &str) -> Result<(), Strin
         "json_compact" => copy(super::jsontools::format_text(text, false)?),
         "open_panel" => {
             superpanel_hide(app);
-            // 文本作为搜索词进主面板：probe 识别管线会自动给出识别条目
-            crate::toggle_panel(app, Some(text));
+            // 文本作为搜索词进主面板：probe 识别管线会自动给出识别条目。
+            // 开面板经注册回调上抛（评审 P1-17 步 0）：providers 不再反向
+            // 依赖 crate 根的 toggle_panel——lib.rs setup 时注入
+            if let Some(f) = ON_OPEN_PANEL.get() {
+                f(app, text.to_string());
+            }
             Ok(())
         }
         "web" => {

@@ -87,7 +87,7 @@ fn hide_panel_window(app: &AppHandle) {
         .store(false, std::sync::atomic::Ordering::Relaxed);
     // 面板已隐 = 中转站视图不复存在，落区条恢复常态（下轮拖拽会话出条）。
     // 前端 view 状态在隐藏期间不重置，此清零与 set_stage_view 命令互补
-    providers::stagedrop::STAGE_VIEW_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    providers::stagedrop::clear_stage_view_flag();
     let _ = app.emit("zap://hidden", ());
 }
 
@@ -1877,6 +1877,14 @@ pub fn run() {
             let db_path = db_dir.join("zap.db");
             let engine = SearchEngine::new(&db_path);
             providers::clipboard::spawn_watcher(db_path);
+
+            // providers → crate 根的反向依赖边以回调注册反转（评审 P1-17 步 0，
+            // lib.rs 拆分的前置）：drop 编排与「在 zap 中打开」属于面板编排层，
+            // 留在 crate 根；providers 只持回调引用
+            providers::stagedrop::register_drop_handler(std::sync::Arc::new(handle_stage_drop));
+            providers::superpanel::register_open_panel(std::sync::Arc::new(|app, text| {
+                toggle_panel(app, Some(&text));
+            }));
 
             // 应用设置装载（owner 单一来源，评审 P1-18）：存档失效回退默认；
             // 「读键→解析→原子量」的镜像不再散落本文件

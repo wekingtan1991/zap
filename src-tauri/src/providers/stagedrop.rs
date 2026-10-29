@@ -52,6 +52,16 @@ pub struct StagedropSettings {
     pub position: String,
 }
 
+/// drop 编排回调（评审 P1-17 步 0）：wry 兜底路径与自有 IDropTarget 的
+/// drop 都从这里上抛给 lib.rs 的 handle_stage_drop——providers 不反向
+/// 依赖 crate 根。setup 时经 register_drop_handler 注入
+type DropHandler = std::sync::Arc<dyn Fn(&tauri::AppHandle, Vec<String>) + Send + Sync>;
+static ON_DROP: std::sync::OnceLock<DropHandler> = std::sync::OnceLock::new();
+
+pub fn register_drop_handler(h: DropHandler) {
+    let _ = ON_DROP.set(h);
+}
+
 /// 落区条停靠角（设置项 stagedrop_position）：相对拖拽发生时**光标所在**
 /// 显示器的工作区。字符串值与存档/配置文件/前端 Select 共用
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -196,6 +206,13 @@ static HOVERING: AtomicBool = AtomicBool::new(false);
 /// 视图开着时右下角落区条不再显示：视图内拖入本身就是落点（自有
 /// 「松手放入中转站」提示），角落条冗余且与面板叠放（用户拍板 2026-10-28）
 pub static STAGE_VIEW_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// 面板隐藏路径的视图标志兜底清零（评审 P1-17 步 0）：hide_panel_window
+/// 的清零与 set_stage_view 命令互补——前端 view 状态隐藏期间不重置。
+/// 窄 API 替代 crate 根直写原子量（外部只经函数触碰状态）
+pub fn clear_stage_view_flag() {
+    STAGE_VIEW_OPEN.store(false, Ordering::Relaxed);
+}
 
 /// 前端同步中转站视图开合。打开时若条子还在（上一轮 drop 的反馈驻留），
 /// 立即收掉——放入结果改由视图内的列表与处理反馈呈现；关闭只记账，
@@ -892,9 +909,14 @@ impl windows::Win32::System::Ole::IDropTarget_Impl for StageDropTarget_Impl {
             *pdwEffect = windows::Win32::System::Ole::DROPEFFECT_COPY;
         }
         if !paths.is_empty() {
-            // OLE 回调在主线程：入库压后台线程，不阻塞拖拽循环
-            let app = self.app.clone();
-            std::thread::spawn(move || crate::handle_stage_drop(&app, paths));
+            // OLE 回调在主线程：入库压后台线程，不阻塞拖拽循环。
+            // drop 编排经注册回调上抛（评审 P1-17 步 0）：providers 不再反向
+            // 依赖 crate 根的 handle_stage_drop——边反转为 lib.rs setup 时注册
+            if let Some(h) = ON_DROP.get() {
+                let h = std::sync::Arc::clone(h);
+                let app = self.app.clone();
+                std::thread::spawn(move || h(&app, paths));
+            }
         }
         Ok(())
     }
