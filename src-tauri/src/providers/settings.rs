@@ -181,6 +181,13 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
         .collect()
 }
 
+/// settings 条目白名单（评审 P2-08）：open_item 的 settings 分支会把 target
+/// 拼进 `cmd /C start`——target 必须是本表静态清单内的 URI/可执行名，
+/// 防前端脏数据注入任意命令
+pub fn is_known_target(target: &str) -> bool {
+    SETTINGS.iter().any(|e| e.uri == target)
+}
+
 /// 系统设置源插件适配：纯静态表 + LazyLock 匹配形态，无状态
 pub struct SettingsPlugin;
 

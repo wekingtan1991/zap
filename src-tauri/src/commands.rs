@@ -636,6 +636,12 @@ pub(crate) fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> 
             }
         }
         "settings" => {
+            // 白名单校验（评审 P2-08）：target 拼进 `cmd /C start`，必须出自
+            // providers/settings.rs 静态清单——settings 条目的 target 恒由
+            // 该表生成，表外值只可能来自前端脏数据
+            if !crate::providers::settings::is_known_target(&item.target) {
+                return Err("未知的系统设置项".into());
+            }
             // target 形如 ms-settings:xxx（协议 URI）或 control.exe / *.cpl / *.msc（经典系统工具）。
             // 带协议的交给 opener（ShellExecute 认 ms-settings:），裸文件名一律走
             // `cmd /C start "" <target>`：这是资源管理器"运行"同样的解析路径，

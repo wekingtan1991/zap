@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "aux-windows",
+  "description": "超级面板与落区条窗口：仅需事件系统（core:default）——它们的前端只监听事件，无 opener/插件调用（评审 P2-08 最小权限裁剪）",
+  "windows": ["superpanel", "stagedrop"],
+  "permissions": [
+    "core:default"
+  ]
+}

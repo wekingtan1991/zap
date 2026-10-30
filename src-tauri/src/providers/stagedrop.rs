@@ -715,6 +715,15 @@ pub fn register_drop_target(app: &AppHandle) {
                     "stagedrop: drop target registration failed 10 fast attempts; retrying every 60s",
                 );
             }
+            // 重试上限（评审 P2-15）：快速 10 次 + 60s 间隔 10 次 ≈ 10 分钟后
+            // 放弃并落盘——无限常驻重试是无界生命周期线程（R4 P2），而 10 分钟
+            // 仍失败说明窗口结构异常，用户重启 zap 才是正解
+            if attempt >= FAST_ATTEMPTS + 10 {
+                super::diag::log_err(
+                    "stagedrop: drop target registration gave up after ~10min; restart zap to retry",
+                );
+                return;
+            }
             // 子窗口尚未就绪（WebView2 初始化异步）：快速阶段短间隔，之后低频常驻
             let wait = if attempt < FAST_ATTEMPTS { 300 } else { 60_000 };
             std::thread::sleep(Duration::from_millis(wait));
