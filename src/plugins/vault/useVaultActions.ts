@@ -102,18 +102,24 @@ export function useVaultActions(deps: VaultActionsDeps) {
           await refreshVault(vaultTermRef.current);
           return;
         }
-        // 复制类：短暂显示成功反馈后自动关闭（密码/用户名均不入剪贴板历史）
+        // 复制类：短暂显示成功反馈（密码/用户名均不入剪贴板历史）。
+        // 收面板与否随「选中即粘贴」设置分道（评审 P2-17 折中）：开启=复制即走
+        // 收面板；关闭=用户已选择多步流（先复制后自行粘贴），收面板会打断
+        // 连续抄取多个字段——✓ 反馈保留、面板留驻
+        const autopaste = await invoke<boolean>("clip_autopaste_enabled").catch(() => true);
         setItems([
           {
             id: "vault-done",
             title: "✓ " + msg,
-            subtitle: "稍后自动关闭",
+            subtitle: autopaste ? "稍后自动关闭" : "已复制，可继续抄取",
             kind: "info",
             target: "",
             score: 0,
           },
         ]);
-        setTimeout(() => invoke("hide_panel"), 900);
+        if (autopaste) {
+          setTimeout(() => invoke("hide_panel"), 900);
+        }
       } catch (e) {
         // 失败统一 toast（面板保持可见）；复制类成功反馈保留行内 ✓（随后面板收起，toast 会随之消失）
         toast.error("操作失败：" + String(e));

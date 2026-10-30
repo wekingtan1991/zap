@@ -377,7 +377,10 @@ fn config_settings_from(dto: &AppSettingsDto) -> crate::providers::appconfig::Co
         stagedrop_open_panel: Some(dto.stagedrop_open_panel),
         stagedrop_position: Some(dto.stagedrop_position.clone()),
         pwd_clear_secs: Some(dto.pwd_clear_secs),
-        autostart: Some(dto.autostart),
+        // autostart 刻意不导出（评审 P2-14）：它是注册表态而非存档态，save
+        // 管线不消费该键——导入「有值」走不通（原导出语义不成立），None =
+        // 导入保留现值；everything_autostart 是真存档键照常导出
+        autostart: None,
         everything_autostart: Some(dto.everything_autostart),
         appearance: Some(dto.appearance.clone()),
         panel_transparency: Some(dto.panel_transparency),

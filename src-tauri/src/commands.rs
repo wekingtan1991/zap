@@ -526,6 +526,13 @@ pub(crate) async fn vault_backup_restore(
     .map_err(|e| e.to_string())?
 }
 
+/// 「选中即粘贴」开关现值（vault 复制后是否收面板的依据，评审 P2-17）：
+/// 读原子量零 IO，轻量到可随复制动作同调
+#[tauri::command]
+pub(crate) fn clip_autopaste_enabled() -> bool {
+    crate::providers::clipboard::PASTE_TO_PREV.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// 条目次级操作：admin=管理员运行 / reveal=所在文件夹定位 / copy_path=复制路径或链接 /
 /// clip_copy=剪贴板条目仅复制（不粘贴） / close_window=关闭窗口。
 /// .lnk（含 recent 的指针）先解析为真实目标；商店应用（shell:）不支持路径类操作

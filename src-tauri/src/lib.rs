@@ -181,6 +181,7 @@ pub fn run() {
             commands::vault_backup_decrypt,
             commands::vault_backup_restore,
             commands::vault_last_export_at,
+            commands::clip_autopaste_enabled,
             commands::secondary_action,
             commands::json_analyze_full,
             commands::json_to_yaml,
