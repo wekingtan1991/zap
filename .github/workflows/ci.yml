@@ -11,25 +11,30 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # v4.2.2（评审 P2-05：action 固定 commit SHA，防 tag 被劫持；升级由 dependabot 提 PR）
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # 不写死版本：读取 package.json 的 packageManager 字段
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        # v4.0.0
+        uses: pnpm/action-setup@1e31de5234b9f8995739874a8ce0492dc87873e2 # v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        # stable 分支头（dtolnay/rust-toolchain 按分支分发，SHA 随 stable 更新；版本钉在 rust-toolchain.toml）
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        # v2.9.3
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: src-tauri
 
@@ -61,3 +66,8 @@ jobs:
       - name: Lint（clippy 零警告）
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
+
+      # 供应链审计（评审 P2-05）：已知漏洞即红但不断流（continue-on-error 观察）
+      - name: 前端依赖审计
+        continue-on-error: true
+        run: pnpm audit --prod

@@ -1,0 +1,7 @@
+# 工具链钉版（评审 P2-06）：stable 渠道下钉 minor——上游大版本跳变
+# （ edition/语义破坏）不再立即打断 CI 与本机构建，升级为显式动作：
+# 改这里的版本号（dependabot 不覆盖 rust-toolchain.toml，需手动）。
+# 与本机开发版本保持一致（2026-10 时点 1.99.0）。
+[toolchain]
+channel = "1.99"
+components = ["rustfmt", "clippy"]

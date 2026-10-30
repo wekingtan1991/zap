@@ -3,6 +3,7 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch: # 手动补发通道（评审 P2-06）：同 tag 重跑须先删 Release
 
 # 显式授予 contents:write，否则默认 GITHUB_TOKEN 无法创建 Release
 permissions:
@@ -13,7 +14,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # v4.2.2（评审 P2-05：action 固定 commit SHA）
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: 校验 tag 与 tauri.conf.json 版本一致
         shell: bash
@@ -27,19 +29,23 @@ jobs:
           echo "版本校验通过：$TAG == v$VERSION"
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        # v4.0.0
+        uses: pnpm/action-setup@1e31de5234b9f8995739874a8ce0492dc87873e2 # v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        # stable 分支头；具体版本钉在 src-tauri/rust-toolchain.toml（评审 P2-06）
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        # v2.9.3
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: src-tauri
 
@@ -98,7 +104,36 @@ jobs:
           } >> .github/release-notes.md
           echo "setup.sha256: $SHA256"
 
+      # 产物留档（评审 P2-06）：Release 创建失败时产物仍在 workflow artifacts，
+      # 不必为排查重跑整个 20 分钟构建
+      - name: 留档产物
+        # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: |
+            src-tauri/target/release/bundle/nsis/zap_*_x64-setup.exe
+            src-tauri/target/release/bundle/nsis/zap_*_x64-setup.exe.sig
+            latest.json
+            setup.sha256
+          if-no-files-found: error
+
+      # 两步拆分（评审 P2-06）：create 与 upload 分离——上传中途失败重跑
+      # `gh release upload --clobber` 即可补齐，不会留下「半发版」（缺
+      # latest.json 时全体用户更新静默失败）。create 幂等：已存在跳过
       - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release view "$TAG" >/dev/null 2>&1 && {
+            echo "Release $TAG 已存在（补传场景），跳过创建"
+          } || {
+            gh release create "$TAG" --title "zap $TAG" --notes-file .github/release-notes.md
+          }
+
+      - name: Upload release assets
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -106,9 +141,5 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           ART="src-tauri/target/release/bundle/nsis/zap_${VERSION}_x64-setup.exe"
-          # 自动发布：tag 推送即公开（主流做法）。
-          # 若该 tag 的 Release 已存在（重跑场景），直接失败示警，绝不覆盖已发布的版本。
-          gh release create "$TAG" \
-            --title "zap $TAG" \
-            --notes-file .github/release-notes.md \
-            "$ART" "$ART.sig" latest.json setup.sha256
+          # --clobber：补传场景覆盖同名资产，绝不静默失败
+          gh release upload "$TAG" --clobber "$ART" "$ART.sig" latest.json setup.sha256
