@@ -142,6 +142,10 @@ pub(crate) fn toggle_panel(app: &AppHandle, preset: Option<&str>) {
         .shown_at
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
+    // 呼出链路基线埋点（评审 P2-01/D1）：「热键回调→show 完成」的对账点，
+    // 与前端 zap://shown 收到时的 console 时间戳对齐即得「呼出到可交互」
+    // 基线；每次呼出一条，不构成日志噪音
+    providers::diag::log("shown\temit");
     let _ = win.emit("zap://shown", ());
     if let Some(p) = preset {
         let _ = app.emit("zap://preset", p.to_string());

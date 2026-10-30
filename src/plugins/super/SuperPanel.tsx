@@ -1,13 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Check, Copy, Sparkles } from "lucide-react";
+import { Check, Copy, Layers, Search, Sparkles } from "lucide-react";
 
 /// 后端 superpanel::SuperAction 的线协议镜像
 interface SuperAction {
   id: string;
   label: string;
 }
+
+/// 动作行尾图标随语义分流（评审 P2-18）：全部统一 Copy 会让「搜索/进主面板」
+/// 这类非复制动作的语义失真。id→图标映射与后端 build_actions 的动作清单同源
+/// 维护（新增动作时两处同步）
+const ACTION_ICONS: Record<string, typeof Copy> = {
+  copy: Copy,
+  ts_answer: Copy,
+  dec_answer: Copy,
+  json_pretty: Copy,
+  json_compact: Copy,
+  web: Search,
+  open_panel: Layers,
+};
 
 interface Props {
   text: string;
@@ -96,7 +109,10 @@ export function SuperPanel({ text, actions }: Props) {
           {done === a.id ? (
             <Check className="size-3.5 shrink-0 text-success" />
           ) : (
-            <Copy className="size-3.5 shrink-0 text-muted-foreground/60" />
+            (() => {
+              const Icon = ACTION_ICONS[a.id] ?? Copy;
+              return <Icon className="size-3.5 shrink-0 text-muted-foreground/60" />;
+            })()
           )}
         </button>
       ))}

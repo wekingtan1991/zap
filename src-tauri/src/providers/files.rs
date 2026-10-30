@@ -78,16 +78,28 @@ fn mark_failed() {
     *LAST_FAIL.lock().expect("last_fail poisoned") = Some(Instant::now());
 }
 
-/// 探测可用端口；全部失败则记录退避时间
+/// 探测可用端口；全部失败则记录退避时间。
+/// 判定收紧（评审 P2-03）：任何 HTTP 响应即缓存端口的旧口径会被「占端口的
+/// 非 Everything 服务」「开了 HTTP 但要求认证的旧配置」误命中——要求合法
+/// JSON 且含 results 键才认（Everything 对 ?json=1 恒回 results 数组）
 fn resolve_port() -> Option<u16> {
     if let Some(&p) = PORT.lock().expect("port poisoned").as_ref() {
         return Some(p);
     }
     for &port in &port_candidates() {
         let url = format!("http://127.0.0.1:{port}/?json=1&n=1&s=zap-probe");
-        if get(&url).is_some() {
-            *PORT.lock().expect("port poisoned") = Some(port);
-            return Some(port);
+        if let Ok(resp) = get(&url).ok_or(()) {
+            let is_everything = match resp.json::<serde_json::Value>() {
+                Ok(v) => v
+                    .get("results")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some(),
+                Err(_) => false,
+            };
+            if is_everything {
+                *PORT.lock().expect("port poisoned") = Some(port);
+                return Some(port);
+            }
         }
     }
     mark_failed();
@@ -143,12 +155,18 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
     };
     let status = resp.status();
     let Ok(value) = resp.json::<serde_json::Value>() else {
+        // JSON 失败 = 缓存的端口大概率不再服务 Everything（P2-03）：回收端口
+        // 走重探，不留在坏端口上每击键空转
         super::diag::log_warn(&format!("files JSON 解析失败（HTTP {status}）"));
+        PORT.lock().expect("port poisoned").take();
+        mark_failed();
         return Vec::new();
     };
 
     let Some(results) = value.get("results").and_then(serde_json::Value::as_array) else {
         super::diag::log_warn(&format!("files 响应无 results 字段（HTTP {status}）"));
+        PORT.lock().expect("port poisoned").take();
+        mark_failed();
         return Vec::new();
     };
     let items: Vec<SearchItem> = results

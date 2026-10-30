@@ -234,6 +234,9 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   const [bkSkip, setBkSkip] = useState(true);
   /// 上次成功导出的 Unix 毫秒（null = 尚未取到；0 = 从未备份）
   const [bkLast, setBkLast] = useState<number | null>(null);
+  /// Everything 服务状态（评审 P2-03）：文件搜索静默死亡时的自助排障入口
+  const [evStatus, setEvStatus] = useState("loading");
+  const [evBusy, setEvBusy] = useState(false);
 
   const pullBkLast = useCallback(() => {
     invoke<number>("vault_last_export_at")
@@ -417,6 +420,10 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         setScList(sc);
         baselineRef.current = JSON.stringify({ st: normalized, sc });
       })
+      .catch(() => {});
+    // Everything 状态独立拉取（探测有网络 IO，不阻塞设置主体）
+    invoke<string>("everything_status")
+      .then(setEvStatus)
       .catch(() => {});
     // 版本号异步读取（tauri.conf.json 的 version），失败时留空
     getVersion()
@@ -1128,6 +1135,48 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
                 )
               }
             />
+          </div>
+          <div className="flex min-h-[42px] items-center justify-between gap-3">
+            <span className="flex min-w-0 flex-col gap-px">
+              <span className="text-[13px] text-foreground">文件搜索状态</span>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                全盘文件搜索依赖 Everything 的 HTTP 服务（评审 P2-03）
+              </span>
+            </span>
+            <span className="flex shrink-0 items-center gap-2">
+              <span
+                className={
+                  "text-[11px] " +
+                  (evStatus === "running" ? "text-success" : "text-muted-foreground")
+                }
+              >
+                {evStatus === "loading"
+                  ? "检测中…"
+                  : evStatus === "running"
+                    ? "运行中 ✓"
+                    : evStatus === "installed_not_running"
+                      ? "已安装未运行"
+                      : evStatus === "backoff"
+                        ? "启动重试中（5 分钟后）"
+                        : "未安装"}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={evBusy}
+                onClick={() => {
+                  // 只探测不启动（ensure 带 UAC 弹窗与 5 分钟退避，不属于
+                  // 「检测」语义；未运行时走呼出时的自动链路或手动安装）
+                  setEvBusy(true);
+                  void invoke<string>("everything_status")
+                    .then(setEvStatus)
+                    .catch((e) => toast.error(String(e)))
+                    .finally(() => setEvBusy(false));
+                }}
+              >
+                重新检测
+              </Button>
+            </span>
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">

@@ -293,6 +293,11 @@ function AppView() {
   // 面板每次被呼出时重置视图状态并拉取最近剪贴板（zap://shown 由 Rust 侧在 show 后发出）
   useEffect(() => {
     const unlisten = listen("zap://shown", () => {
+      // 呼出链路基线（评审 P2-01/D1）：与 zap.log 的 shown\temit 行对齐，
+      // 差值即「后端 emit→前端已渲染列表」的耗时；console 不上送，纯本地
+      console.info(
+        `[zap] shown handled @ ${performance.now().toFixed(0)}ms`
+      );
       setQuery(""); // 兜底：正常已在 zap://hidden 清空，这里不会产生可见变化
       setView({ kind: "main" });
       stopHkCapture();
