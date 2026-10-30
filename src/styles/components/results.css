@@ -54,8 +54,8 @@
 }
 
 .zap-merge-check.on {
-  border-color: rgba(245, 158, 11, 0.75);
-  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(var(--zap-accent-rgb), 0.75);
+  background: rgba(var(--zap-accent-rgb), 0.18);
   color: var(--zap-warn);
 }
 
@@ -68,7 +68,7 @@
   height: 0;
   border-radius: 2px;
   background: #f59e0b;
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.7);
+  box-shadow: 0 0 8px rgba(var(--zap-accent-rgb), 0.7);
   transform: translateY(-50%);
   transition: height 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -83,8 +83,8 @@
   border-radius: inherit;
   background: linear-gradient(
     90deg,
-    rgba(245, 158, 11, 0.16),
-    rgba(245, 158, 11, 0.05) 70%,
+    rgba(var(--zap-accent-rgb), 0.16),
+    rgba(var(--zap-accent-rgb), 0.05) 70%,
     transparent
   );
   opacity: 0;

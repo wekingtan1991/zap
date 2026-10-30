@@ -64,8 +64,8 @@
 
 .zap-stage.zap-stage-drop {
   border-radius: 12px;
-  outline-color: rgba(245, 158, 11, 0.6);
-  background: rgba(245, 158, 11, 0.06);
+  outline-color: rgba(var(--zap-accent-rgb), 0.6);
+  background: rgba(var(--zap-accent-rgb), 0.06);
 }
 
 /* 拖入/放入在途时条目整体降暗：提示文字不再与条目文本打架。
@@ -92,7 +92,7 @@
   padding: 7px 16px;
   border-radius: 999px;
   background: var(--zap-panel-grad);
-  border: 1px solid rgba(245, 158, 11, 0.5);
+  border: 1px solid rgba(var(--zap-accent-rgb), 0.5);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   pointer-events: none;
   color: var(--zap-warn);
@@ -187,11 +187,11 @@ html.zap-stagedrop-doc #root {
 .zap-stagedrop.hot .zap-stagedrop-card {
   flex-direction: column;
   padding: 20px;
-  border: 2px dashed rgba(245, 158, 11, 0.6);
+  border: 2px dashed rgba(var(--zap-accent-rgb), 0.6);
   background:
     radial-gradient(
       120% 100% at 50% 0%,
-      rgba(245, 158, 11, 0.14),
+      rgba(var(--zap-accent-rgb), 0.14),
       transparent 70%
     ),
     var(--zap-panel-grad);

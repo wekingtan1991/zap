@@ -114,10 +114,10 @@
 @keyframes pulse-ring {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+    box-shadow: 0 0 0 0 rgba(var(--zap-accent-rgb), 0);
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18);
+    box-shadow: 0 0 0 4px rgba(var(--zap-accent-rgb), 0.18);
   }
 }
 

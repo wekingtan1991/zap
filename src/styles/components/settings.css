@@ -11,7 +11,7 @@
 }
 
 .zap-hk-rec {
-  border-color: rgba(245, 158, 11, 0.8) !important;
+  border-color: rgba(var(--zap-accent-rgb), 0.8) !important;
   color: var(--zap-warn) !important;
 }
 

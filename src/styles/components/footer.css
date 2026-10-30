@@ -65,7 +65,7 @@
 
 .zap-merge-enter:hover {
   color: var(--zap-warn);
-  border-color: rgba(245, 158, 11, 0.45);
+  border-color: rgba(var(--zap-accent-rgb), 0.45);
 }
 
 /* 进行中：计数弱化展示，操作按钮点亮 */
@@ -80,8 +80,8 @@
   gap: 3px;
   padding: 2px 9px;
   border-radius: 999px;
-  border: 1px solid rgba(245, 158, 11, 0.55);
-  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(var(--zap-accent-rgb), 0.55);
+  background: rgba(var(--zap-accent-rgb), 0.14);
   color: var(--zap-warn);
   font-size: 11px;
   cursor: pointer;
@@ -91,7 +91,7 @@
 }
 
 .zap-merge-go:hover:not(:disabled) {
-  background: rgba(245, 158, 11, 0.24);
+  background: rgba(var(--zap-accent-rgb), 0.24);
 }
 
 .zap-merge-go:disabled {

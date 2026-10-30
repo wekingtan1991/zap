@@ -13,6 +13,8 @@
   --popover: #22252c;
   --popover-foreground: #e8eaed;
   --primary: #f59e0b;
+  /* 品牌琥珀的 RGB 分解：CSS 里以 rgba(var(--zap-accent-rgb), α) 引用 */
+  --zap-accent-rgb: 245, 158, 11;
   --primary-foreground: #1a1205;
   /* 控件填充/描边透明度：暗底上要能看清"这里是个可点的按钮" */
   --secondary: rgba(255, 255, 255, 0.13);
@@ -85,6 +87,7 @@
   --popover: #ffffff;
   --popover-foreground: #111827;
   --primary: #d97706;
+  --zap-accent-rgb: 217, 119, 6;
   --primary-foreground: #fffaf0;
   --secondary: rgba(17, 24, 39, 0.1);
   --secondary-foreground: #1f2937;
