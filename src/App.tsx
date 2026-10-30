@@ -1114,7 +1114,9 @@ function AppView() {
             const ui = kindUi(it.kind);
             return (
             <div
-              key={it.id + String(i)}
+              // key 去索引（评审 P2-11）：id 后端唯一（kind:path/行号），重排时
+              // React 按 id 复用 DOM——索引 key 在过滤重排时整行重挂闪帧
+              key={it.id}
               ref={i === active ? activeItemRef : undefined}
               className={
                 "zap-item" +
