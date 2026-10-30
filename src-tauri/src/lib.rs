@@ -1,6 +1,9 @@
 mod hotkey_capture;
 mod providers;
 mod settings;
+mod state;
+
+use state::{AppState, DirectKind, PANEL_HEIGHT, PANEL_WIDTH, WINDOW_LABEL, spawn_hidden};
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -20,47 +23,9 @@ use tauri_plugin_global_shortcut::{
 };
 use tauri_plugin_opener::OpenerExt;
 
-pub(crate) const WINDOW_LABEL: &str = "main";
-const PANEL_WIDTH: f64 = 720.0;
-const PANEL_HEIGHT: f64 = 480.0;
-
-/// 直达热键的动作：账号库 = 呼出面板并进入 pw 保护域；快速粘贴 = 不经面板，
-/// 把最近一条剪贴板内容粘贴到当前前台窗口；超级面板 = 抓取选中文本出动作菜单；
-/// 中转站 = 呼出面板并直接落中转站视图
-#[derive(Clone, Copy)]
-pub(crate) enum DirectKind {
-    Vault,
-    QuickPaste,
-    SuperPanel,
-    Stage,
-}
-
-pub(crate) struct AppState {
-    pub(crate) engine: std::sync::Arc<SearchEngine>,
-    /// 当前生效的呼出热键（设置保存时热切换）
-    pub(crate) hotkey: Mutex<String>,
-    /// 直达热键表：规范化热键串 → 动作（设置保存时热更新）
-    pub(crate) direct_hotkeys: Mutex<HashMap<String, DirectKind>>,
-    /// 托盘「记录剪贴板历史」勾选项，设置页改动时同步勾选态
-    pub(crate) clip_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
-    /// 面板最近一次显示的时间，用于忽略显示瞬间的焦点抖动
-    pub(crate) shown_at: Mutex<Option<Instant>>,
-    /// 安装流程期间保持面板可见（UAC 等弹窗会抢焦点）
-    pub(crate) hold_panel: std::sync::atomic::AtomicBool,
-    /// 呼出面板时的前台窗口：剪贴板条目「选中即粘贴」要交还焦点的目标
-    pub(crate) prev_foreground: Mutex<Option<isize>>,
-}
-
-/// spawn 控制台子进程（cmd/powershell）：GUI 进程下不闪黑框
-fn spawn_hidden(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    command.spawn()
-}
+// 应用状态与共享常量已拆至 state.rs（评审 P1-17 步 2）：AppState/DirectKind/
+// WINDOW_LABEL/PANEL_WIDTH/PANEL_HEIGHT/spawn_hidden 经顶部 use 引入，lib.rs
+// 内部引用面零改动
 
 #[tauri::command]
 async fn search(

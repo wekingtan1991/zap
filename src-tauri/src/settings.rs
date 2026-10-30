@@ -1,17 +1,15 @@
 //! 应用设置域（自 lib.rs 拆出，评审 P1-17 步 1）：设置 DTO 与快照组装、
 //! save_settings（热键热切换 + owner 应用 + 存档落库）、配置文件导入导出、
 //! 透明面板特效。命令名与线协议不变——前端零改动。
-//! 对 crate 根的依赖仅 AppState / DirectKind / WINDOW_LABEL 三个类型常量
-//! （步 2 会把 AppState+DirectKind 进一步拆到 state.rs）。
+//! 依赖 state.rs 的 AppState / DirectKind / WINDOW_LABEL。
 
 use std::sync::atomic::Ordering;
 
 use crate::providers::SearchEngine;
+use crate::state::{AppState, DirectKind, WINDOW_LABEL};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
-
-use crate::{AppState, DirectKind, WINDOW_LABEL};
 
 // ---------- 应用设置 ----------
 
