@@ -1,6 +1,7 @@
 /// 查看密码浮层（Alt+4 快瞄，从 App.tsx 迁出）：
 /// 原生复制入口全部拦截，强制走 Rust 受保护通道（排除剪贴板历史 + 焚除）
 import { invoke } from "@tauri-apps/api/core";
+import { useEffect } from "react";
 import { ArrowLeft, Eye, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,13 @@ interface Props {
 export function VaultRevealOverlay({ reveal, onClose, focusRef }: Props) {
   // Esc 关浮层（窗口捕获兜焦点掉 body）
   useEscCapture(onClose);
+
+  // 30 秒自动关闭（评审 P2-10/D9）：与详情页 30s 自动掩码同一安全语义——
+  // 快瞄浮层是整页明文，比掩码更强的收口是直接消失；用户需要更久可再按 Alt+4
+  useEffect(() => {
+    const timer = setTimeout(onClose, 30_000);
+    return () => clearTimeout(timer);
+  }, [onClose, reveal.id]);
 
   return (
     <div
@@ -50,7 +58,9 @@ export function VaultRevealOverlay({ reveal, onClose, focusRef }: Props) {
           <div className="zap-detail-hero-row">
             <span className="zap-detail-title">{reveal.title}</span>
           </div>
-          <div className="zap-detail-hero-sub">密码仅本次显示</div>
+          <div className="zap-detail-hero-sub">
+            密码仅本次显示 · 30 秒后自动关闭
+          </div>
         </div>
         <div className="zap-pw-card">
           <Input
@@ -84,8 +94,7 @@ export function VaultRevealOverlay({ reveal, onClose, focusRef }: Props) {
           <ShieldCheck className="size-3.5" />
           <Kbd>Ctrl</Kbd>+<Kbd>C</Kbd> 安全复制（不入剪贴板历史）· 关闭请用{" "}
           <Kbd>Esc</Kbd>
-        </div>
-      </div>
+        </div>      </div>
     </div>
   );
 }
