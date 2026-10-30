@@ -7,6 +7,7 @@
 //!   避开"配置在退出时才落盘、强杀导致永远生不出来"的坑
 //! - 提权批处理一次完成"杀旧 + 启新"，单次 UAC
 
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -22,6 +23,16 @@ const VERSIONS: [&str; 5] = [
     "1.4.1.1025",
     "1.4.1.1024",
 ];
+
+/// 已知版本的 zip SHA256 表（评审 P2-04/D4）：下载完整性校验—— Everything
+/// zip 在 UAC 揈权执行前必须对上表内哈希；表外版本（官网新发）拒绝自动
+/// 安装并提示手动装，防「下载内容被替换后提权执行」。官方渠道改版后新
+/// 版本哈希由本机手工核验后追加（真机下载 → Get-FileHash → 入表）。
+/// 1.4.1.1028 的哈希为本机从 voidtools 官网实下载 1,869,716 字节核算。
+const VERSION_SHA256: &[(&str, &str)] = &[(
+    "1.4.1.1028",
+    "4f4a9b9299b608d48b065f95fd80b9c095cdc7114cd467cd9b54944b23559dfe",
+)];
 
 /// 从下载页 HTML 提取稳定版版本号（数字段降序）。
 /// 只认纯数字加点（1.4.1.1028），天然排除 1.5 alpha 的 b 后缀等非稳定命名
@@ -83,8 +94,32 @@ fn download(dest_dir: &Path) -> Result<(), String> {
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => {
                 let bytes = resp.bytes().map_err(|e| e.to_string())?;
-                std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
-                return Ok(());
+                // 下载完整性校验（评审 P2-04/D4）：zip 在 UAC 揈权执行前必须
+                // 对上哈希表；表外版本（官网新发）拒绝自动执行——用户可手动
+                // 安装官方包，zap 仍能托管联接（port_candidates + status）
+                let expected = VERSION_SHA256
+                    .iter()
+                    .find(|(ver, _)| ver == v)
+                    .map(|(_, h)| *h);
+                let actual: String = Sha256::digest(&bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                match expected {
+                    Some(expected) if expected == actual => {
+                        std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
+                        return Ok(());
+                    }
+                    Some(expected) => {
+                        last_err =
+                            format!("{url} -> SHA256 不匹配（期望 {expected}，实得 {actual}）");
+                    }
+                    None => {
+                        last_err = format!(
+                            "{url} -> 版本 {v} 不在哈希表内，拒绝自动安装（请从官网手动安装后重试）"
+                        );
+                    }
+                }
             }
             Ok(resp) => {
                 last_err = format!("{url} -> HTTP {}", resp.status());
