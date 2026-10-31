@@ -93,13 +93,16 @@ export function VaultDetailView({
     rows.push({ label: "备注", value: detail.notes, field: "notes" });
   }
 
-  // TOTP 实时验证码：250ms 采样本地倒计时（与服务端同为 T0=0 的 30s 全局对齐窗口），
-  // 窗口翻新时重新取码。仅展示不落任何历史，复制走受保护通道（totp_copy）
+  // TOTP 实时验证码：1s 采样本地倒计时（与服务端同为 T0=0 的 30s 全局对齐窗口），
+  // 窗口翻新时重新取码——翻新判定用窗口序号而非「倒计时==30」：setInterval 与
+  // 墙钟秒不对齐，1s 间隔下可能整秒跳过漏掉 ==30 那一拍，窗口序号比较只有 30s
+  // 全程停摆才会漏。仅展示不落任何历史，复制走受保护通道（totp_copy）
   const [totpCode, setTotpCode] = useState("");
   const [totpLeft, setTotpLeft] = useState(0);
   useEffect(() => {
     if (!detail.totp) return;
     let alive = true;
+    let lastWin = Math.floor(Date.now() / 1000 / 30);
     const fetchCode = () =>
       invoke<string>("vault_action", { id: detail.id, action: "totp" })
         .then((c) => {
@@ -107,12 +110,17 @@ export function VaultDetailView({
         })
         .catch(() => {});
     fetchCode();
-    setTotpLeft(30 - (Math.floor(Date.now() / 1000) % 30));
-    const timer = setInterval(() => {
-      const left = 30 - (Math.floor(Date.now() / 1000) % 30);
-      setTotpLeft(left);
-      if (left === 30) fetchCode(); // 窗口翻新
-    }, 250);
+    const tick = () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      setTotpLeft(30 - (nowSec % 30));
+      const win = Math.floor(nowSec / 30);
+      if (win !== lastWin) {
+        lastWin = win;
+        fetchCode(); // 窗口翻新
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
     return () => {
       alive = false;
       clearInterval(timer);

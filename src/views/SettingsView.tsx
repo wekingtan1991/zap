@@ -58,7 +58,7 @@ import {
 } from "@/lib/appearance";
 import { backupReminder } from "@/lib/vaultBackup";
 
-export interface PluginState {
+interface PluginState {
   id: string;
   title: string;
   hint: string;
@@ -69,7 +69,7 @@ export interface PluginState {
   conflicts: string[];
 }
 
-export interface AppSettings {
+interface AppSettings {
   hotkey: string;
   /// 账号库直达热键（空串 = 未绑定）
   vaultHotkey: string;

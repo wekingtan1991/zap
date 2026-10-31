@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { toast } from "sonner";
 
-export type UpdateStatus =
+type UpdateStatus =
   | "idle"
   | "checking"
   | "available"

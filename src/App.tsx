@@ -162,6 +162,8 @@ function AppView() {
   const vaultTermRef = useRef("");
   /// 视图状态机的上一帧 kind（外观重拉只在「从设置页退出」时触发）
   const prevKindRef = useRef(view.kind);
+  /// view.kind 镜像（Ctrl+, 稳定监听经 ref 读，见该 effect 注释）
+  const viewKindRef = useRef(view.kind);
   const activeItemRef = useRef<HTMLDivElement | null>(null);
   const kbNavRef = useRef(false);
   /// 主面板根节点：zap://shown 时重播呼出动画（见 shown 监听内注释）
@@ -495,17 +497,23 @@ function AppView() {
 
   // Ctrl+, 打开设置（窗口捕获，全视图可用）：子页面原先进不了设置（面板
   // onKeyDown 只在 main 视图生效），只能先 Esc 回主面板。设置页内重复触发
-  // 按 no-op 跳过；热键录制态不冲突（, 不是可录键，录制监听只认可录键名）
+  // 按 no-op 跳过；热键录制态不冲突（, 不是可录键，录制监听只认可录键名）。
+  // 依赖数组固定 [openSettings]（稳定），view.kind 经 viewKindRef 读——
+  // 与 ctxMenu/mergeMode 键盘面不同，本监听全视图常开没有休眠态，无依赖
+  // 重挂等于每击键 remove+add
+  useEffect(() => {
+    viewKindRef.current = view.kind;
+  }, [view.kind]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.ctrlKey || e.key !== ",") return;
       e.preventDefault();
       e.stopPropagation();
-      if (view.kind !== "settings") openSettings();
+      if (viewKindRef.current !== "settings") openSettings();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  });
+  }, [openSettings]);
 
   /// 账号库列表重拉（pin/delete/表单收尾后）：响应回来时关键词已变（用户
   /// 继续输入）则丢弃，交还给账号库搜索 effect 的正常刷新链路。

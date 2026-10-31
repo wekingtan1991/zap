@@ -103,6 +103,14 @@ pub fn burn_window_active() -> bool {
     BURN_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// 阅后即焚：延时后若剪贴板仍是这段密码则清空；secs<=0 关闭。
+/// 判定用「序列号未变（快路径）或回读文本仍是这段密码」双保险：
+/// - 序列号没变 = 没人动过剪贴板，直接清；
+/// - 序列号变了也再回读确认——他程序重设了同样内容照样清；
+///   是别的内容（用户复制了新东西）才放弃，绝不覆盖用户的新复制。
+///
+/// Windows 上 OpenClipboard 可能被其他窗口短暂占用（IM/浏览器常驻监听），
+/// arboard 自带 5×5ms 重试窗口太窄，这里 6 次递进重试（合计约 4.2s）并全程落盘日志。
 fn schedule_clear(password: String, seq: u32, secs: i64) {
     if secs <= 0 {
         super::diag::log("焚除未启用（pwd_clear_secs<=0）");
@@ -163,18 +171,6 @@ fn clipboard_seq() -> u32 {
 fn clipboard_seq() -> u32 {
     0
 }
-
-/// 阅后即焚：延时后若剪贴板仍是这段密码则清空；secs<=0 关闭。
-/// 判定用「序列号未变（快路径）或回读文本仍是这段密码」双保险：
-/// - 序列号没变 = 没人动过剪贴板，直接清；
-/// - 序列号变了也再回读确认——他程序重设了同样内容照样清；
-///   是别的内容（用户复制了新东西）才放弃，绝不覆盖用户的新复制。
-///
-/// Windows 上 OpenClipboard 可能被其他窗口短暂占用（IM/浏览器常驻监听），
-/// arboard 自带 5×5ms 重试窗口太窄，这里 6 次递进重试（合计约 4.2s）并全程落盘日志。
-#[cfg(windows)]
-#[cfg(not(windows))]
-fn schedule_clear(_password: String, _seq: u32, _secs: i64) {}
 
 // ---------- 数据操作 ----------
 

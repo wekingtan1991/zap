@@ -31,9 +31,6 @@ pub(crate) async fn search(
 // 不变：涉及 DB/DPAPI/剪贴板/HTTP 的一律 async + spawn_blocking——Tauri 同步
 // 命令跑在主线程，SQLite 与剪贴板重试窗口会卡住窗口消息泵（everything_status
 // 的端口探测最坏可达数百毫秒）
-// 除面板开关类轻量命令外，涉及 DB/DPAPI/剪贴板/HTTP 的命令一律 async +
-// spawn_blocking：Tauri 同步命令跑在主线程，SQLite 与剪贴板重试窗口会卡住
-// 窗口消息泵（everything_status 的端口探测最坏可达数百毫秒）
 
 #[tauri::command]
 pub(crate) async fn everything_status() -> Result<String, String> {

@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useEscCapture } from "@/hooks/useEscCapture";
 
-export interface ParsedAccount {
+interface ParsedAccount {
   title: string;
   username: string;
   password: string;
