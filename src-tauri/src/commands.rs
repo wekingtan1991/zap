@@ -14,6 +14,18 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt;
 
+/// 命令层样板收编（审计 D6）：`spawn_blocking(move || body).await.map_err`
+/// 三行结构此前逐命令手写 29 处。调用点保留 `let engine = state.engine.clone();`
+/// ——macro_rules! 卫生规则下宏内绑定对 $body 不可见，engine 必须由调用点
+/// 绑定（$body 在调用点解析、天然捕获）。宏内含 `.await`，仅 async fn 可用
+macro_rules! blocking {
+    ($body:expr) => {
+        tauri::async_runtime::spawn_blocking(move || $body)
+            .await
+            .map_err(|e| e.to_string())
+    };
+}
+
 #[tauri::command]
 pub(crate) async fn search(
     state: tauri::State<'_, AppState>,
@@ -21,9 +33,7 @@ pub(crate) async fn search(
 ) -> Result<Vec<SearchItem>, String> {
     // 搜索在阻塞线程池执行：SQLite、窗口枚举、Everything HTTP 都不占主线程
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.search(&query))
-        .await
-        .map_err(|e| e.to_string())
+    blocking!(engine.search(&query))
 }
 
 // 面板开关类命令（hide_panel/set_hold_panel/set_stage_view）已拆至 panel.rs
@@ -62,9 +72,7 @@ pub(crate) async fn vault_search(
     query: String,
 ) -> Result<Vec<SearchItem>, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.vault_search(&query))
-        .await
-        .map_err(|e| e.to_string())
+    blocking!(engine.vault_search(&query))
 }
 
 #[tauri::command]
@@ -78,11 +86,7 @@ pub(crate) async fn vault_add(
     totp: String,
 ) -> Result<(), String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        engine.vault_add(&title, &username, &password, &url, &notes, &totp)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    blocking!({ engine.vault_add(&title, &username, &password, &url, &notes, &totp) })?
 }
 
 #[tauri::command]
@@ -92,15 +96,13 @@ pub(crate) async fn vault_action(
     action: String,
 ) -> Result<String, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking!({
         let secs: i64 = engine
             .get_setting(crate::providers::appconfig::KEY_PWD_CLEAR_SECS)
             .and_then(|v| v.parse().ok())
             .unwrap_or(crate::providers::appconfig::DEFAULT_PWD_CLEAR_SECS);
         engine.vault_action(id, &action, secs)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    })?
 }
 
 /// 取单条账号完整记录（编辑预填；含解密后的密码明文与 TOTP 密钥）
@@ -110,9 +112,7 @@ pub(crate) async fn vault_get(
     id: i64,
 ) -> Result<crate::providers::vault::VaultRecord, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.vault_get(id))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.vault_get(id))?
 }
 
 // Tauri 命令按字段平铺（前端 invoke 传同名参数），显式放行参数个数提示
@@ -130,13 +130,11 @@ pub(crate) async fn vault_update(
     totp: String,
 ) -> Result<(), String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking!({
         engine.vault_update(
             id, &title, &username, &password, &url, &notes, pinned, &totp,
         )
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    })?
 }
 
 // ---------- 应用设置 ----------
@@ -255,13 +253,11 @@ pub(crate) async fn tool_uuid() -> Result<String, String> {
 #[tauri::command]
 pub(crate) async fn clip_row(state: tauri::State<'_, AppState>, id: i64) -> Result<String, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking!({
         engine
             .clip_row(id)
             .ok_or_else(|| "该条剪贴板已被清理".to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    })?
 }
 
 /// 删除单条剪贴板条目（kind 分流两表）：id 为完整条目 id（clip:123 /
@@ -272,13 +268,11 @@ pub(crate) async fn clip_delete(
     id: String,
 ) -> Result<bool, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking!({
         let (kind, rowid) = id.split_once(':').ok_or("无效剪贴板条目")?;
         let rowid: i64 = rowid.parse().map_err(|_| "无效剪贴板条目")?;
         engine.clip_delete_row(kind, rowid)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    })?
 }
 
 /// 清空未固定剪贴板历史（文本+图片两表），返回删除条数：手动复制的敏感
@@ -288,9 +282,7 @@ pub(crate) async fn clip_clear_unpinned(
     state: tauri::State<'_, AppState>,
 ) -> Result<usize, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.clip_clear_unpinned())
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.clip_clear_unpinned())?
 }
 
 /// 打开数据目录（评审 P1-16「关于」区）：版本/数据位置/诊断三要素的家，
@@ -328,9 +320,7 @@ pub(crate) async fn clip_merge_paste(
         return Err("没有选择要合并的条目".into());
     }
     let engine = state.engine.clone();
-    let texts = tauri::async_runtime::spawn_blocking(move || engine.clip_texts(&ids))
-        .await
-        .map_err(|e| e.to_string())?;
+    let texts = blocking!(engine.clip_texts(&ids))?;
     if texts.is_empty() {
         return Err("所选条目都已被清理".into());
     }
@@ -384,7 +374,7 @@ pub(crate) async fn clipimg_preview(
     id: i64,
 ) -> Result<ClipImagePreview, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking!({
         let m = engine
             .clip_image_meta(id)
             .ok_or_else(|| "该条剪贴板图片已被清理".to_string())?;
@@ -397,9 +387,7 @@ pub(crate) async fn clipimg_preview(
             pinned: m.pinned,
             png_base64: base64::engine::general_purpose::STANDARD.encode(preview),
         })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    })?
 }
 
 /// 图片仅复制不粘贴：历史原图放回剪贴板。走自身复制抑制窗——图已在历史，
@@ -407,7 +395,7 @@ pub(crate) async fn clipimg_preview(
 #[tauri::command]
 pub(crate) async fn clipimg_copy(state: tauri::State<'_, AppState>, id: i64) -> Result<(), String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking!({
         let (w, h, png) = engine
             .clip_image(id)
             .ok_or_else(|| "该条剪贴板图片已被清理".to_string())?;
@@ -415,9 +403,7 @@ pub(crate) async fn clipimg_copy(state: tauri::State<'_, AppState>, id: i64) -> 
         crate::providers::clipboard::begin_self_copy();
         crate::providers::clipboard::set_image_dib(w as usize, h as usize, &rgba)?;
         Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    })?
 }
 
 /// 图片另存为 PNG：路径由前端 plugin-dialog save() 选定（与备份导出同模式），
@@ -429,14 +415,12 @@ pub(crate) async fn clipimg_export(
     path: String,
 ) -> Result<(), String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking!({
         let (_, _, png) = engine
             .clip_image(id)
             .ok_or_else(|| "该条剪贴板图片已被清理".to_string())?;
         std::fs::write(&path, png).map_err(|e| format!("写入失败：{e}"))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    })?
 }
 
 /// 搜索捷径清单（设置页「搜索捷径」分区）：纯缓存读，无库访问
@@ -454,9 +438,7 @@ pub(crate) async fn shortcuts_save(
     list: Vec<crate::providers::shortcuts::Shortcut>,
 ) -> Result<(), String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.shortcuts_save(list))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.shortcuts_save(list))?
 }
 
 #[tauri::command]
@@ -465,9 +447,7 @@ pub(crate) async fn vault_import(
     entries: Vec<crate::providers::vault::ParsedAccount>,
 ) -> Result<usize, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.vault_import(entries))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.vault_import(entries))?
 }
 
 // ---------- 账号库备份（加密导出/恢复） ----------
@@ -480,9 +460,7 @@ pub(crate) async fn vault_backup_export(
     passphrase: String,
 ) -> Result<usize, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.vault_backup_export(&path, &passphrase))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.vault_backup_export(&path, &passphrase))?
 }
 
 /// 账号库上次成功导出的 Unix 毫秒（0 = 从未备份）：设置页备份提醒的事实源
@@ -503,9 +481,7 @@ pub(crate) async fn vault_backup_decrypt(
     passphrase: String,
 ) -> Result<crate::providers::backup::BackupPreview, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.vault_backup_decrypt(&path, &passphrase))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.vault_backup_decrypt(&path, &passphrase))?
 }
 
 /// 备份恢复：skip_duplicates 时跳过疑似重复，返回 (写入数, 跳过数)
@@ -516,11 +492,7 @@ pub(crate) async fn vault_backup_restore(
     skip_duplicates: bool,
 ) -> Result<(usize, usize), String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        engine.vault_backup_restore(entries, skip_duplicates)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    blocking!({ engine.vault_backup_restore(entries, skip_duplicates) })?
 }
 
 /// 「选中即粘贴」开关现值（vault 复制后是否收面板的依据，评审 P2-17）：
@@ -540,7 +512,7 @@ pub(crate) async fn secondary_action(
     target: String,
 ) -> Result<(), String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking!({
         // 非路径类操作先行：不参与 shell: 拦截与 lnk 解析
         match action.as_str() {
             // 历史条目按 rowid 回查全文回填（与选中即粘贴同口径：监听去重自动置顶），
@@ -587,9 +559,7 @@ pub(crate) async fn secondary_action(
                 }
             }
         }
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    })?
 }
 
 #[tauri::command]
@@ -746,9 +716,7 @@ pub(crate) fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> 
 #[tauri::command]
 pub(crate) async fn clip_pin(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.clip_pin(id))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.clip_pin(id))?
 }
 
 /// 图片条目固定/取消固定：直连图片表——clip_pin 的「文本表先命中」兜底链路
@@ -759,9 +727,7 @@ pub(crate) async fn clipimg_pin(
     id: i64,
 ) -> Result<bool, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.clip_image_pin(id))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.clip_image_pin(id))?
 }
 
 // ---------- 中转站 ----------
@@ -771,9 +737,7 @@ pub(crate) async fn stage_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<crate::providers::stage::StageRecord>, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.stage_list())
-        .await
-        .map_err(|e| e.to_string())
+    blocking!(engine.stage_list())
 }
 
 /// 批量放入：逐条尝试，个别失败不影响其余（失败明细回传前端提示）
@@ -783,18 +747,14 @@ pub(crate) async fn stage_add(
     paths: Vec<String>,
 ) -> Result<crate::providers::stage::StageAddOutcome, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.stage_add(&paths))
-        .await
-        .map_err(|e| e.to_string())
+    blocking!(engine.stage_add(&paths))
 }
 
 /// 移出中转站（只删引用，不碰原文件）
 #[tauri::command]
 pub(crate) async fn stage_remove(state: tauri::State<'_, AppState>, id: i64) -> Result<(), String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.stage_remove(id))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.stage_remove(id))?
 }
 
 /// 批量移出（清理失效条目）：失效判定在前端列表数据里（list 时已逐条 exists），
@@ -805,27 +765,21 @@ pub(crate) async fn stage_remove_batch(
     ids: Vec<i64>,
 ) -> Result<usize, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.stage_remove_batch(&ids))
-        .await
-        .map_err(|e| e.to_string())
+    blocking!(engine.stage_remove_batch(&ids))
 }
 
 /// 清空临时区（固定条目保留），返回清掉条数
 #[tauri::command]
 pub(crate) async fn stage_clear(state: tauri::State<'_, AppState>) -> Result<usize, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.stage_clear())
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.stage_clear())?
 }
 
 /// 固定/取消固定（返回操作后的状态）
 #[tauri::command]
 pub(crate) async fn stage_pin(state: tauri::State<'_, AppState>, id: i64) -> Result<bool, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.stage_pin(id))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.stage_pin(id))?
 }
 
 /// 重新定位：为失效条目重绑路径
@@ -836,9 +790,7 @@ pub(crate) async fn stage_relocate(
     path: String,
 ) -> Result<(), String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.stage_relocate(id, &path))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.stage_relocate(id, &path))?
 }
 
 /// 复制文件到剪贴板（CF_HDROP，可粘贴到任意位置）；无库访问但剪贴板写入带重试，照例压线程池
@@ -867,7 +819,5 @@ pub(crate) async fn stage_restore_batch(
     items: Vec<crate::providers::stage::RestoreItem>,
 ) -> Result<usize, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || engine.stage_restore_batch(items))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking!(engine.stage_restore_batch(items))?
 }
