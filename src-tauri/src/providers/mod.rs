@@ -25,6 +25,7 @@ pub mod texttools;
 pub mod totp;
 pub mod util;
 pub mod vault;
+pub mod watcher;
 pub mod web;
 pub mod winclip;
 pub mod winsys;

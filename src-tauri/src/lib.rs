@@ -218,7 +218,7 @@ pub fn run() {
             providers::diag::init(db_dir.join("zap.log"));
             let db_path = db_dir.join("zap.db");
             let engine = SearchEngine::new(&db_path);
-            providers::clipboard::spawn_watcher(db_path);
+            providers::watcher::spawn_watcher(db_path);
 
             // providers → crate 根的反向依赖边以回调注册反转（评审 P1-17 步 0，
             // lib.rs 拆分的前置）：drop 编排与「在 zap 中打开」属于面板编排层，
