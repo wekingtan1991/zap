@@ -26,6 +26,7 @@ pub mod totp;
 pub mod util;
 pub mod vault;
 pub mod web;
+pub mod winclip;
 pub mod winsys;
 
 // 匹配引擎在 matching.rs（审计 C1 拆出）；兄弟 provider 均经 super:: 符号引用，
