@@ -26,13 +26,10 @@ pub struct SearchEngine {
 impl SearchEngine {
     pub fn new(db_path: &Path) -> Self {
         // 坏库软着陆（open_db_resilient 隔离重建）；走到 panic 只剩磁盘/权限级
-        // 故障，panic hook（run 最前）会落盘死因——比静默残废可诊断
-        let conn = clipboard::open_db_resilient(db_path)
+        // 故障，panic hook（run 最前）会落盘死因——比静默残废可诊断。
+        // 五张业务表 init 收拢在 db::open_db（审计 D1），装配期不再逐个调
+        let conn = super::db::open_db_resilient(db_path)
             .unwrap_or_else(|e| panic!("数据库打开与隔离重建均失败: {e}"));
-        vault::init_table(&conn);
-        appconfig::init_table(&conn);
-        apps::init_stats(&conn);
-        stage::init_table(&conn);
         // 图标缓存随库存放，键 = lnk 路径+mtime 哈希。
         // 索引后台化（评审 P2-02/D2）：empty 空表起步 + 后台线程首扫热替换
         // （refresh 已有 Arc swap 与 refreshing 门）——setup 不再被目录树+UWP
@@ -671,7 +668,7 @@ mod plugin_tests {
 
     /// :memory: 库走 open_db 同一建表路径
     fn mem_conn() -> Connection {
-        clipboard::open_db(Path::new(":memory:")).expect("mem db")
+        crate::providers::db::open_db(Path::new(":memory:")).expect("mem db")
     }
 
     fn insert_clip(conn: &Connection, content: &str) -> i64 {

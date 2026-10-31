@@ -323,7 +323,7 @@ mod tests {
     use std::path::Path;
 
     fn mem_conn() -> Connection {
-        super::super::clipboard::open_db(Path::new(":memory:")).expect("mem db")
+        crate::providers::db::open_db(Path::new(":memory:")).expect("mem db")
     }
 
     /// 确定性伪随机 RGBA（同尺寸同内容，用于去重断言）

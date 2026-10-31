@@ -4,6 +4,7 @@ pub mod apps;
 pub mod backup;
 pub mod clipboard;
 pub mod clipimage;
+pub mod db;
 pub mod diag;
 pub mod dpapi;
 pub mod engine;
