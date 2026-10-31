@@ -43,8 +43,18 @@ struct AppEntry {
 }
 
 impl AppIndex {
-    /// cache_dir 缓存提取出的图标（键 = lnk 路径+mtime 哈希），传 None 则只提内存不落盘
+    /// 同步全量扫描（诊断/冒烟用；生产路径走 empty+warm 后台化——
+    /// 非 test 构建的唯一消费者是 #[ignore] 冒烟测试）
+    #[allow(dead_code)]
     pub fn scan(cache_dir: Option<&Path>) -> Self {
+        Self::new(
+            Self::default_roots(),
+            cache_dir.map(Path::to_path_buf),
+            true,
+        )
+    }
+
+    fn default_roots() -> Vec<PathBuf> {
         let mut roots: Vec<PathBuf> = Vec::new();
         if let Ok(p) = std::env::var("APPDATA") {
             roots.push(PathBuf::from(p).join(r"Microsoft\Windows\Start Menu\Programs"));
@@ -52,9 +62,38 @@ impl AppIndex {
         if let Ok(p) = std::env::var("PROGRAMDATA") {
             roots.push(PathBuf::from(p).join(r"Microsoft\Windows\Start Menu\Programs"));
         }
-        Self::new(roots, cache_dir.map(Path::to_path_buf), true)
+        roots
     }
 
+    /// 空表初始化（评审 P2-02/D2 索引后台化）：entries 空表起步，首扫挪后台
+    /// 线程（warm 模式）——setup 不再被目录树+UWP COM+图标缓存读阻塞，
+    /// 冷启动热键/托盘就绪优先。last_refresh 记 None：呼出时 refresh_if_stale
+    /// 天然触发补扫（后台首扫未完成时 refreshing 门跳过，无并发叠加）
+    pub fn empty(cache_dir: Option<&Path>) -> Self {
+        Self {
+            roots: Self::default_roots(),
+            cache: cache_dir.map(Path::to_path_buf),
+            uwp: true,
+            refreshing: AtomicBool::new(false),
+            last_refresh: Mutex::new(None),
+            entries: RwLock::new(Arc::new(Vec::new())),
+        }
+    }
+
+    /// 后台首扫（评审 P2-02/D2）：empty 起步后调用——目录树+UWP COM 在后台
+    /// 线程跑完经 refresh 热替换（Arc swap，搜索无锁切换），图标 backfill 挂
+    /// 扫描完成回调。耗时落 diag（P2-01 基线纪律：先拿数据再谈优化收益）
+    pub fn warm(self: &std::sync::Arc<Self>) {
+        let this = std::sync::Arc::clone(self);
+        std::thread::spawn(move || {
+            let t0 = Instant::now();
+            this.refresh();
+            super::diag::log(&format!("index\t首扫耗时 {}ms", t0.elapsed().as_millis()));
+            this.spawn_icon_backfill();
+        });
+    }
+
+    #[allow(dead_code)] // 单元测试构造入口（非 test 构建无消费者）
     fn new(roots: Vec<PathBuf>, cache: Option<PathBuf>, uwp: bool) -> Self {
         let entries = Self::collect(&roots, cache.as_deref(), uwp, &MemIcons::new());
         Self {

@@ -186,11 +186,14 @@ impl SearchEngine {
         apps::init_stats(&conn);
         stage::init_table(&conn);
         // 图标缓存随库存放，键 = lnk 路径+mtime 哈希。
-        // 先建 Arc 再补图标：冷启动首扫只查缓存不现场提取（见
-        // spawn_icon_backfill），首次运行不再拖慢 setup 与热键/托盘就绪
+        // 索引后台化（评审 P2-02/D2）：empty 空表起步 + 后台线程首扫热替换
+        // （refresh 已有 Arc swap 与 refreshing 门）——setup 不再被目录树+UWP
+        // COM+图标缓存读阻塞，冷启动热键/托盘就绪优先。首扫耗时落 diag
+        // （P2-01 基线纪律），图标 backfill 挂扫描完成回调（冷启动首扫只查
+        // 缓存不现场提取的原语义经 refresh 空表路径保持不变）
         let icon_cache = db_path.parent().map(|p| p.join("icons"));
-        let index = std::sync::Arc::new(apps::AppIndex::scan(icon_cache.as_deref()));
-        index.spawn_icon_backfill();
+        let index = std::sync::Arc::new(apps::AppIndex::empty(icon_cache.as_deref()));
+        index.warm();
         let apps = std::sync::Arc::new(apps::AppsPlugin { index });
         let shortcuts = std::sync::Arc::new(shortcuts::ShortcutsPlugin::new(&conn));
         let recents = std::sync::Arc::new(recent::RecentsPlugin::new());
