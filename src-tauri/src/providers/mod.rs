@@ -14,6 +14,7 @@ pub mod matching;
 pub mod plugin;
 pub mod recent;
 pub mod settings;
+pub mod settings_owner;
 pub mod shortcuts;
 pub mod stage;
 pub mod stagedrop;
