@@ -1,0 +1,1068 @@
+//! 搜索引擎（自 providers/mod.rs 拆出，审计 C2）：SearchEngine 装配 + 各域
+//! facade + 搜索编排（probe / 并行 / 空面板组装 / 入口词冲突）。
+//! 兄弟 provider 与 SearchItem 经 use super::* 引入——与拆分前同一可见域
+
+use rusqlite::Connection;
+use std::path::Path;
+use std::sync::Mutex;
+use std::sync::atomic::Ordering;
+
+use super::*;
+
+pub struct SearchEngine {
+    /// 共享连接：剪贴板历史 / vault / appconfig 共用（WAL 下与监听线程的写连接并存）
+    clip: Mutex<Connection>,
+    /// 应用源具体句柄：呼出时 refresh_if_stale 要走具体类型，不经过 trait 对象；
+    /// 同一 Arc 也注册在 plugins 里，搜索时与其他源一视同仁
+    apps: std::sync::Arc<apps::AppsPlugin>,
+    /// 最近文件源具体句柄：呼出时节流重扫要走具体类型（同 apps 的理由）
+    recents: std::sync::Arc<recent::RecentsPlugin>,
+    /// 搜索捷径源具体句柄：设置页读写清单要走具体类型（同 apps 的理由）
+    shortcuts: std::sync::Arc<shortcuts::ShortcutsPlugin>,
+    /// 插件注册表：搜索贡献 + 剪贴板识别；顺序即结果顺序，勿随意调整
+    plugins: Vec<std::sync::Arc<dyn plugin::Plugin>>,
+}
+
+impl SearchEngine {
+    pub fn new(db_path: &Path) -> Self {
+        // 坏库软着陆（open_db_resilient 隔离重建）；走到 panic 只剩磁盘/权限级
+        // 故障，panic hook（run 最前）会落盘死因——比静默残废可诊断
+        let conn = clipboard::open_db_resilient(db_path)
+            .unwrap_or_else(|e| panic!("数据库打开与隔离重建均失败: {e}"));
+        vault::init_table(&conn);
+        appconfig::init_table(&conn);
+        apps::init_stats(&conn);
+        stage::init_table(&conn);
+        // 图标缓存随库存放，键 = lnk 路径+mtime 哈希。
+        // 索引后台化（评审 P2-02/D2）：empty 空表起步 + 后台线程首扫热替换
+        // （refresh 已有 Arc swap 与 refreshing 门）——setup 不再被目录树+UWP
+        // COM+图标缓存读阻塞，冷启动热键/托盘就绪优先。首扫耗时落 diag
+        // （P2-01 基线纪律），图标 backfill 挂扫描完成回调（冷启动首扫只查
+        // 缓存不现场提取的原语义经 refresh 空表路径保持不变）
+        let icon_cache = db_path.parent().map(|p| p.join("icons"));
+        let index = std::sync::Arc::new(apps::AppIndex::empty(icon_cache.as_deref()));
+        index.warm();
+        let apps = std::sync::Arc::new(apps::AppsPlugin { index });
+        let shortcuts = std::sync::Arc::new(shortcuts::ShortcutsPlugin::new(&conn));
+        let recents = std::sync::Arc::new(recent::RecentsPlugin::new());
+        // 注册顺序 = 结果展示顺序（JSON 工具识别 / apps / files / winsys /
+        // 剪贴板 / 最近 / 设置 / 搜索捷径 / 网页兜底）。JSON 工具只贡献识别条目、
+        // 不参与常规搜索，放最前是识别条目之间的展示顺序；其余与插件化前的拼接
+        // 顺序一致，保持前端展示不变；捷径排在兜底源之前（命中时优先于通用搜索）
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
+            std::sync::Arc::new(jsontools::JsonToolsPlugin),
+            std::sync::Arc::new(texttools::TextToolsPlugin),
+            std::sync::Arc::new(stage::StagePlugin),
+            apps.clone(),
+            std::sync::Arc::new(files::FilesPlugin),
+            std::sync::Arc::new(winsys::WinsysPlugin),
+            std::sync::Arc::new(clipboard::ClipboardPlugin),
+            recents.clone(),
+            std::sync::Arc::new(settings::SettingsPlugin),
+            shortcuts.clone(),
+            std::sync::Arc::new(web::WebPlugin),
+        ];
+        // 插件开关从存档加载到静态原子量（热路径只读原子量，不查库）
+        for p in &plugins {
+            if let Some(meta) = p.meta() {
+                let on = appconfig::get(&conn, meta.key)
+                    .map(|v| v != "0")
+                    .unwrap_or(meta.default_on);
+                meta.state.store(on, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        // 入口词声明一致性（仅开发期断言）：同一词被多个插件声明会静默双出条目。
+        // 与捷径关键词的重合不在此查——那是用户数据，随 plugin_states 现算
+        #[cfg(debug_assertions)]
+        {
+            let no_shortcuts: std::collections::HashSet<String> = Default::default();
+            let conflicts = entry_conflicts(
+                plugins
+                    .iter()
+                    .filter_map(|p| p.meta().map(|m| (m.id, m.entries))),
+                &no_shortcuts,
+            );
+            debug_assert!(
+                conflicts.is_empty(),
+                "插件入口词冲突（同一词被多个插件声明，命中会双出条目）：{conflicts:?}"
+            );
+        }
+        Self {
+            clip: Mutex::new(conn),
+            apps,
+            recents,
+            shortcuts,
+            plugins,
+        }
+    }
+
+    /// 搜索捷径清单（设置页「搜索捷径」分区）
+    pub fn shortcuts_list(&self) -> Vec<shortcuts::Shortcut> {
+        self.shortcuts.list()
+    }
+
+    /// 整单保存搜索捷径：校验 + 写库 + 热替换搜索缓存
+    pub fn shortcuts_save(&self, list: Vec<shortcuts::Shortcut>) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        self.shortcuts.save(&conn, list)
+    }
+
+    pub fn get_setting(&self, key: &str) -> Option<String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        appconfig::get(&conn, key)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        appconfig::set(&conn, key, value)
+    }
+
+    /// 批量写设置：单锁单事务（save_settings 等多处连写场景）。逐条 autocommit
+    /// 的 WAL fsync 累积会拉长同步命令的主线程窗口（评审 P1-07）；失败整批
+    /// 回滚，原子量动作由调用方在写库前原位完成（失败时内存态与存档短暂
+    /// 分叉，重启即归一——与原实现的中途部分写同等级）
+    pub fn set_many(&self, kvs: &[(&str, String)]) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        for (k, v) in kvs {
+            if let Err(e) = appconfig::set(&conn, k, v) {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())
+    }
+
+    // ---------- 设置链路 owner（评审 P1-18）----------
+    // 每组设置的「存档→原子量」装载与「参数→原子量+存档」应用收敛为单一
+    // 来源：lib.rs 的 setup / save_settings / 托盘三写者不再各自镜像
+    // 「读键→解析→store」三步（漏一处即静默失效的镜像面由此收敛）。
+    // DTO 下发（get_app_settings 读原子量）与 config 导出不在镜像面上，不动
+
+    /// 剪贴板三项（记录开关/保留条数/选中即粘贴）
+    pub fn load_clip_settings(&self) -> clipboard::ClipSettings {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let s = clipboard::ClipSettings {
+            enabled: appconfig::get(&conn, appconfig::KEY_CLIP_ENABLED)
+                .map(|v| v != "0")
+                .unwrap_or(true),
+            max: appconfig::get(&conn, appconfig::KEY_CLIP_MAX)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(appconfig::DEFAULT_CLIP_MAX),
+            autopaste: appconfig::get(&conn, appconfig::KEY_CLIP_AUTOPASTE)
+                .map(|v| v != "0")
+                .unwrap_or(appconfig::DEFAULT_CLIP_AUTOPASTE),
+        };
+        drop(conn);
+        clipboard::CLIP_ENABLED.store(s.enabled, Ordering::Relaxed);
+        clipboard::RETENTION_LIMIT.store(s.max, Ordering::Relaxed);
+        clipboard::PASTE_TO_PREV.store(s.autopaste, Ordering::Relaxed);
+        s
+    }
+
+    /// 应用剪贴板三项：原子量 + 单事务落库（参数即最终值，clamp 由调用方先行）
+    pub fn apply_clip_settings(&self, s: &clipboard::ClipSettings) -> Result<(), String> {
+        clipboard::CLIP_ENABLED.store(s.enabled, Ordering::Relaxed);
+        clipboard::RETENTION_LIMIT.store(s.max, Ordering::Relaxed);
+        clipboard::PASTE_TO_PREV.store(s.autopaste, Ordering::Relaxed);
+        self.set_many(&[
+            (
+                appconfig::KEY_CLIP_ENABLED,
+                if s.enabled { "1" } else { "0" }.into(),
+            ),
+            (appconfig::KEY_CLIP_MAX, s.max.to_string()),
+            (
+                appconfig::KEY_CLIP_AUTOPASTE,
+                if s.autopaste { "1" } else { "0" }.into(),
+            ),
+        ])
+    }
+
+    /// 托盘「记录剪贴板历史」单键翻转（其余两项不动，load 后改单字段再
+    /// apply 亦可，单键高频路径给直用形态）
+    pub fn set_clip_enabled(&self, on: bool) -> Result<(), String> {
+        clipboard::CLIP_ENABLED.store(on, Ordering::Relaxed);
+        self.set_setting(appconfig::KEY_CLIP_ENABLED, if on { "1" } else { "0" })
+    }
+
+    /// 中转站容量装载（10–500 之外视为坏值回退默认）；容量收敛
+    /// （stage_enforce_cap）的时机仍由调用方决定
+    pub fn load_stage_cap(&self) -> i64 {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        // 10–500 之外视为坏值回退默认（与 save 侧 clamp 同一口径）
+        let cap = appconfig::get(&conn, appconfig::KEY_STAGE_CAP)
+            .and_then(|v| v.parse().ok())
+            .filter(|v| (10..=500).contains(v))
+            .unwrap_or(appconfig::DEFAULT_STAGE_CAP);
+        stage::CAP.store(cap, Ordering::Relaxed);
+        cap
+    }
+
+    /// 应用中转站容量（clamp 后原子量 + 落库）
+    pub fn apply_stage_cap(&self, cap: i64) -> Result<(), String> {
+        let cap = cap.clamp(10, 500);
+        stage::CAP.store(cap, Ordering::Relaxed);
+        self.set_setting(appconfig::KEY_STAGE_CAP, &cap.to_string())
+    }
+
+    /// 拖拽落区条三项装载（开关/放后开面板/停靠角；position 非法存档值在
+    /// set_position_setting 内部静默保持默认角）
+    pub fn load_stagedrop_settings(&self) -> stagedrop::StagedropSettings {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let s = stagedrop::StagedropSettings {
+            enabled: appconfig::get(&conn, appconfig::KEY_STAGEDROP_ENABLED)
+                .map(|v| v != "0")
+                .unwrap_or(appconfig::DEFAULT_STAGEDROP_ENABLED),
+            open_panel: appconfig::get(&conn, appconfig::KEY_STAGEDROP_OPEN_PANEL)
+                .map(|v| v != "0")
+                .unwrap_or(appconfig::DEFAULT_STAGEDROP_OPEN_PANEL),
+            position: appconfig::get(&conn, appconfig::KEY_STAGEDROP_POSITION)
+                .unwrap_or_else(|| appconfig::DEFAULT_STAGEDROP_POSITION.into()),
+        };
+        drop(conn);
+        stagedrop::STAGEDROP_ENABLED.store(s.enabled, Ordering::Relaxed);
+        stagedrop::STAGEDROP_OPEN_PANEL.store(s.open_panel, Ordering::Relaxed);
+        stagedrop::set_position_setting(&s.position);
+        s
+    }
+
+    /// 应用落区条三项。position 与 save 原口径一致：非法值静默跳过该项
+    /// （不应用不落库），enabled/open_panel 照常生效
+    pub fn apply_stagedrop_settings(&self, s: &stagedrop::StagedropSettings) -> Result<(), String> {
+        stagedrop::STAGEDROP_ENABLED.store(s.enabled, Ordering::Relaxed);
+        stagedrop::STAGEDROP_OPEN_PANEL.store(s.open_panel, Ordering::Relaxed);
+        let position_valid = stagedrop::Corner::parse(&s.position).is_some();
+        if position_valid {
+            stagedrop::set_position_setting(&s.position);
+        }
+        let mut kvs = vec![
+            (
+                appconfig::KEY_STAGEDROP_ENABLED,
+                if s.enabled { "1" } else { "0" }.into(),
+            ),
+            (
+                appconfig::KEY_STAGEDROP_OPEN_PANEL,
+                if s.open_panel { "1" } else { "0" }.into(),
+            ),
+        ];
+        if position_valid {
+            kvs.push((appconfig::KEY_STAGEDROP_POSITION, s.position.clone()));
+        }
+        self.set_many(&kvs)
+    }
+
+    pub fn vault_search(&self, query: &str) -> Vec<SearchItem> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        vault::search(&conn, query)
+    }
+
+    /// 按行号取剪贴板原文（JSON 识别条目进工作台时回查当时的内容）
+    pub fn clip_row(&self, id: i64) -> Option<String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipboard::get_by_id(&conn, id)
+    }
+
+    /// 行号存在性探查（open_item 两段式第一段，评审 P1-07）：毫秒级 PK 点查
+    /// 保「已被清理」即时报错语义；全文回查留给粘贴的后台线程
+    pub fn clip_row_exists(&self, id: i64) -> bool {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        conn.query_row("SELECT 1 FROM clipboard_history WHERE id=?1", [id], |_| {
+            Ok(())
+        })
+        .is_ok()
+    }
+
+    /// 按行号删剪贴板条目：kind 分流两表——两表自增行号独立，clipimg 必须打
+    /// 图片表（与 clipimg_pin 同款撞号陷阱）。固定条目允许显式删除（用户
+    /// 意图优先于固定豁免），返回是否确有删除
+    pub fn clip_delete_row(&self, kind: &str, id: i64) -> Result<bool, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let table = if kind == "clipimg" {
+            "clipboard_images"
+        } else {
+            "clipboard_history"
+        };
+        let n = conn
+            .execute(&format!("DELETE FROM {table} WHERE id=?1"), [id])
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    /// 清空未固定剪贴板历史（文本+图片两表）：手动复制的敏感内容的用户补救
+    /// 通道（评审 P1-09），返回删除总条数
+    pub fn clip_clear_unpinned(&self) -> Result<usize, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let n1 = conn
+            .execute("DELETE FROM clipboard_history WHERE pinned=0", [])
+            .map_err(|e| e.to_string())?;
+        let n2 = conn
+            .execute("DELETE FROM clipboard_images WHERE pinned=0", [])
+            .map_err(|e| e.to_string())?;
+        Ok(n1 + n2)
+    }
+
+    /// 退出前 WAL checkpoint（TRUNCATE）：把 -wal 文件收缩回主库（评审 P1-08）。
+    /// busy 连接（另一连接还在写）时静默放弃——下次退出再收
+    pub fn wal_checkpoint(&self) {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+    }
+
+    /// 按给定顺序取多条剪贴板全文（合并粘贴用）：个别行号已被清理则跳过，
+    /// 返回按入参顺序的存留文本。锁内纯库操作
+    pub fn clip_texts(&self, ids: &[i64]) -> Vec<String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        ids.iter()
+            .filter_map(|id| clipboard::get_by_id(&conn, *id))
+            .collect()
+    }
+
+    /// 最近一条剪贴板内容（快速粘贴直达热键用）
+    pub fn latest_clip(&self) -> Option<String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipboard::latest(&conn).map(|(_, text)| text)
+    }
+
+    /// 按行号取剪贴板图片全图（clipimg 条目回贴用）
+    pub fn clip_image(&self, id: i64) -> Option<(u32, u32, Vec<u8>)> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipimage::get(&conn, id)
+    }
+
+    /// 按行号取剪贴板图片全图与元信息（预览面板用）：pinned 是固定按钮初始态
+    pub fn clip_image_meta(&self, id: i64) -> Option<clipimage::ImageFull> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipimage::get_full(&conn, id)
+    }
+
+    /// 图片表固定/取消固定：clip_pin 走「文本表先命中」的兜底链路，两表
+    /// 自增行号会撞号（文本 id=5 存在时图片行号 5 永远轮不到）——图片条目
+    /// 必须经此直连图片表，前端按 kind 分流
+    pub fn clip_image_pin(&self, id: i64) -> Result<bool, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipimage::pin_toggle(&conn, id)
+    }
+
+    /// 剪贴板图片行号是否仍存在：open_item 的同步错误路径用，不拖 PNG 大字段
+    pub fn clip_image_exists(&self, id: i64) -> bool {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipimage::exists(&conn, id)
+    }
+
+    /// 后台重建应用索引（面板呼出时调用）。10 秒内已扫过则跳过，
+    /// 避免连续呼出反复走目录树 + UWP 枚举；false = 本次跳过或上次未完成
+    pub fn refresh_apps(&self) -> bool {
+        self.apps.index.refresh_if_stale(apps::REFRESH_MIN_INTERVAL)
+    }
+
+    /// 后台重建「最近文件」索引（面板呼出时调用，10 秒节流与 apps 同窗）：
+    /// 启动器常驻数日，只靠启动快照会越来越陈旧
+    pub fn refresh_recents(&self) -> bool {
+        self.recents.refresh_if_stale(apps::REFRESH_MIN_INTERVAL)
+    }
+
+    /// open_item 记一次应用启动（frecency 排序依据，按 target 路径计数）
+    pub fn record_app_launch(&self, target: &str) {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        apps::record_launch(&conn, target);
+    }
+
+    /// 剪贴板条目固定/取消固定（返回操作后的状态）
+    pub fn clip_pin(&self, id: i64) -> Result<bool, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        clipboard::pin_toggle(&conn, id)
+    }
+
+    // ---------- 中转站 ----------
+    // 锁纪律：磁盘 IO（resolve 的 metadata/lnk 解析、finish 的存在性+图标）
+    // 一律在锁外，锁内只做纯库操作——网络路径的 stat 可达秒级
+
+    pub fn stage_list(&self) -> Vec<stage::StageRecord> {
+        let rows = {
+            let conn = self.clip.lock().expect("clip db poisoned");
+            stage::rows(&conn)
+        };
+        stage::finish(rows)
+    }
+
+    /// 批量放入：逐条尝试，个别失败不影响其余（失败明细回传前端提示）
+    pub fn stage_add(&self, paths: &[String]) -> stage::StageAddOutcome {
+        let resolved = stage::resolve_paths(paths);
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::commit_add(&conn, resolved)
+    }
+
+    pub fn stage_remove(&self, id: i64) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::remove(&conn, id)
+    }
+
+    /// 批量移出（清理失效条目用）：返回实际移出条数，不存在的 id 忽略
+    pub fn stage_remove_batch(&self, ids: &[i64]) -> usize {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::remove_batch(&conn, ids)
+    }
+
+    /// 设置调小容量后立即收敛已有超容条目（平时由放入路径顺带淘汰）
+    pub fn stage_enforce_cap(&self) {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::enforce_cap(&conn);
+    }
+
+    pub fn stage_clear(&self) -> Result<usize, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::clear(&conn)
+    }
+
+    pub fn stage_pin(&self, id: i64) -> Result<bool, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::pin_toggle(&conn, id)
+    }
+
+    pub fn stage_relocate(&self, id: i64, path: &str) -> Result<(), String> {
+        let (p, is_dir) = stage::resolve_relocate(path)?;
+        let conn = self.clip.lock().expect("clip db poisoned");
+        stage::commit_relocate(&conn, id, &p, is_dir)
+    }
+
+    /// 批量撤销恢复（清空/移出撤销共用）：逐条幂等插回（已重新放入的路径
+    /// 跳过），返回恢复条数
+    pub fn stage_restore_batch(&self, items: Vec<stage::RestoreItem>) -> Result<usize, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        Ok(stage::restore_batch(&conn, &items))
+    }
+
+    pub fn vault_add(
+        &self,
+        title: &str,
+        username: &str,
+        password: &str,
+        url: &str,
+        notes: &str,
+        totp: &str,
+    ) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let r = vault::add(&conn, title, username, password, url, notes, totp);
+        if r.is_ok() {
+            // 新密码若与历史同值（用户复制过后才想起入库），顺手清掉
+            let pwd = password.trim().to_string();
+            if !pwd.is_empty() {
+                vault::purge_clip_history(&conn, &[pwd]);
+            }
+            vault::invalidate_password_cache();
+        }
+        r
+    }
+
+    pub fn vault_action(
+        &self,
+        id: i64,
+        action: &str,
+        pwd_clear_secs: i64,
+    ) -> Result<String, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        vault::action(&conn, id, action, pwd_clear_secs)
+    }
+
+    pub fn vault_get(&self, id: i64) -> Result<vault::VaultRecord, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        vault::get(&conn, id)
+    }
+
+    // 账号字段一字排开（同 vault::update 的理由），显式放行参数个数提示
+    #[allow(clippy::too_many_arguments)]
+    pub fn vault_update(
+        &self,
+        id: i64,
+        title: &str,
+        username: &str,
+        password: &str,
+        url: &str,
+        notes: &str,
+        pinned: i64,
+        totp: &str,
+    ) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let r = vault::update(
+            &conn, id, title, username, password, url, notes, pinned, totp,
+        );
+        if r.is_ok() {
+            // 改密后旧值不再可从历史翻出；密码集缓存同步失效
+            let pwd = password.trim().to_string();
+            if !pwd.is_empty() {
+                vault::purge_clip_history(&conn, &[pwd]);
+            }
+            vault::invalidate_password_cache();
+        }
+        r
+    }
+
+    pub fn vault_import(&self, entries: Vec<vault::ParsedAccount>) -> Result<usize, String> {
+        // 导入的密码若与历史同值（用户此前手动复制过），按原文等值清掉（评审 P1-09）
+        let pwds: Vec<String> = entries
+            .iter()
+            .map(|e| e.password.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let n = vault::import(&conn, entries)?;
+        vault::purge_clip_history(&conn, &pwds);
+        vault::invalidate_password_cache();
+        Ok(n)
+    }
+
+    /// 加密导出全部账号到备份文件，返回条目数
+    pub fn vault_backup_export(&self, path: &str, passphrase: &str) -> Result<usize, String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let entries = vault::backup_read_all(&conn)?;
+        let content = backup::encrypt_backup(&entries, passphrase)?;
+        std::fs::write(path, content).map_err(|e| e.to_string())?;
+        // 落盘成功才记时间：设置页「上次备份 N 天前 / 30 天提醒」的事实源
+        // （备份文件走用户自选路径，zap 无注册表，库里这个时间戳就是唯一凭证）
+        let now = util::now_ms();
+        let _ = appconfig::set(&conn, appconfig::KEY_VAULT_LAST_EXPORT, &now.to_string());
+        Ok(entries.len())
+    }
+
+    /// 解密备份文件为预览：条目 + 每条是否与现有账号疑似重复（恢复前交前端确认）
+    pub fn vault_backup_decrypt(
+        &self,
+        path: &str,
+        passphrase: &str,
+    ) -> Result<backup::BackupPreview, String> {
+        let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let entries = backup::decrypt_backup(&content, passphrase)?;
+        let duplicates = {
+            let conn = self.clip.lock().expect("clip db poisoned");
+            vault::backup_duplicates(&conn, &entries)
+        };
+        Ok(backup::BackupPreview {
+            entries,
+            duplicates,
+        })
+    }
+
+    /// 备份恢复：skip_duplicates 时跳过疑似重复，返回 (写入数, 跳过数)
+    pub fn vault_backup_restore(
+        &self,
+        entries: Vec<backup::BackupEntry>,
+        skip_duplicates: bool,
+    ) -> Result<(usize, usize), String> {
+        // 恢复进来的密码同样按原文清历史同值行 + 失效密码缓存（评审 P1-09）
+        let pwds: Vec<String> = entries
+            .iter()
+            .map(|e| e.password.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
+        let conn = self.clip.lock().expect("clip db poisoned");
+        let r = vault::backup_restore(&conn, entries, skip_duplicates);
+        if r.is_ok() {
+            vault::purge_clip_history(&conn, &pwds);
+            vault::invalidate_password_cache();
+        }
+        r
+    }
+
+    pub fn search(&self, query: &str) -> Vec<SearchItem> {
+        let q = query.trim();
+        if q.is_empty() {
+            let conn = self.clip.lock().expect("clip db poisoned");
+            let mut items = assemble_opening(&self.plugins, &conn);
+            // 空面板即启动台：最近剪贴板之后附最常用应用（frecency，仅真实
+            // 启动过的），呼出 → Enter 即启动，不必先打字
+            let launches = apps::load_launch_counts(&conn);
+            items.extend(self.apps.index.top_launch_items(&launches, 4));
+            // 空面板即功能首页：识别与最近剪贴板之后附上插件入口清单，
+            // 呼出即可见，可发现性不依赖记住入口词
+            items.extend(fallback_all(&self.plugins));
+            return items;
+        }
+        // 万能输入框：对输入框内容先跑一轮即时识别（键入/粘贴即识别），
+        // 命中条目置顶于入口条目与常规结果之前
+        let mut items = probe_all(&self.plugins, q);
+        let regular = run_parallel(&self.plugins, q, &self.clip);
+        // 网页兜底对任何 query 恒有产出，不足为「有结果」的凭据：除网页兜底
+        // （含捷径命中的 web 条目，id 前缀 sc:）外一无所获时，尾部附上插件入口清单
+        let has_strong = items
+            .iter()
+            .chain(regular.iter())
+            .any(|i| i.kind != "web" || i.id.starts_with("sc:"));
+        items.extend(regular);
+        if !has_strong {
+            items.extend(fallback_all(&self.plugins));
+        }
+        items
+    }
+
+    /// 设置页插件清单（仅可开关插件；核心源不列）。
+    /// 入口词与捷径关键词的重合随调用现算——捷径是用户数据，装配期缓存会陈旧
+    pub fn plugin_states(&self) -> Vec<PluginInfo> {
+        let shortcut_words: std::collections::HashSet<String> = self
+            .shortcuts
+            .list()
+            .into_iter()
+            .map(|s| s.keyword)
+            .collect();
+        let conflicts = entry_conflicts(
+            self.plugins.iter().filter_map(|p| {
+                p.meta()
+                    .filter(|m| m.state.load(std::sync::atomic::Ordering::Relaxed))
+                    .map(|m| (m.id, m.entries))
+            }),
+            &shortcut_words,
+        );
+        self.plugins
+            .iter()
+            .filter_map(|p| {
+                p.meta().map(|m| PluginInfo {
+                    id: m.id.to_string(),
+                    title: m.title.to_string(),
+                    hint: m.hint.to_string(),
+                    enabled: m.state.load(std::sync::atomic::Ordering::Relaxed),
+                    entries: m.entries.iter().map(|w| w.to_string()).collect(),
+                    conflicts: conflicts
+                        .get(m.id)
+                        .map(|ws| ws.iter().map(|w| w.to_string()).collect())
+                        .unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
+    /// 开关插件：写存档 + 同步原子量（搜索/识别热路径立即生效）
+    pub fn set_plugin_enabled(&self, id: &str, on: bool) -> Result<(), String> {
+        let conn = self.clip.lock().expect("clip db poisoned");
+        for p in &self.plugins {
+            if let Some(meta) = p.meta()
+                && meta.id == id
+            {
+                appconfig::set(&conn, meta.key, if on { "1" } else { "0" })?;
+                meta.state.store(on, std::sync::atomic::Ordering::Relaxed);
+                return Ok(());
+            }
+        }
+        Err(format!("未知插件：{id}"))
+    }
+}
+
+/// 插件是否已被停用（无清单 = 核心源 = 恒启用）
+fn plugin_off(p: &dyn plugin::Plugin) -> bool {
+    p.meta()
+        .is_some_and(|m| !m.state.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// 万能输入框识别：对输入框当前内容逐插件跑 probe（停用插件跳过），
+/// 命中条目整体置顶。识别是廉价字符串判定（前缀/字符集检查，256KB 上限），
+/// 每次击键跑一遍没有压力
+fn probe_all(plugins: &[std::sync::Arc<dyn plugin::Plugin>], q: &str) -> Vec<SearchItem> {
+    let mut items = Vec::new();
+    for p in plugins {
+        if plugin_off(p.as_ref()) {
+            continue;
+        }
+        items.extend(p.probe(q));
+    }
+    items
+}
+
+/// 功能入口兜底：按注册序收拢各插件的入口条目（停用插件跳过——核心源无
+/// meta 恒过，各插件实现里再自查开关态）
+fn fallback_all(plugins: &[std::sync::Arc<dyn plugin::Plugin>]) -> Vec<SearchItem> {
+    let mut items = Vec::new();
+    for p in plugins {
+        if plugin_off(p.as_ref()) {
+            continue;
+        }
+        items.extend(p.fallback_entry());
+    }
+    items
+}
+
+/// 入口词冲突：返回 插件 id → 冲突入口词。冲突 = 同一词被多个声明方认领，
+/// 或唯一认领方与搜索捷径关键词重合（搜索时同词双出条目）。
+/// 入参是 (声明方, 词表) 序列 + 捷径关键词集合；是否纳入由调用方先过滤
+/// ——停用插件的入口词不会命中，不算真实冲突。输出按词排序保证确定性
+fn entry_conflicts<'a>(
+    decls: impl IntoIterator<Item = (&'a str, &'a [&'a str])>,
+    shortcut_words: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<&'a str, Vec<&'a str>> {
+    let mut owners: std::collections::HashMap<&'a str, Vec<&'a str>> = Default::default();
+    for (id, words) in decls {
+        for w in words.iter().copied() {
+            owners.entry(w).or_default().push(id);
+        }
+    }
+    let mut out: std::collections::HashMap<&'a str, Vec<&'a str>> = Default::default();
+    for (word, ids) in owners {
+        if ids.len() == 1 && !shortcut_words.contains(word) {
+            continue;
+        }
+        for id in ids {
+            out.entry(id).or_default().push(word);
+        }
+    }
+    for words in out.values_mut() {
+        words.sort_unstable();
+    }
+    out
+}
+
+/// 插件并行执行：总延迟从"串行求和"变"最慢一路"（files 的 HTTP 超时 250ms 与
+/// winsys 的窗口枚举不再逐个叠加在每次击键上）。输出按注册序回槽，展示顺序与
+/// 串行版完全一致。needs_conn 的插件留在当前线程——rusqlite Connection 非 Sync
+/// 不能跨线程；其余各占一个 scoped 线程，单个插件 panic 只损失该源（空结果）。
+fn run_parallel(
+    plugins: &[std::sync::Arc<dyn plugin::Plugin>],
+    q: &str,
+    clip: &Mutex<Connection>,
+) -> Vec<SearchItem> {
+    let mut slots: Vec<Option<Vec<SearchItem>>> = (0..plugins.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for (i, p) in plugins.iter().enumerate() {
+            if plugin_off(p.as_ref()) || p.needs_conn() {
+                continue;
+            }
+            handles.push((i, scope.spawn(move || p.search(q, None))));
+        }
+        for (i, p) in plugins.iter().enumerate() {
+            if plugin_off(p.as_ref()) || !p.needs_conn() {
+                continue;
+            }
+            // clip 锁只在真正查库的插件上短暂持有：其余源的 HTTP/窗口枚举
+            // 已并行到各自线程，不会拖住共用这把锁的 vault 与设置操作
+            let conn = clip.lock().expect("clip db poisoned");
+            slots[i] = Some(p.search(q, Some(&conn)));
+        }
+        for (i, h) in handles {
+            slots[i] = Some(h.join().unwrap_or_default());
+        }
+    });
+    slots.into_iter().flatten().flatten().collect()
+}
+
+/// 设置页插件状态
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInfo {
+    pub id: String,
+    pub title: String,
+    pub hint: String,
+    pub enabled: bool,
+    /// 搜索入口词（声明化，设置页插件卡展示）
+    pub entries: Vec<String>,
+    /// 入口词冲突（与其他插件或搜索捷径关键词重合，设置页标红提示）
+    pub conflicts: Vec<String>,
+}
+
+/// 空面板呼出的结果组装：插件对最新剪贴板的识别置顶，其后是最近剪贴板若干条。
+/// 识别走库内最新一条——与列表展示同源，识别结果和用户看到的条目必然一致；
+/// 记录关闭时库会变陈旧，此时宁可不识别也不误报
+fn assemble_opening(
+    plugins: &[std::sync::Arc<dyn plugin::Plugin>],
+    conn: &Connection,
+) -> Vec<SearchItem> {
+    let mut items = Vec::new();
+    if clipboard::CLIP_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some((rowid, text)) = clipboard::latest(conn)
+    {
+        for p in plugins {
+            if plugin_off(p.as_ref()) {
+                continue;
+            }
+            items.extend(p.detect(rowid, &text));
+        }
+    }
+    items.extend(clipboard::search(conn, "", 5));
+    items
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    /// 串行化对全局 CLIP_ENABLED 的读改窗口（cargo test 默认多线程并行，
+    /// 开关测试与依赖开关态的断言并发会互踩）
+    static CLIP_ENABLED_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 只实现识别的最小插件：把收到的 rowid/文本原样写成条目，供装配断言
+    struct ProbePlugin;
+    impl plugin::Plugin for ProbePlugin {
+        fn search(&self, _q: &str, _c: Option<&Connection>) -> Vec<SearchItem> {
+            Vec::new()
+        }
+        fn detect(&self, rowid: i64, text: &str) -> Vec<SearchItem> {
+            vec![SearchItem {
+                id: format!("probe:{rowid}"),
+                title: format!("probe:{text}"),
+                subtitle: String::new(),
+                kind: "info".into(),
+                target: String::new(),
+                icon: None,
+                pinned: false,
+                score: 0.0,
+            }]
+        }
+    }
+
+    /// :memory: 库走 open_db 同一建表路径
+    fn mem_conn() -> Connection {
+        clipboard::open_db(Path::new(":memory:")).expect("mem db")
+    }
+
+    fn insert_clip(conn: &Connection, content: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO clipboard_history (content, created_at) VALUES (?1, ?2)",
+            rusqlite::params![content, 1000],
+        )
+        .expect("insert");
+        conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .expect("rowid")
+    }
+
+    #[test]
+    fn 空库呼出不识别只返回空列表() {
+        let conn = mem_conn();
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> =
+            vec![std::sync::Arc::new(ProbePlugin)];
+        let items = super::assemble_opening(&plugins, &conn);
+        assert!(items.is_empty(), "无历史时不应有识别条目：{items:?}");
+    }
+
+    #[test]
+    fn 识别条目置顶且基于最新一条() {
+        let _serial = CLIP_ENABLED_LOCK.lock().unwrap();
+        let conn = mem_conn();
+        insert_clip(&conn, "{\"a\":1}");
+        insert_clip(&conn, "[1,2,3]");
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> =
+            vec![std::sync::Arc::new(ProbePlugin)];
+        let items = super::assemble_opening(&plugins, &conn);
+        assert_eq!(items[0].id, "probe:2", "识别条目应置顶且携带最新行号");
+        assert_eq!(items[0].title, "probe:[1,2,3]");
+        assert_eq!(items.len(), 3, "识别 1 条 + 最近剪贴板 2 条");
+        assert_eq!(items[1].kind, "clip");
+        assert_eq!(items[2].kind, "clip");
+    }
+
+    #[test]
+    fn 记录关闭时跳过识别但仍展示最近剪贴板() {
+        let _serial = CLIP_ENABLED_LOCK.lock().unwrap();
+        let conn = mem_conn();
+        insert_clip(&conn, "{\"a\":1}");
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> =
+            vec![std::sync::Arc::new(ProbePlugin)];
+        clipboard::CLIP_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+        let items = super::assemble_opening(&plugins, &conn);
+        clipboard::CLIP_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            items.iter().all(|i| i.kind == "clip"),
+            "关闭记录时不应出现识别条目：{items:?}"
+        );
+        assert_eq!(items.len(), 1);
+    }
+
+    /// 万能输入框 probe 的循环级测试件：带可开关清单的 probe 源。
+    /// 刻意不用 json/tool 真插件——它们的停用测试在别的模块翻转全局原子量，
+    /// 与这里的读并发会互踩（跨模块没有共享串行锁）
+    struct ProbeQPlugin {
+        tag: &'static str,
+        switch: &'static std::sync::atomic::AtomicBool,
+    }
+    static PROBE_Q_A: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    static PROBE_Q_B: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+    impl plugin::Plugin for ProbeQPlugin {
+        fn search(&self, _q: &str, _c: Option<&Connection>) -> Vec<SearchItem> {
+            Vec::new()
+        }
+        fn meta(&self) -> Option<plugin::PluginMeta> {
+            Some(plugin::PluginMeta {
+                id: self.tag,
+                title: self.tag,
+                hint: "",
+                key: "",
+                default_on: true,
+                state: self.switch,
+                entries: &[],
+            })
+        }
+        fn probe(&self, text: &str) -> Vec<SearchItem> {
+            vec![SearchItem {
+                id: format!("{}:{text}", self.tag),
+                title: self.tag.to_string(),
+                subtitle: String::new(),
+                kind: "info".into(),
+                target: "q".into(),
+                icon: None,
+                pinned: false,
+                score: 0.0,
+            }]
+        }
+        fn fallback_entry(&self) -> Vec<SearchItem> {
+            if self.switch.load(std::sync::atomic::Ordering::Relaxed) {
+                vec![SearchItem {
+                    id: format!("{}:fallback", self.tag),
+                    title: self.tag.to_string(),
+                    subtitle: String::new(),
+                    kind: "info".into(),
+                    target: String::new(),
+                    icon: None,
+                    pinned: false,
+                    score: 0.0,
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    #[test]
+    fn 万能输入框probe聚合并跳过停用插件() {
+        let _serial = CLIP_ENABLED_LOCK.lock().unwrap();
+        PROBE_Q_A.store(true, std::sync::atomic::Ordering::Relaxed);
+        PROBE_Q_B.store(false, std::sync::atomic::Ordering::Relaxed);
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
+            std::sync::Arc::new(ProbeQPlugin {
+                tag: "qa",
+                switch: &PROBE_Q_A,
+            }),
+            std::sync::Arc::new(ProbeQPlugin {
+                tag: "qb",
+                switch: &PROBE_Q_B,
+            }),
+        ];
+        let items = probe_all(&plugins, "任意内容");
+        assert_eq!(items.len(), 1, "停用插件的 probe 应被跳过");
+        assert_eq!(items[0].id, "qa:任意内容");
+        assert_eq!(items[0].target, "q");
+        PROBE_Q_B.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn 兜底入口按注册序拼接且跳过停用插件() {
+        let _serial = CLIP_ENABLED_LOCK.lock().unwrap();
+        PROBE_Q_A.store(true, std::sync::atomic::Ordering::Relaxed);
+        PROBE_Q_B.store(true, std::sync::atomic::Ordering::Relaxed);
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
+            std::sync::Arc::new(ProbeQPlugin {
+                tag: "qa",
+                switch: &PROBE_Q_A,
+            }),
+            std::sync::Arc::new(ProbeQPlugin {
+                tag: "qb",
+                switch: &PROBE_Q_B,
+            }),
+        ];
+        let items = fallback_all(&plugins);
+        assert_eq!(
+            items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            vec!["qa:fallback", "qb:fallback"],
+            "兜底入口应按注册序拼接"
+        );
+        PROBE_Q_B.store(false, std::sync::atomic::Ordering::Relaxed);
+        let items = fallback_all(&plugins);
+        assert_eq!(
+            items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            vec!["qa:fallback"],
+            "停用插件的兜底入口应被跳过"
+        );
+        PROBE_Q_B.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn 入口词冲突_插件间重合与捷径重合() {
+        let decls = [("a", &["alpha", "beta"][..]), ("b", &["beta", "gamma"][..])];
+        // 插件间重合：beta 归 a 与 b；独占词不算冲突
+        let no_shortcuts: std::collections::HashSet<String> = Default::default();
+        let c = entry_conflicts(decls, &no_shortcuts);
+        assert_eq!(c.get("a"), Some(&vec!["beta"]));
+        assert_eq!(c.get("b"), Some(&vec!["beta"]));
+        assert!(!c.contains_key("alpha") && !c.contains_key("gamma"));
+        // 与捷径关键词重合：唯一认领方 gamma 也算冲突
+        let mut sw = std::collections::HashSet::new();
+        sw.insert("gamma".to_string());
+        let c = entry_conflicts(decls, &sw);
+        assert_eq!(c.get("b"), Some(&vec!["beta", "gamma"]));
+        assert_eq!(c.get("a"), Some(&vec!["beta"]));
+    }
+
+    /// 带延迟的探针源：并行执行与保序断言用
+    struct TagPlugin {
+        tag: &'static str,
+        delay_ms: u64,
+    }
+    impl plugin::Plugin for TagPlugin {
+        fn search(&self, _q: &str, _c: Option<&Connection>) -> Vec<SearchItem> {
+            if self.delay_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
+            }
+            vec![SearchItem {
+                id: format!("tag:{}", self.tag),
+                title: self.tag.to_string(),
+                subtitle: String::new(),
+                kind: "info".into(),
+                target: String::new(),
+                icon: None,
+                pinned: false,
+                score: 0.0,
+            }]
+        }
+    }
+
+    /// needs_conn 探针：断言引擎真的传入了连接
+    struct ConnTagPlugin {
+        tag: &'static str,
+    }
+    impl plugin::Plugin for ConnTagPlugin {
+        fn needs_conn(&self) -> bool {
+            true
+        }
+        fn search(&self, _q: &str, c: Option<&Connection>) -> Vec<SearchItem> {
+            assert!(c.is_some(), "needs_conn 插件必须拿到连接");
+            vec![SearchItem {
+                id: format!("tag:{}", self.tag),
+                title: self.tag.to_string(),
+                subtitle: String::new(),
+                kind: "info".into(),
+                target: String::new(),
+                icon: None,
+                pinned: false,
+                score: 0.0,
+            }]
+        }
+    }
+
+    #[test]
+    fn 并行插件执行保持注册顺序且真并行() {
+        let conn = Mutex::new(mem_conn());
+        // 普通/需连接/普通交错注册；两个 80ms 延迟源并行 ≈ 80ms，串行则 ≥160ms
+        let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
+            std::sync::Arc::new(TagPlugin {
+                tag: "a",
+                delay_ms: 80,
+            }),
+            std::sync::Arc::new(ConnTagPlugin { tag: "conn" }),
+            std::sync::Arc::new(TagPlugin {
+                tag: "b",
+                delay_ms: 80,
+            }),
+        ];
+        let t0 = std::time::Instant::now();
+        let items = super::run_parallel(&plugins, "x", &conn);
+        let elapsed = t0.elapsed();
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["tag:a", "tag:conn", "tag:b"],
+            "并行执行输出应保持注册顺序"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(135),
+            "两个 80ms 源应并行执行（实际 {elapsed:?}，串行会 ≥160ms）"
+        );
+    }
+}
