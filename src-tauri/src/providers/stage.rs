@@ -72,7 +72,7 @@ fn normalize(raw: &str) -> Result<String, String> {
         return Err("商店应用不支持放入中转站".into());
     }
     let p = if p.to_lowercase().ends_with(".lnk") {
-        super::apps::resolve_lnk_target(p).unwrap_or_else(|| p.to_string())
+        super::lnk::resolve_lnk_target(p).unwrap_or_else(|| p.to_string())
     } else {
         p.to_string()
     };
@@ -282,7 +282,7 @@ fn icon_for(path: &str, is_dir: bool) -> Option<String> {
     {
         return hit.clone();
     }
-    let icon = super::apps::extract_icon_png(path).map(|png| super::apps::to_data_url(&png));
+    let icon = super::icons::extract_icon_png(path).map(|png| super::icons::to_data_url(&png));
     super::diag::log(&format!(
         "stage: icon extract key={key} ok={} len={}",
         icon.is_some(),

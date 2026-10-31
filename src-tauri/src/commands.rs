@@ -535,7 +535,7 @@ pub(crate) async fn secondary_action(
                 if target.starts_with("shell:") {
                     return Err("商店应用不支持该操作".to_string());
                 }
-                let resolved = crate::providers::apps::resolve_lnk_target(&target)
+                let resolved = crate::providers::lnk::resolve_lnk_target(&target)
                     .unwrap_or_else(|| target.clone());
                 match action.as_str() {
                     "admin" => {
