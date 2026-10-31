@@ -10,8 +10,8 @@ use super::*;
 
 pub struct SearchEngine {
     /// 共享连接：剪贴板历史 / vault / appconfig 共用（WAL 下与监听线程的写连接并存）。
-    /// pub(crate)：settings_owner.rs 的 impl 块（兄弟模块）也要取这把锁
-    pub(crate) clip: Mutex<Connection>,
+    /// 访问一律走 conn() 出口（run_parallel 按需传 &Mutex 除外）
+    clip: Mutex<Connection>,
     /// 应用源具体句柄：呼出时 refresh_if_stale 要走具体类型，不经过 trait 对象；
     /// 同一 Arc 也注册在 plugins 里，搜索时与其他源一视同仁
     apps: std::sync::Arc<apps::AppsPlugin>,
@@ -96,6 +96,12 @@ impl SearchEngine {
         }
     }
 
+    /// 共享连接锁统一出口：毒化口径（panic="abort" 下 poisoning 不可达，expect
+    /// 属防御性写法——评审记录）收敛单处，改口径只动这里
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.clip.lock().expect("clip db poisoned")
+    }
+
     /// 搜索捷径清单（设置页「搜索捷径」分区）
     pub fn shortcuts_list(&self) -> Vec<shortcuts::Shortcut> {
         self.shortcuts.list()
@@ -103,25 +109,25 @@ impl SearchEngine {
 
     /// 整单保存搜索捷径：校验 + 写库 + 热替换搜索缓存
     pub fn shortcuts_save(&self, list: Vec<shortcuts::Shortcut>) -> Result<(), String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         self.shortcuts.save(&conn, list)
     }
 
     pub fn vault_search(&self, query: &str) -> Vec<SearchItem> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         vault::search(&conn, query)
     }
 
     /// 按行号取剪贴板原文（JSON 识别条目进工作台时回查当时的内容）
     pub fn clip_row(&self, id: i64) -> Option<String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         clipboard::get_by_id(&conn, id)
     }
 
     /// 行号存在性探查（open_item 两段式第一段，评审 P1-07）：毫秒级 PK 点查
     /// 保「已被清理」即时报错语义；全文回查留给粘贴的后台线程
     pub fn clip_row_exists(&self, id: i64) -> bool {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         conn.query_row("SELECT 1 FROM clipboard_history WHERE id=?1", [id], |_| {
             Ok(())
         })
@@ -132,7 +138,7 @@ impl SearchEngine {
     /// 图片表（与 clipimg_pin 同款撞号陷阱）。固定条目允许显式删除（用户
     /// 意图优先于固定豁免），返回是否确有删除
     pub fn clip_delete_row(&self, kind: &str, id: i64) -> Result<bool, String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         let table = if kind == "clipimg" {
             "clipboard_images"
         } else {
@@ -147,7 +153,7 @@ impl SearchEngine {
     /// 清空未固定剪贴板历史（文本+图片两表）：手动复制的敏感内容的用户补救
     /// 通道（评审 P1-09），返回删除总条数
     pub fn clip_clear_unpinned(&self) -> Result<usize, String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         let n1 = conn
             .execute("DELETE FROM clipboard_history WHERE pinned=0", [])
             .map_err(|e| e.to_string())?;
@@ -160,14 +166,14 @@ impl SearchEngine {
     /// 退出前 WAL checkpoint（TRUNCATE）：把 -wal 文件收缩回主库（评审 P1-08）。
     /// busy 连接（另一连接还在写）时静默放弃——下次退出再收
     pub fn wal_checkpoint(&self) {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
     }
 
     /// 按给定顺序取多条剪贴板全文（合并粘贴用）：个别行号已被清理则跳过，
     /// 返回按入参顺序的存留文本。锁内纯库操作
     pub fn clip_texts(&self, ids: &[i64]) -> Vec<String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         ids.iter()
             .filter_map(|id| clipboard::get_by_id(&conn, *id))
             .collect()
@@ -175,19 +181,19 @@ impl SearchEngine {
 
     /// 最近一条剪贴板内容（快速粘贴直达热键用）
     pub fn latest_clip(&self) -> Option<String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         clipboard::latest(&conn).map(|(_, text)| text)
     }
 
     /// 按行号取剪贴板图片全图（clipimg 条目回贴用）
     pub fn clip_image(&self, id: i64) -> Option<(u32, u32, Vec<u8>)> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         clipimage::get(&conn, id)
     }
 
     /// 按行号取剪贴板图片全图与元信息（预览面板用）：pinned 是固定按钮初始态
     pub fn clip_image_meta(&self, id: i64) -> Option<clipimage::ImageFull> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         clipimage::get_full(&conn, id)
     }
 
@@ -195,13 +201,13 @@ impl SearchEngine {
     /// 自增行号会撞号（文本 id=5 存在时图片行号 5 永远轮不到）——图片条目
     /// 必须经此直连图片表，前端按 kind 分流
     pub fn clip_image_pin(&self, id: i64) -> Result<bool, String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         clipimage::pin_toggle(&conn, id)
     }
 
     /// 剪贴板图片行号是否仍存在：open_item 的同步错误路径用，不拖 PNG 大字段
     pub fn clip_image_exists(&self, id: i64) -> bool {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         clipimage::exists(&conn, id)
     }
 
@@ -219,13 +225,13 @@ impl SearchEngine {
 
     /// open_item 记一次应用启动（frecency 排序依据，按 target 路径计数）
     pub fn record_app_launch(&self, target: &str) {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         apps::record_launch(&conn, target);
     }
 
     /// 剪贴板条目固定/取消固定（返回操作后的状态）
     pub fn clip_pin(&self, id: i64) -> Result<bool, String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         clipboard::pin_toggle(&conn, id)
     }
 
@@ -235,7 +241,7 @@ impl SearchEngine {
 
     pub fn stage_list(&self) -> Vec<stage::StageRecord> {
         let rows = {
-            let conn = self.clip.lock().expect("clip db poisoned");
+            let conn = self.conn();
             stage::rows(&conn)
         };
         stage::finish(rows)
@@ -244,47 +250,47 @@ impl SearchEngine {
     /// 批量放入：逐条尝试，个别失败不影响其余（失败明细回传前端提示）
     pub fn stage_add(&self, paths: &[String]) -> stage::StageAddOutcome {
         let resolved = stage::resolve_paths(paths);
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         stage::commit_add(&conn, resolved)
     }
 
     pub fn stage_remove(&self, id: i64) -> Result<(), String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         stage::remove(&conn, id)
     }
 
     /// 批量移出（清理失效条目用）：返回实际移出条数，不存在的 id 忽略
     pub fn stage_remove_batch(&self, ids: &[i64]) -> usize {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         stage::remove_batch(&conn, ids)
     }
 
     /// 设置调小容量后立即收敛已有超容条目（平时由放入路径顺带淘汰）
     pub fn stage_enforce_cap(&self) {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         stage::enforce_cap(&conn);
     }
 
     pub fn stage_clear(&self) -> Result<usize, String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         stage::clear(&conn)
     }
 
     pub fn stage_pin(&self, id: i64) -> Result<bool, String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         stage::pin_toggle(&conn, id)
     }
 
     pub fn stage_relocate(&self, id: i64, path: &str) -> Result<(), String> {
         let (p, is_dir) = stage::resolve_relocate(path)?;
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         stage::commit_relocate(&conn, id, &p, is_dir)
     }
 
     /// 批量撤销恢复（清空/移出撤销共用）：逐条幂等插回（已重新放入的路径
     /// 跳过），返回恢复条数
     pub fn stage_restore_batch(&self, items: Vec<stage::RestoreItem>) -> Result<usize, String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         Ok(stage::restore_batch(&conn, &items))
     }
 
@@ -297,7 +303,7 @@ impl SearchEngine {
         notes: &str,
         totp: &str,
     ) -> Result<(), String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         let r = vault::add(&conn, title, username, password, url, notes, totp);
         if r.is_ok() {
             // 新密码若与历史同值（用户复制过后才想起入库），顺手清掉
@@ -316,12 +322,12 @@ impl SearchEngine {
         action: &str,
         pwd_clear_secs: i64,
     ) -> Result<String, String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         vault::action(&conn, id, action, pwd_clear_secs)
     }
 
     pub fn vault_get(&self, id: i64) -> Result<vault::VaultRecord, String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         vault::get(&conn, id)
     }
 
@@ -338,7 +344,7 @@ impl SearchEngine {
         pinned: i64,
         totp: &str,
     ) -> Result<(), String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         let r = vault::update(
             &conn, id, title, username, password, url, notes, pinned, totp,
         );
@@ -360,7 +366,7 @@ impl SearchEngine {
             .map(|e| e.password.trim().to_string())
             .filter(|p| !p.is_empty())
             .collect();
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         let n = vault::import(&conn, entries)?;
         vault::purge_clip_history(&conn, &pwds);
         vault::invalidate_password_cache();
@@ -369,7 +375,7 @@ impl SearchEngine {
 
     /// 加密导出全部账号到备份文件，返回条目数
     pub fn vault_backup_export(&self, path: &str, passphrase: &str) -> Result<usize, String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         let entries = vault::backup_read_all(&conn)?;
         let content = backup::encrypt_backup(&entries, passphrase)?;
         std::fs::write(path, content).map_err(|e| e.to_string())?;
@@ -389,7 +395,7 @@ impl SearchEngine {
         let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let entries = backup::decrypt_backup(&content, passphrase)?;
         let duplicates = {
-            let conn = self.clip.lock().expect("clip db poisoned");
+            let conn = self.conn();
             vault::backup_duplicates(&conn, &entries)
         };
         Ok(backup::BackupPreview {
@@ -410,7 +416,7 @@ impl SearchEngine {
             .map(|e| e.password.trim().to_string())
             .filter(|p| !p.is_empty())
             .collect();
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         let r = vault::backup_restore(&conn, entries, skip_duplicates);
         if r.is_ok() {
             vault::purge_clip_history(&conn, &pwds);
@@ -422,7 +428,7 @@ impl SearchEngine {
     pub fn search(&self, query: &str) -> Vec<SearchItem> {
         let q = query.trim();
         if q.is_empty() {
-            let conn = self.clip.lock().expect("clip db poisoned");
+            let conn = self.conn();
             let mut items = assemble_opening(&self.plugins, &conn);
             // 空面板即启动台：最近剪贴板之后附最常用应用（frecency，仅真实
             // 启动过的），呼出 → Enter 即启动，不必先打字
@@ -487,7 +493,7 @@ impl SearchEngine {
 
     /// 开关插件：写存档 + 同步原子量（搜索/识别热路径立即生效）
     pub fn set_plugin_enabled(&self, id: &str, on: bool) -> Result<(), String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         for p in &self.plugins {
             if let Some(meta) = p.meta()
                 && meta.id == id

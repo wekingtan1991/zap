@@ -10,12 +10,12 @@ use super::*;
 
 impl SearchEngine {
     pub fn get_setting(&self, key: &str) -> Option<String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         appconfig::get(&conn, key)
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         appconfig::set(&conn, key, value)
     }
 
@@ -24,7 +24,7 @@ impl SearchEngine {
     /// 回滚，原子量动作由调用方在写库前原位完成（失败时内存态与存档短暂
     /// 分叉，重启即归一——与原实现的中途部分写同等级）
     pub fn set_many(&self, kvs: &[(&str, String)]) -> Result<(), String> {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| e.to_string())?;
         for (k, v) in kvs {
@@ -44,7 +44,7 @@ impl SearchEngine {
 
     /// 剪贴板三项（记录开关/保留条数/选中即粘贴）
     pub fn load_clip_settings(&self) -> clipboard::ClipSettings {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         let s = clipboard::ClipSettings {
             enabled: appconfig::get(&conn, appconfig::KEY_CLIP_ENABLED)
                 .map(|v| v != "0")
@@ -91,7 +91,7 @@ impl SearchEngine {
     /// 中转站容量装载（10–500 之外视为坏值回退默认）；容量收敛
     /// （stage_enforce_cap）的时机仍由调用方决定
     pub fn load_stage_cap(&self) -> i64 {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         // 10–500 之外视为坏值回退默认（与 save 侧 clamp 同一口径）
         let cap = appconfig::get(&conn, appconfig::KEY_STAGE_CAP)
             .and_then(|v| v.parse().ok())
@@ -111,7 +111,7 @@ impl SearchEngine {
     /// 拖拽落区条三项装载（开关/放后开面板/停靠角；position 非法存档值在
     /// set_position_setting 内部静默保持默认角）
     pub fn load_stagedrop_settings(&self) -> stagedrop::StagedropSettings {
-        let conn = self.clip.lock().expect("clip db poisoned");
+        let conn = self.conn();
         let s = stagedrop::StagedropSettings {
             enabled: appconfig::get(&conn, appconfig::KEY_STAGEDROP_ENABLED)
                 .map(|v| v != "0")
