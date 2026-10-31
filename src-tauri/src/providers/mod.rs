@@ -484,7 +484,7 @@ impl SearchEngine {
     }
 
     /// 按行号取剪贴板图片全图与元信息（预览面板用）：pinned 是固定按钮初始态
-    pub fn clip_image_meta(&self, id: i64) -> Option<(u32, u32, i64, i64, bool, Vec<u8>)> {
+    pub fn clip_image_meta(&self, id: i64) -> Option<clipimage::ImageFull> {
         let conn = self.clip.lock().expect("clip db poisoned");
         clipimage::get_full(&conn, id)
     }
@@ -581,10 +581,7 @@ impl SearchEngine {
 
     /// 批量撤销恢复（清空/移出撤销共用）：逐条幂等插回（已重新放入的路径
     /// 跳过），返回恢复条数
-    pub fn stage_restore_batch(
-        &self,
-        items: Vec<(String, bool, bool, i64)>,
-    ) -> Result<usize, String> {
+    pub fn stage_restore_batch(&self, items: Vec<stage::RestoreItem>) -> Result<usize, String> {
         let conn = self.clip.lock().expect("clip db poisoned");
         Ok(stage::restore_batch(&conn, &items))
     }

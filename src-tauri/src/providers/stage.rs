@@ -369,17 +369,28 @@ pub fn restore(
     Ok(n > 0)
 }
 
+/// 批量撤销恢复的条目载荷：原 commands.rs 的命令 DTO + 元组中转收编至此
+/// （审计 B3），camelCase 线协议不变
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreItem {
+    pub path: String,
+    pub is_dir: bool,
+    pub pinned: bool,
+    pub added_at: i64,
+}
+
 /// 批量撤销恢复（清空撤销一次调用）：逐条幂等插回（已重新放入的路径跳过），
 /// 返回恢复条数。单条 SQL 失败跳过不拖垮整批（事务回滚反而会放大偶发失败）；
 /// 同样不触发容量淘汰。整批包一个事务：默认每语句 autocommit 各自 fsync，
 /// 清空 50 条撤销 = 50 次磁盘同步，事务化后一次
-pub fn restore_batch(conn: &Connection, items: &[(String, bool, bool, i64)]) -> usize {
+pub fn restore_batch(conn: &Connection, items: &[RestoreItem]) -> usize {
     let Ok(tx) = conn.unchecked_transaction() else {
         return 0;
     };
     let n = items
         .iter()
-        .filter(|(p, d, pin, at)| restore(&tx, p, *d, *pin, *at).unwrap_or(false))
+        .filter(|it| restore(&tx, &it.path, it.is_dir, it.pinned, it.added_at).unwrap_or(false))
         .count();
     if tx.commit().is_err() {
         return 0;
@@ -724,12 +735,12 @@ mod tests {
         // （c 最新、b 次之、a 最旧——b 是后放入的，added_at 比 a 新）
         let restored = restore_batch(
             &conn,
-            &[(
-                b_row.path.clone(),
-                b_row.is_dir,
-                b_row.pinned,
-                b_row.added_at,
-            )],
+            &[RestoreItem {
+                path: b_row.path.clone(),
+                is_dir: b_row.is_dir,
+                pinned: b_row.pinned,
+                added_at: b_row.added_at,
+            }],
         );
         assert_eq!(restored, 1);
         assert_eq!(count(&conn), 3, "恢复不应立刻挤出条目");

@@ -241,21 +241,32 @@ pub fn get(conn: &Connection, id: i64) -> Option<(u32, u32, Vec<u8>)> {
     .ok()
 }
 
-/// 预览面板取全图 + 元信息：一条查询带回（pinned 供固定按钮呈现初始态，
-/// created_at 前端格式化「复制于」）。已被清理返回 None
-pub fn get_full(conn: &Connection, id: i64) -> Option<(u32, u32, i64, i64, bool, Vec<u8>)> {
+/// 图片行元信息 + 全图（预览面板取数，审计 B3 由按位解包的 6 元组收拢成结构体）
+pub struct ImageFull {
+    pub width: u32,
+    pub height: u32,
+    pub size: i64,
+    /// 复制时间（前端格式化「复制于」）
+    pub created_at: i64,
+    /// 固定按钮的初始态
+    pub pinned: bool,
+    pub png: Vec<u8>,
+}
+
+/// 预览面板取全图 + 元信息：一条查询带回。已被清理返回 None
+pub fn get_full(conn: &Connection, id: i64) -> Option<ImageFull> {
     conn.query_row(
         "SELECT width, height, size, created_at, pinned, data FROM clipboard_images WHERE id=?1",
         params![id],
         |r| {
-            Ok((
-                r.get::<_, i64>(0)? as u32,
-                r.get::<_, i64>(1)? as u32,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)? == 1,
-                r.get::<_, Vec<u8>>(5)?,
-            ))
+            Ok(ImageFull {
+                width: r.get::<_, i64>(0)? as u32,
+                height: r.get::<_, i64>(1)? as u32,
+                size: r.get::<_, i64>(2)?,
+                created_at: r.get::<_, i64>(3)?,
+                pinned: r.get::<_, i64>(4)? == 1,
+                png: r.get::<_, Vec<u8>>(5)?,
+            })
         },
     )
     .ok()
@@ -378,7 +389,7 @@ mod tests {
     fn 预览降采样小图原样() {
         let conn = mem_conn();
         let (id, _, _) = store(&conn, &sample(600, 400), 600, 400).expect("入库");
-        let (_, _, _, _, _, png) = get_full(&conn, id).expect("取全图");
+        let png = get_full(&conn, id).expect("取全图").png;
         let out = preview_png(&png).expect("预览");
         assert_eq!(out, png, "最长边不超上限应原样返回不重编码");
     }
@@ -387,7 +398,7 @@ mod tests {
     fn 预览降采样大图压到上限() {
         let conn = mem_conn();
         let (id, _, _) = store(&conn, &sample(2000, 1000), 2000, 1000).expect("入库");
-        let (_, _, _, _, _, png) = get_full(&conn, id).expect("取全图");
+        let png = get_full(&conn, id).expect("取全图").png;
         let out = preview_png(&png).expect("预览");
         let (w, h, rgba) = decode_png(&out).expect("解码预览图");
         assert_eq!((w, h), (PREVIEW_MAX, 720), "等比压到最长边 1440");
@@ -413,17 +424,16 @@ mod tests {
     fn 预览元信息一条带回() {
         let conn = mem_conn();
         let (id, w, h) = store(&conn, &sample(6, 3), 6, 3).expect("入库");
-        let (gw, gh, size, created_at, pinned, png) = get_full(&conn, id).expect("取全图");
-        assert_eq!((gw, gh), (w, h));
-        assert_eq!(png.len(), size as usize, "size 应等于 PNG 字节数");
-        assert!(created_at > 0);
-        assert!(!pinned);
+        let meta = get_full(&conn, id).expect("取全图");
+        assert_eq!((meta.width, meta.height), (w, h));
+        assert_eq!(meta.png.len(), meta.size as usize, "size 应等于 PNG 字节数");
+        assert!(meta.created_at > 0);
+        assert!(!meta.pinned);
         // 不存在行号返回 None（已被清理的预览路径据此报错）
         assert!(get_full(&conn, id + 999).is_none());
         // 固定态随行读取（预览面板固定按钮的初始态）
         super::super::clipboard::pin_toggle(&conn, id).unwrap();
-        let (_, _, _, _, pinned2, _) = get_full(&conn, id).unwrap();
-        assert!(pinned2);
+        assert!(get_full(&conn, id).unwrap().pinned);
     }
 
     #[test]

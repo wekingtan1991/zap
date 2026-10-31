@@ -385,16 +385,16 @@ pub(crate) async fn clipimg_preview(
 ) -> Result<ClipImagePreview, String> {
     let engine = state.engine.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (w, h, size, created_at, pinned, png) = engine
+        let m = engine
             .clip_image_meta(id)
             .ok_or_else(|| "该条剪贴板图片已被清理".to_string())?;
-        let preview = crate::providers::clipimage::preview_png(&png)?;
+        let preview = crate::providers::clipimage::preview_png(&m.png)?;
         Ok(ClipImagePreview {
-            width: w,
-            height: h,
-            size,
-            created_at,
-            pinned,
+            width: m.width,
+            height: m.height,
+            size: m.size,
+            created_at: m.created_at,
+            pinned: m.pinned,
             png_base64: base64::engine::general_purpose::STANDARD.encode(preview),
         })
     })
@@ -859,30 +859,15 @@ pub(crate) fn stagedrop_feedback_state() -> Option<String> {
 }
 
 /// 批量撤销恢复：原样插回刚移出/清空的条目（含固定态与时间戳；路径已被
-/// 重新放入的幂等跳过），返回恢复条数
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct StageRestoreItem {
-    path: String,
-    is_dir: bool,
-    pinned: bool,
-    added_at: i64,
-}
-
+/// 重新放入的幂等跳过），返回恢复条数。载荷 RestoreItem 在 stage.rs
+/// （审计 B3 收编，camelCase 线协议不变）
 #[tauri::command]
 pub(crate) async fn stage_restore_batch(
     state: tauri::State<'_, AppState>,
-    items: Vec<StageRestoreItem>,
+    items: Vec<crate::providers::stage::RestoreItem>,
 ) -> Result<usize, String> {
     let engine = state.engine.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        engine.stage_restore_batch(
-            items
-                .into_iter()
-                .map(|i| (i.path, i.is_dir, i.pinned, i.added_at))
-                .collect(),
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || engine.stage_restore_batch(items))
+        .await
+        .map_err(|e| e.to_string())?
 }
