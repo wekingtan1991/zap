@@ -3,10 +3,11 @@
 //! 透明面板特效。命令名与线协议不变——前端零改动。
 //! 依赖 state.rs 的 AppState / DirectKind / WINDOW_LABEL。
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use crate::providers::SearchEngine;
-use crate::state::{AppState, DirectKind, WINDOW_LABEL};
+use crate::state::{AppState, DIRECT_SLOTS, DirectKind, WINDOW_LABEL};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
@@ -128,6 +129,34 @@ pub(crate) struct SaveOutcome {
     direct_hotkey_error: Option<String>,
 }
 
+/// 启动时按存档注册直达热键（自 lib.rs 拆出，审计 B2）：与 save_settings 共用
+/// state::DIRECT_SLOTS 槽位表。未绑定 = 空串跳过；注册失败仅落日志不影响启动。
+/// 返回 热键串 → 动作 映射，随 AppState.direct_hotkeys 供热键分发
+pub(crate) fn register_direct_hotkeys(
+    app: &AppHandle,
+    engine: &SearchEngine,
+) -> HashMap<String, DirectKind> {
+    let gs = app.global_shortcut();
+    let mut direct = HashMap::new();
+    for (_, cfg_key, kind) in DIRECT_SLOTS {
+        let hk = engine
+            .get_setting(cfg_key)
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        if hk.is_empty() {
+            continue;
+        }
+        match hk.parse::<Shortcut>() {
+            Ok(sc) if gs.register(sc).is_ok() => {
+                direct.insert(hk, kind);
+            }
+            _ => crate::providers::diag::log_warn(&format!("直达热键 {hk} 注册失败")),
+        }
+    }
+    direct
+}
+
 // Tauri 命令按字段平铺（前端 invoke 传同名参数），显式放行参数个数提示。
 // 刻意保持同步命令（主线程执行）：global-shortcut 的注册/注销与创建它的主
 // 线程消息队列绑定（RegisterHotKey 线程亲和），挪进 spawn_blocking 会让
@@ -203,34 +232,23 @@ pub(crate) fn save_settings(
     // 已被占用的键：主呼出热键 + 先处理的直达槽位，后槽位同键直接拒绝
     // （否则槽位间冲突会上游报「被其他程序占用」，实为自家槽位，误导）
     let mut taken = vec![hotkey.clone()];
+    // 前端按槽位逐名传值，与 DIRECT_SLOTS 按 cfg_key 对位（槽位表单一事实源，审计 B2）
+    let raw_by_key: [(&str, Option<String>); 4] = [
+        (crate::providers::appconfig::KEY_VAULT_HOTKEY, vault_hotkey),
+        (crate::providers::appconfig::KEY_CLIP_HOTKEY, clip_hotkey),
+        (
+            crate::providers::appconfig::KEY_SUPERPANEL_HOTKEY,
+            superpanel_hotkey,
+        ),
+        (crate::providers::appconfig::KEY_STAGE_HOTKEY, stage_hotkey),
+    ];
     {
         let gs = app.global_shortcut();
-        for (name, raw, cfg_key, kind) in [
-            (
-                "账号库直达",
-                vault_hotkey,
-                crate::providers::appconfig::KEY_VAULT_HOTKEY,
-                DirectKind::Vault,
-            ),
-            (
-                "快速粘贴",
-                clip_hotkey,
-                crate::providers::appconfig::KEY_CLIP_HOTKEY,
-                DirectKind::QuickPaste,
-            ),
-            (
-                "超级面板",
-                superpanel_hotkey,
-                crate::providers::appconfig::KEY_SUPERPANEL_HOTKEY,
-                DirectKind::SuperPanel,
-            ),
-            (
-                "中转站直达",
-                stage_hotkey,
-                crate::providers::appconfig::KEY_STAGE_HOTKEY,
-                DirectKind::Stage,
-            ),
-        ] {
+        for (name, cfg_key, kind) in DIRECT_SLOTS {
+            let raw = raw_by_key
+                .iter()
+                .find(|(k, _)| *k == cfg_key)
+                .and_then(|(_, r)| r.clone());
             let Some(raw) = raw else { continue };
             let norm = raw.trim().to_lowercase();
             let mut map = state.direct_hotkeys.lock().expect("direct poisoned");

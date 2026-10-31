@@ -9,7 +9,6 @@ use panel::{handle_stage_drop, hide_panel_window, quick_paste_latest, toggle_pan
 use providers::SearchEngine;
 use state::{AppState, DirectKind, WINDOW_LABEL};
 
-use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -265,36 +264,10 @@ pub fn run() {
                 providers::diag::log_err("呼出热键注册失败（含默认键兜底），仅托盘可呼出");
             }
 
-            // 直达热键：账号库 / 快速粘贴 / 超级面板 / 中转站
-            // （未绑定 = 空串；注册失败仅落日志不影响启动）
-            let mut direct = HashMap::new();
-            for (cfg_key, kind) in [
-                (providers::appconfig::KEY_VAULT_HOTKEY, DirectKind::Vault),
-                (
-                    providers::appconfig::KEY_CLIP_HOTKEY,
-                    DirectKind::QuickPaste,
-                ),
-                (
-                    providers::appconfig::KEY_SUPERPANEL_HOTKEY,
-                    DirectKind::SuperPanel,
-                ),
-                (providers::appconfig::KEY_STAGE_HOTKEY, DirectKind::Stage),
-            ] {
-                let hk = engine
-                    .get_setting(cfg_key)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_lowercase();
-                if hk.is_empty() {
-                    continue;
-                }
-                match hk.parse::<Shortcut>() {
-                    Ok(sc) if gs.register(sc).is_ok() => {
-                        direct.insert(hk, kind);
-                    }
-                    _ => providers::diag::log_warn(&format!("直达热键 {hk} 注册失败")),
-                }
-            }
+            // 直达热键：账号库 / 快速粘贴 / 超级面板 / 中转站——注册收进
+            // settings::register_direct_hotkeys（与 save_settings 共用槽位表，
+            // 审计 B2 收敛双实现；未绑定 = 空串；注册失败仅落日志不影响启动）
+            let direct = settings::register_direct_hotkeys(app.handle(), &engine);
 
             // 透明面板（亚克力）：按存档偏好应用窗口特效；系统不支持仅落日志，
             // 面板表面保持不透明（前端 zap-trans 类与该偏好同步）

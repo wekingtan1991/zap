@@ -24,6 +24,32 @@ pub(crate) enum DirectKind {
     Stage,
 }
 
+/// 直达热键槽位单一事实源（审计 B2）：setup 启动注册（settings::register_direct_hotkeys）
+/// 与 save_settings 保存循环共用同一张表，新增槽位只改这里。
+/// name 供保存侧错误提示；启动侧不使用。顺序即处理顺序（保存侧槽位冲突判定依赖它）
+pub(crate) const DIRECT_SLOTS: [(&str, &str, DirectKind); 4] = [
+    (
+        "账号库直达",
+        crate::providers::appconfig::KEY_VAULT_HOTKEY,
+        DirectKind::Vault,
+    ),
+    (
+        "快速粘贴",
+        crate::providers::appconfig::KEY_CLIP_HOTKEY,
+        DirectKind::QuickPaste,
+    ),
+    (
+        "超级面板",
+        crate::providers::appconfig::KEY_SUPERPANEL_HOTKEY,
+        DirectKind::SuperPanel,
+    ),
+    (
+        "中转站直达",
+        crate::providers::appconfig::KEY_STAGE_HOTKEY,
+        DirectKind::Stage,
+    ),
+];
+
 pub(crate) struct AppState {
     pub(crate) engine: std::sync::Arc<SearchEngine>,
     /// 当前生效的呼出热键（设置保存时热切换）
