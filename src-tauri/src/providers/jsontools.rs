@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::SearchItem;
+use super::util::human_size;
 
 /// 单条处理上限：超出直接拒绝（树形渲染与 IPC 都不为大文本买单）
 pub const MAX_ANALYZE_BYTES: usize = 256 * 1024;
@@ -157,16 +158,6 @@ fn describe(v: &serde_json::Value) -> &'static str {
         serde_json::Value::Object(_) => "对象",
         serde_json::Value::Array(_) => "数组",
         _ => "JSON",
-    }
-}
-
-fn human_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 

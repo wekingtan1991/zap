@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use rusqlite::{Connection, params};
 
 use super::SearchItem;
+use super::util::now_ms;
+use super::util::wide;
 
 /// 旧索引条目的图标按缓存键转内存复用：重扫免掉几百次 PNG 读盘 + base64
 type MemIcons = HashMap<u64, String>;
@@ -322,13 +324,6 @@ pub fn init_stats(conn: &Connection) {
     );
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// open_item 记一次启动：按 target（lnk 路径 / shell:AppsFolder AUMID）计数
 pub fn record_launch(conn: &Connection, target: &str) {
     let _ = conn.execute(
@@ -422,16 +417,11 @@ pub(crate) fn to_data_url(png: &[u8]) -> String {
     format!("data:image/png;base64,{}", B64.encode(png))
 }
 
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
 /// UWP/商店应用：枚举 shell:AppsFolder，补齐开始菜单 .lnk 覆盖不到的部分
 /// （如 Windows 计算器）。target 存 `shell:AppsFolder\<AUMID>`，打开时经 explorer。
 /// UWP（shell:AppsFolder\<AUMID>）条目图标：向条目请求图像工厂接口提取。
 /// 供 spawn_icon_backfill 在后台线程调用（scan_uwp 首扫不再现场提取）
 fn extract_uwp_icon(target: &str) -> Option<Vec<u8>> {
-    use std::iter::once;
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::DeleteObject;
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, IBindCtx};
@@ -440,7 +430,7 @@ fn extract_uwp_icon(target: &str) -> Option<Vec<u8>> {
     };
     use windows::core::PCWSTR;
 
-    let app_path: Vec<u16> = target.encode_utf16().chain(once(0)).collect();
+    let app_path = wide(target);
     unsafe {
         // COM 按线程初始化；已是其他模式时忽略错误继续用现有初始化
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -456,7 +446,6 @@ fn extract_uwp_icon(target: &str) -> Option<Vec<u8>> {
 }
 
 fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
-    use std::iter::once;
     use windows::Win32::System::Com::{
         COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, IBindCtx,
     };
@@ -483,7 +472,7 @@ fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
         // COM 按线程初始化；线程已是其他模式时忽略错误继续用现有初始化
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-        let path: Vec<u16> = "shell:AppsFolder".encode_utf16().chain(once(0)).collect();
+        let path = wide("shell:AppsFolder");
         let Some(folder) = SHCreateItemFromParsingName::<_, Option<&IBindCtx>, IShellItem>(
             PCWSTR(path.as_ptr()),
             None,
@@ -669,15 +658,15 @@ fn expand_env_vars(path: &str) -> String {
     use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
     use windows::core::PCWSTR;
 
-    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let path_w = wide(path);
     unsafe {
         // 先探所需长度（含结尾 NUL），再取展开结果
-        let need = ExpandEnvironmentStringsW(PCWSTR(wide.as_ptr()), None);
+        let need = ExpandEnvironmentStringsW(PCWSTR(path_w.as_ptr()), None);
         if need == 0 {
             return path.to_string();
         }
         let mut buf = vec![0u16; need as usize];
-        let written = ExpandEnvironmentStringsW(PCWSTR(wide.as_ptr()), Some(&mut buf));
+        let written = ExpandEnvironmentStringsW(PCWSTR(path_w.as_ptr()), Some(&mut buf));
         if written == 0 || written as usize > buf.len() {
             return path.to_string();
         }
@@ -703,13 +692,13 @@ pub fn resolve_lnk_target(path: &str) -> Option<String> {
     use windows::Win32::UI::Shell::{IShellLinkW, SLGP_RAWPATH, ShellLink};
     use windows::core::{Interface, PCWSTR};
 
-    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let path_w = wide(path);
     unsafe {
         // COM 按线程初始化；已是其他模式时忽略错误继续用现有初始化
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
         let pf: IPersistFile = link.cast().ok()?;
-        pf.Load(PCWSTR(wide.as_ptr()), STGM_READ).ok()?;
+        pf.Load(PCWSTR(path_w.as_ptr()), STGM_READ).ok()?;
         let mut buf = [0u16; 1024];
         // SLGP_RAWPATH = 4（windows 0.62 的 GetPath 收裸指针 + u32）
         link.GetPath(&mut buf, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)

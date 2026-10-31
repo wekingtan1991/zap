@@ -11,6 +11,7 @@ use std::io::Cursor;
 use std::sync::atomic::Ordering;
 
 use super::SearchItem;
+use super::util::{human_size, now_ms};
 
 /// 单张图片入库上限（PNG 字节）：4K 截图通常 <10MB，超限视为异常输入直接放弃
 pub const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -94,16 +95,6 @@ fn downscale(rgba: &[u8], width: u32, height: u32, max: u32) -> (u32, u32, Vec<u
         }
     }
     (nw, nh, out)
-}
-
-fn human_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
 }
 
 /// 入库：RGBA 全图编码 PNG + 生成缩略图 + sha256 去重（重复 = 刷新时间置顶）
@@ -313,13 +304,6 @@ pub fn pin_toggle(conn: &Connection, id: i64) -> Result<bool, String> {
         )
         .map_err(|e| e.to_string())?;
     Ok(pinned == 1)
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

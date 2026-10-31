@@ -14,6 +14,7 @@ use rusqlite::{Connection, params};
 use serde::Serialize;
 
 use super::SearchItem;
+use super::util::now_ms;
 
 /// 未固定条目上限（设置可调，10–500）：中转站的价值在「一屏扫完」，
 /// 超出挤掉最旧的未固定条目；固定条目不占容量
@@ -148,13 +149,6 @@ fn evict_beyond_cap(conn: &Connection) {
          )",
         params![CAP.load(Ordering::Relaxed).max(1)],
     );
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 pub fn count(conn: &Connection) -> i64 {

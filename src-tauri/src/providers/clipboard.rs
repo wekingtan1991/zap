@@ -7,6 +7,7 @@ use rusqlite::{Connection, params};
 use windows::Win32::System::DataExchange::GetClipboardOwner;
 
 use super::SearchItem;
+use super::util::now_ms;
 
 /// 账号库复制（密码/用户名/备注）时开启：窗口期内的剪贴板变更不入库（阅后即焚）。
 /// 用时间窗而非单次标记：密码复制会连续写多次剪贴板（明文 + 2 个排除格式），
@@ -737,13 +738,6 @@ pub(crate) fn ago(then: i64, now: i64) -> String {
     } else {
         format!("{} 天前", secs / 86400)
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// 最新一条历史的 (行号, 内容)：面板呼出时内容识别与快速粘贴的输入。

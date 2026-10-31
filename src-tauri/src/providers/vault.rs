@@ -7,7 +7,9 @@ use std::time::Duration;
 use rusqlite::{Connection, params};
 
 use super::SearchItem;
+use super::clipboard::copy_text_private;
 use super::dpapi;
+use super::util::now_ms;
 
 #[cfg(windows)]
 use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
@@ -81,16 +83,7 @@ pub fn init_table(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE accounts ADD COLUMN totp_enc TEXT NOT NULL DEFAULT ''");
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 // ---------- 剪贴板 ----------
-
-use super::clipboard::copy_text_private;
 
 /// 焚除窗口活跃标志（评审 P1-13）：密码复制后到焚除完成（或放弃）期间为真。
 /// 快速粘贴直达热键在此窗口内跳过——此时剪贴板上还挂着密码明文，快速粘贴

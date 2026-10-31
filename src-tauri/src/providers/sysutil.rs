@@ -72,7 +72,7 @@ pub fn run_as_admin(path: &str) -> Result<(), String> {
     use windows::core::PCWSTR;
 
     let verb: Vec<u16> = "runas\0".encode_utf16().collect();
-    let file: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let file = super::util::wide(path);
     let h = unsafe {
         ShellExecuteW(
             Some(HWND::default()),
