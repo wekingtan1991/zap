@@ -2,7 +2,7 @@
 //! 密钥接受 Base32（自动去空格/连字符，大小写不敏感）或 otpauth:// 链接。
 //! 验证码与密码同级敏感：仅在显式查看/复制时出现，复制走受保护通道
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 
 /// Base32 解码：去空格/连字符、大写化、容忍缺省 padding。

@@ -11,8 +11,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        # v4.2.2（评审 P2-05：action 固定 commit SHA，防 tag 被劫持；升级由 dependabot 提 PR）
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # v7.0.1（评审 P2-05：action 固定 commit SHA，防 tag 被劫持；升级由 dependabot 提 PR）
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # 不写死版本：读取 package.json 的 packageManager 字段
       - name: Install pnpm
@@ -20,8 +20,8 @@ jobs:
         uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
 
       - name: Setup Node
-        # v4
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        # v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
