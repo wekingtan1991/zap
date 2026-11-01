@@ -5,7 +5,9 @@
 
 ## [Unreleased]
 
-### 评审修复（2026-10-29 十角色三轮交叉评审落地批，P0×3 + P1×20 主体）
+## [0.14.0] — 2026-11-01
+
+### 评审修复（2026-10-29 十角色三轮交叉评审落地批，P0×3 + P1×20 + P2×18 全部落地）
 
 - **进程软着陆**：panic hook 死因留痕（zap.log）；坏库隔离重建继续启动（不再「手删库连账号库一起丢」）；账号库备份提醒（上次导出时间 + 30 天警示）
 - **首启引导**：首装自动呼出一次面板；托盘 tooltip 动态化（正常态显示呼出热键 / 热键被占用时告警并可点击呼出）
@@ -16,7 +18,19 @@
 - **安全**：剪贴板入库前与账号库密码集比对（浏览器密码管理器复制的密码不再入库）+ 单条删除/清空补救；用户名/备注/超级面板复制统一切受保护通道（不进 Win+V）；焚除窗口内快速粘贴跳过；Everything HTTP 服务加 Basic Auth + seed_ini 改只补缺（不再复活用户手动关闭的服务）
 - **可靠性**：关键失败落 zap.log（[E]/[W] 级别 + 启动诊断行，capture.log 并入）；剪贴板监听线程自愈 respawn（3 次退避）
 - **交互**：合并模式非 clip 行禁用态与入口收敛；工具面板 Ctrl+V 改常驻监听（空态指引恒真）；账号库行右键菜单 + 详情页「打开网址」按钮；超级面板恢复改 DIBV5 直写（大图不再秒级阻塞）
-- **发布工程**：user_version schema 迁移器；四处版本一致性校验（`node scripts/verify-version.mjs`，接线 pre-push 与 CI）；更新检查 24h 间隔重查
+- **发布工程**：user_version schema 迁移器；四处版本一致性校验（`node scripts/verify-version.mjs`，接线 pre-push 与 CI）；更新检查 24h 间隔重查；依赖 action 全部钉 commit SHA + dependabot 三生态周更
+
+### 质量审计（2026-10-31 整洁/复用/大文件/性能四维，A–G 七批 20 提交）
+
+- **整洁/复用**：vault stub 与死导出焚除、providers/util 收编 now_ms/human_size/wide 三族重复、直达热键槽位表合一（单一事实源）、clipimage/stage 线协议结构体化
+- **大文件拆分**：providers/mod.rs 1116→60（matching/engine/settings_owner 三件）、clipboard.rs 1090→413（db/winclip/watcher/clipboard 四层归位）、stagedrop COM 拆 droptarget、apps 拆 icons/lnk、commands 874→828（blocking! 宏收编 29 处样板）
+- **前端拆分**：SettingsView 1658→280（备份域内聚 + 热键录制 hook 化 + 九分区组件化）、App.tsx 1386→1073（PanelFooter/ResultsContextMenu/useMergeMode/ResultsList 四件）
+- **性能**：vault 搜索打分形态缓存（写后失效，契约测试锁定）+ 五处每击键热查询 prepare_cached
+
+### 修复
+
+- 设置页脏态保护假阳性：未改任何项 Esc 也弹「放弃更改」（基线与对比的序列化键名漂移致恒脏）；保存成功后不置灰；「返回」按钮绕过未保存确认
+- 发布工程：pnpm/action-setup 钉版引用了不可解析的 SHA，致 CI/Release 全部 run「Set up job」秒败（本版发布过程中发现并修复）
 
 ## [0.13.0] — 2026-10-28
 
