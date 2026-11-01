@@ -192,7 +192,8 @@ fn build_item(
 /// 返回 (pinned, created_at, item) 供调用方与文本条目按同键合并排序
 pub fn search_recent(conn: &Connection, limit: usize) -> Vec<(i64, i64, SearchItem)> {
     let now = now_ms();
-    let Ok(mut stmt) = conn.prepare(
+    // prepare_cached（审计 G1）：每击键路径免重复编译 SQL
+    let Ok(mut stmt) = conn.prepare_cached(
         "SELECT id, width, height, size, thumb, created_at, pinned FROM clipboard_images
          ORDER BY pinned DESC, created_at DESC LIMIT ?1",
     ) else {

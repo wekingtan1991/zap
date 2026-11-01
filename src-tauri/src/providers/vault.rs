@@ -9,6 +9,7 @@ use rusqlite::{Connection, params};
 use super::SearchItem;
 use super::clipboard::copy_text_private;
 use super::dpapi;
+use super::matching::MatchForms;
 use super::util::now_ms;
 
 #[cfg(windows)]
@@ -46,6 +47,34 @@ pub fn password_cache_hit(conn: &Connection, text: &str) -> bool {
         *guard = Some(set);
     }
     guard.as_ref().is_some_and(|s| s.contains(text))
+}
+
+/// 搜索打分形态缓存（审计 G2）：每击键对 200 行×4 字段现场 to_lowercase +
+/// 汉字转拼音是 vault 搜索的主要重复开销，且发生在 clip 全局锁内——闭锁
+/// 时长直接转嫁共用连接的其他域。行 id → MatchForms，任何字段写路径
+/// （add/update/import/backup_restore/delete）整表清空：写是低频操作，重建
+/// 一次 200 行的代价与原先每击键重建同量级；pin 只改排序位不改字段不失效。
+/// 容量护栏清孤儿条目（AUTOINCREMENT 不复用 id，常态不触发）。锁序：调用方
+/// 先持 clip 连接锁，再进本锁（与 PWD_CACHE 同向，无反向获取）
+static FORMS_CACHE: std::sync::Mutex<Option<std::collections::HashMap<i64, MatchForms>>> =
+    std::sync::Mutex::new(None);
+
+/// vault 字段写路径成功后调用：下次搜索重建形态
+pub fn invalidate_forms_cache() {
+    *FORMS_CACHE.lock().expect("vault forms cache poisoned") = None;
+}
+
+/// 行 id 的匹配形态（缓存命中复用，未命中现场构建）——与
+/// score_lowered(&hay, &q) 等价，只是形态构建被缓存
+fn forms_for(id: i64, hay: &str) -> MatchForms {
+    let mut guard = FORMS_CACHE.lock().expect("vault forms cache poisoned");
+    let map = guard.get_or_insert_with(Default::default);
+    if map.len() > 4096 {
+        map.clear();
+    }
+    map.entry(id)
+        .or_insert_with(|| MatchForms::new(hay))
+        .clone()
 }
 
 /// 历史中与给定明文等值的行清掉（watcher 拦截后 / 批量导入后的补救路径）：
@@ -189,6 +218,7 @@ pub fn add(
         params![title, username, enc, url, notes, totp_enc, now],
     )
     .map_err(|e| e.to_string())?;
+    invalidate_forms_cache();
     Ok(())
 }
 
@@ -227,7 +257,8 @@ fn row_to_item(row: &(i64, String, String, String, String, i64)) -> SearchItem {
 }
 
 pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
-    let Ok(mut stmt) = conn.prepare(
+    // prepare_cached（审计 G1）：每击键路径免重复编译 SQL
+    let Ok(mut stmt) = conn.prepare_cached(
         "SELECT id, title, username, url, notes, pinned FROM accounts
          ORDER BY pinned DESC, updated_at DESC LIMIT 200",
     ) else {
@@ -256,9 +287,10 @@ pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
     let mut scored: Vec<(f32, i64, i64)> = rows
         .iter()
         .filter_map(|row| {
-            // 备注也参与匹配（标题/用户名/网址/备注）
+            // 备注也参与匹配（标题/用户名/网址/备注）。形态走缓存（审计 G2）：
+            // 与 score_lowered(&hay, &q) 等价，拼音/小写构建只在写后首轮发生
             let hay = format!("{} {} {} {}", row.1, row.2, row.3, row.4);
-            super::score_lowered(&hay, &q).map(|s| (s, row.0, row.5))
+            forms_for(row.0, &hay).score(&q).map(|s| (s, row.0, row.5))
         })
         .collect();
     // 同分档内置顶优先，其次新在前
@@ -420,6 +452,7 @@ pub fn action(
         "delete" => {
             conn.execute("DELETE FROM accounts WHERE id=?1", params![id])
                 .map_err(|e| e.to_string())?;
+            invalidate_forms_cache();
             Ok("已删除".into())
         }
         _ => Err("未知操作".into()),
@@ -490,6 +523,7 @@ pub fn update(
             ),
     }
     .map_err(|e| e.to_string())?;
+    invalidate_forms_cache();
     Ok(())
 }
 
@@ -518,6 +552,7 @@ pub fn import(conn: &Connection, entries: Vec<ParsedAccount>) -> Result<usize, S
         n += 1;
     }
     tx.commit().map_err(|e| e.to_string())?;
+    invalidate_forms_cache();
     Ok(n)
 }
 
@@ -639,6 +674,7 @@ pub fn backup_restore(
         n += 1;
     }
     tx.commit().map_err(|e| e.to_string())?;
+    invalidate_forms_cache();
     Ok((n, skipped))
 }
 
@@ -651,6 +687,22 @@ mod crud_tests {
         let conn = Connection::open_in_memory().unwrap();
         init_table(&conn);
         conn
+    }
+
+    /// 打分形态缓存（审计 G2）：字段写路径必须失效——改字后旧字不可召回、
+    /// 新字可召回（stale 缓存会让搜索按旧字段打分）；删除同理
+    #[test]
+    fn 打分形态缓存写后失效() {
+        let conn = mem_db();
+        add(&conn, "站点甲", "user1", "pwd", "", "", "").unwrap();
+        let hit = |q: &str| search(&conn, q).iter().any(|i| i.title.contains("站点"));
+        assert!(hit("jia"), "甲 拼音首写可召回（首轮构建缓存）");
+        update(&conn, 1, "站点乙", "user1", "", "", "", 0, "").unwrap();
+        assert!(!hit("jia"), "改后旧字形态必须失效（stale 缓存会仍命中）");
+        assert!(hit("yi"), "新字可召回（缓存已重建）");
+        let _ = action(&conn, 1, "delete", 0);
+        assert!(!hit("yi"), "删除后不再召回");
+        invalidate_forms_cache(); // 测试间复位，其他测试的库没有这些行
     }
 
     /// 密码防护（评审 P1-09）：命中比对 + 历史等值清除 + 写后失效重建

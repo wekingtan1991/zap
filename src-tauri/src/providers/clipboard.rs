@@ -42,7 +42,8 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
     let now = now_ms();
     // head/nl_count 读物化列（评审 P1-08）：旧实现每击键对 top-300 全文跑
     // substr+replace 现算，把锁持有时长转嫁为主线程排队
-    let Ok(mut stmt) = conn.prepare(
+    // prepare_cached（审计 G1）：每击键路径免重复编译 SQL
+    let Ok(mut stmt) = conn.prepare_cached(
         "SELECT id, created_at, pinned, head, nl_count
          FROM clipboard_history
          ORDER BY pinned DESC, created_at DESC LIMIT 300",

@@ -166,7 +166,8 @@ pub struct StageRowData {
 }
 
 pub fn rows(conn: &Connection) -> Vec<StageRowData> {
-    let mut stmt = match conn.prepare(
+    // prepare_cached（审计 G1）：中转站视图每次展开重查
+    let mut stmt = match conn.prepare_cached(
         "SELECT id, path, is_dir, pinned, added_at FROM stage_items
          ORDER BY pinned DESC, added_at DESC, id DESC",
     ) {

@@ -336,7 +336,8 @@ pub fn record_launch(conn: &Connection, target: &str) {
 
 /// 全量加载启动计数（表里只有真实启动过的应用，通常几十行）
 pub(crate) fn load_launch_counts(conn: &Connection) -> HashMap<String, i64> {
-    let Ok(mut stmt) = conn.prepare("SELECT target, launches FROM app_stats") else {
+    // prepare_cached（审计 G1）：空面板呼出每次走这里
+    let Ok(mut stmt) = conn.prepare_cached("SELECT target, launches FROM app_stats") else {
         return HashMap::new();
     };
     let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) else {
