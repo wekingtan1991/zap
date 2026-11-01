@@ -6,6 +6,8 @@ import {
   Copy,
   Hash,
   Link2,
+  Link2Off,
+  Eraser,
   RefreshCw,
   Fingerprint,
   Wrench,
@@ -33,6 +35,9 @@ interface ToolBundle {
   base64Dec: string | null;
   urlEnc: string;
   urlDec: string | null;
+  urlClean: string | null;
+  zeroWidthStripped: string | null;
+  quotesNormalized: string | null;
   md5: string;
   sha1: string;
   sha256: string;
@@ -258,6 +263,19 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
       </div>
       <div className="zap-tool-card">
         <div className="zap-tool-card-title">
+          <Link2Off className="size-3" />
+          链接清洗
+        </div>
+        <ToolRow
+          rowKey="urlClean"
+          label="去追踪参数"
+          value={bundle?.urlClean}
+          copied={copied}
+          onCopy={copy}
+        />
+      </div>
+      <div className="zap-tool-card">
+        <div className="zap-tool-card-title">
           <Fingerprint className="size-3" />
           UUID v4
         </div>
@@ -314,6 +332,26 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           rowKey="sha256"
           label="SHA256"
           value={bundle?.sha256}
+          copied={copied}
+          onCopy={copy}
+        />
+      </div>
+      <div className="zap-tool-card">
+        <div className="zap-tool-card-title">
+          <Eraser className="size-3" />
+          文本清洗
+        </div>
+        <ToolRow
+          rowKey="zeroWidthStripped"
+          label="去零宽字符"
+          value={bundle?.zeroWidthStripped}
+          copied={copied}
+          onCopy={copy}
+        />
+        <ToolRow
+          rowKey="quotesNormalized"
+          label="弯引号 → 半角"
+          value={bundle?.quotesNormalized}
           copied={copied}
           onCopy={copy}
         />

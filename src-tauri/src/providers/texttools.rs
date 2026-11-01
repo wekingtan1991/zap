@@ -1,5 +1,5 @@
-//! 文本工具域：时间戳 / Base64 / URL / UUID / 哈希。
-//! 入口 = 万能输入框识别（键入/粘贴即识别时间戳/UUID/Base64/URL 编码）、
+//! 文本工具域：时间戳 / Base64 / URL / 链接清洗 / UUID / 哈希。
+//! 入口 = 万能输入框识别（键入/粘贴即识别时间戳/UUID/Base64/URL 编码/可清洗 URL）、
 //! 搜索入口条目（tool / 时间戳 / base64 等词命中）与剪贴板识别
 //! （呼出时检测，识别条目按行号回查原文）。
 //! 全部转换由 tool_convert_all 一次返回（防抖后单次 IPC），前端按卡片渲染
@@ -33,7 +33,7 @@ impl TextToolsPlugin {
         SearchItem {
             id: "tool:entry".into(),
             title: "文本工具".into(),
-            subtitle: "时间戳 / Base64 / URL / UUID / 哈希换算，粘贴文本即出结果".into(),
+            subtitle: "时间戳 / Base64 / URL / 链接清洗 / UUID / 哈希，粘贴文本即出结果".into(),
             kind: "tool".into(),
             // entry = 入口进入：工作台空内容等待粘贴
             target: "entry".into(),
@@ -65,7 +65,7 @@ impl super::plugin::Plugin for TextToolsPlugin {
         Some(super::plugin::PluginMeta {
             id: "text-tools",
             title: "文本工具",
-            hint: "粘贴/键入时间戳/Base64/URL/UUID/哈希即时换算，搜索入口词进入",
+            hint: "粘贴/键入时间戳/Base64/URL/UUID/哈希即时换算，粘贴链接出清洗后地址",
             key: "plugin_text_tools",
             default_on: true,
             state: &TEXT_TOOLS_ON,
@@ -165,6 +165,11 @@ fn recognize(text: &str) -> Vec<(&'static str, Option<String>)> {
             .filter(|d| !d.is_empty());
         hits.push(("URL 编码", answer));
     }
+    // 整体是 http(s) URL 且有参数可清才出「链接清洗」——即问即答给清洗后预览，
+    // 完整可复制版本在工作台「链接清洗」卡
+    if let Some(cleaned) = url_clean(text) {
+        hits.push(("链接清洗", Some(preview(&cleaned))));
+    }
     hits
 }
 
@@ -250,6 +255,155 @@ fn count_percent_escapes(text: &str) -> usize {
         .count()
 }
 
+/// 追踪参数显式清单（小写）：国际广告平台 + 国内分享链高频键。
+/// 收窄原则 = 只列确定性追踪键，功能性参数一律不收
+/// （小红书 xsec_token 是访问必需 token、微信 __biz 是公众号身份、scene 是场景值——刻意不进清单）
+const TRACKING_PARAMS: &[&str] = &[
+    // Google / Microsoft 广告
+    "gclid",
+    "gclsrc",
+    "dclid",
+    "wbraid",
+    "gbraid",
+    // Meta
+    "fbclid",
+    "fb_action_ids",
+    "fb_action_types",
+    // 百度 / 字节营销落地
+    "yclid",
+    "bd_vid",
+    "ttclid",
+    // Instagram / Twitter 分享
+    "igshid",
+    "ref_src",
+    "ref_url",
+    // YouTube 分享追踪
+    "si",
+    // Mailchimp
+    "mc_cid",
+    "mc_eid",
+    // 阿里系（淘宝/闲鱼）
+    "spm",
+    "spm_id_from",
+    "scm",
+    // B 站分享链
+    "vd_source",
+    "vd_channel",
+    "vd_share",
+    "from_spmid",
+    "from_source",
+    "unique_k",
+    // 微信公众号文章
+    "chksm",
+];
+
+/// 前缀通配：utm_（全网 Analytics 标准）与 share_（B 站/抖音/CSDN 分享链高频）。
+/// share_ 若遇站内功能性参数（暂未发现），按个案移出通配收窄
+const TRACKING_PREFIXES: &[&str] = &["utm_", "share_"];
+
+/// http(s):// 前缀，返回 "://" 的结束位置。scheme 大小写不敏感
+fn scheme_prefix_len(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if bytes.len() > 7 && bytes[..7].eq_ignore_ascii_case(b"http://") {
+        return Some(7);
+    }
+    if bytes.len() > 8 && bytes[..8].eq_ignore_ascii_case(b"https://") {
+        return Some(8);
+    }
+    None
+}
+
+/// 追踪参数键判定：显式清单 + 前缀通配（键名按小写比较，不做 percent 解码——
+/// 追踪键名实际不以转义形态出现）
+fn is_tracking_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    TRACKING_PARAMS.contains(&lower.as_str())
+        || TRACKING_PREFIXES.iter().any(|p| lower.starts_with(p))
+}
+
+/// 清洗 URL 的追踪参数：无 http(s) scheme / 无 query / 无命中 → None。
+/// fragment 保留原样；剩余参数保序；参数全清时不留悬空 `?`
+pub fn url_clean(input: &str) -> Option<String> {
+    let text = input.trim();
+    let scheme_len = scheme_prefix_len(text)?;
+    if text.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let rest = &text[scheme_len..];
+    let (rest, fragment) = match rest.split_once('#') {
+        Some((r, f)) => (r, Some(f)),
+        None => (rest, None),
+    };
+    let (base, query) = rest.split_once('?')?;
+    if base.is_empty() {
+        return None;
+    }
+    let mut kept: Vec<&str> = Vec::new();
+    let mut removed = 0usize;
+    for seg in query.split('&') {
+        if seg.is_empty() {
+            continue;
+        }
+        let key = seg.split('=').next().unwrap_or(seg);
+        if is_tracking_key(key) {
+            removed += 1;
+        } else {
+            kept.push(seg);
+        }
+    }
+    if removed == 0 {
+        return None;
+    }
+    let mut out = String::from(&text[..scheme_len]);
+    out.push_str(base);
+    if !kept.is_empty() {
+        out.push('?');
+        out.push_str(&kept.join("&"));
+    }
+    if let Some(f) = fragment {
+        out.push('#');
+        out.push_str(f);
+    }
+    Some(out)
+}
+
+fn is_zero_width(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'
+    )
+}
+
+/// 去零宽字符（零宽空格/连接符/词接合符/不可见连接符/BOM），无命中 → None。
+/// 对任意文本适用（从 PDF/网页复制出隐形字符粘进终端的场景）
+pub fn strip_zero_width(text: &str) -> Option<String> {
+    if text.chars().any(is_zero_width) {
+        Some(text.chars().filter(|c| !is_zero_width(*c)).collect())
+    } else {
+        None
+    }
+}
+
+/// 全角引号规范为半角（弯双引/弯单引 → " '），无命中 → None。
+/// 「」『』是中文标点不是引号误植，保留
+pub fn normalize_quotes(text: &str) -> Option<String> {
+    if !text
+        .chars()
+        .any(|c| matches!(c, '\u{201C}' | '\u{201D}' | '\u{2018}' | '\u{2019}'))
+    {
+        return None;
+    }
+    Some(
+        text.chars()
+            .map(|c| match c {
+                '\u{201C}' | '\u{201D}' => '"',
+                '\u{2018}' | '\u{2019}' => '\'',
+                other => other,
+            })
+            .collect(),
+    )
+}
+
 /// 一次返回全部转换结果（None = 该转换对当前输入不适用）
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -265,6 +419,12 @@ pub struct ToolBundle {
     pub url_enc: String,
     /// 含 %XX 转义且解码为合法 UTF-8 才有值
     pub url_dec: Option<String>,
+    /// 整体是 http(s) URL 且有追踪参数可清才有值（utm_*/share_*/广告与分享链高频键）
+    pub url_clean: Option<String>,
+    /// 含零宽字符才有值（去零宽空格/连接符/BOM 等）
+    pub zero_width_stripped: Option<String>,
+    /// 含全角弯引号才有值（“”‘’ → " '；「」保留）
+    pub quotes_normalized: Option<String>,
     pub md5: String,
     pub sha1: String,
     pub sha256: String,
@@ -316,6 +476,11 @@ pub fn convert_all(text: &str) -> Result<ToolBundle, String> {
         None
     };
 
+    // 链接清洗按 trim 后整体判定；零宽/引号作用于全文（首尾的隐形字符同样要清）
+    let url_clean = url_clean(trimmed);
+    let zero_width_stripped = strip_zero_width(text);
+    let quotes_normalized = normalize_quotes(text);
+
     Ok(ToolBundle {
         text_len: text.len(),
         ts_to_date,
@@ -324,6 +489,9 @@ pub fn convert_all(text: &str) -> Result<ToolBundle, String> {
         base64_dec,
         url_enc,
         url_dec,
+        url_clean,
+        zero_width_stripped,
+        quotes_normalized,
         md5: hex_lowercase(Md5::digest(text.as_bytes()).as_slice()),
         sha1: hex_lowercase(Sha1::digest(text.as_bytes()).as_slice()),
         sha256: hex_lowercase(Sha256::digest(text.as_bytes()).as_slice()),
@@ -603,5 +771,120 @@ mod tests {
         assert!(err.contains("已停用"));
         TEXT_TOOLS_ON.store(true, Ordering::Relaxed);
         assert!(convert_all("x").is_ok());
+    }
+
+    #[test]
+    fn 链接清洗_追踪参数移除() {
+        // utm_ 前缀 + 功能参数保留 + 保序
+        assert_eq!(
+            url_clean("https://a.com/p?id=1&utm_source=x&utm_medium=y&page=2").as_deref(),
+            Some("https://a.com/p?id=1&page=2"),
+        );
+        // 显式清单：广告键 + B 站键 + 微信键
+        assert_eq!(
+            url_clean("https://www.bilibili.com/video/BV1xx?vd_source=abc&spm_id_from=333&p=2")
+                .as_deref(),
+            Some("https://www.bilibili.com/video/BV1xx?p=2"),
+        );
+        assert_eq!(
+            url_clean("https://mp.weixin.qq.com/s?__biz=MzA=&chksm=abc&idx=1").as_deref(),
+            Some("https://mp.weixin.qq.com/s?__biz=MzA=&idx=1"),
+            "__biz 是公众号身份必须保留，chksm 清除",
+        );
+        assert_eq!(
+            url_clean("https://a.com/watch?si=share&v=1&gclid=xyz").as_deref(),
+            Some("https://a.com/watch?v=1"),
+        );
+        // share_ 前缀通配
+        assert_eq!(
+            url_clean("https://a.com/?share_source=weixin&id=3").as_deref(),
+            Some("https://a.com/?id=3"),
+        );
+        // 键名大小写不敏感
+        assert_eq!(
+            url_clean("https://a.com/?UTM_Source=x&id=1").as_deref(),
+            Some("https://a.com/?id=1"),
+        );
+        // fragment 保留；参数全清不留悬空问号
+        assert_eq!(
+            url_clean("https://a.com/p?utm_source=x#sec").as_deref(),
+            Some("https://a.com/p#sec"),
+        );
+        // 无变化/不适用一律 None
+        assert!(url_clean("https://a.com/?p=1").is_none(), "干净 URL 不出卡");
+        assert!(url_clean("https://a.com/p").is_none(), "无 query 无可清");
+        assert!(
+            url_clean("https://?utm_source=x").is_none(),
+            "host 段缺失拒绝"
+        );
+        assert_eq!(
+            url_clean("https://a.com?utm_source=x").as_deref(),
+            Some("https://a.com"),
+            "无斜杠 host 直跟 query 是合法形态",
+        );
+        assert!(
+            url_clean("ftp://a.com?utm_source=x").is_none(),
+            "非 http(s) scheme"
+        );
+        assert!(url_clean("hello world").is_none(), "普通文本");
+        assert!(
+            url_clean("https://a.com/?utm_source=x utm_medium=y").is_none(),
+            "含裸空白按非 URL 拒绝"
+        );
+        // 大写 scheme
+        assert_eq!(
+            url_clean("HTTPS://A.COM/?utm_source=x").as_deref(),
+            Some("HTTPS://A.COM/"),
+        );
+    }
+
+    #[test]
+    fn 零宽字符与全角引号清洗() {
+        assert_eq!(
+            strip_zero_width("ab\u{200B}c\u{FEFF}d").as_deref(),
+            Some("abcd"),
+            "零宽空格与 BOM 移除"
+        );
+        assert!(strip_zero_width("abcd").is_none(), "无零宽字符不出卡");
+        assert_eq!(
+            normalize_quotes("他说“你好”与‘再见’").as_deref(),
+            Some("他说\"你好\"与'再见'"),
+        );
+        assert!(
+            normalize_quotes("「书名号」『保留』").is_none(),
+            "「」『』是中文标点不转换"
+        );
+        assert!(normalize_quotes("plain").is_none());
+        // convert_all 三字段联动：URL 且带追踪参数
+        let b = convert_all("https://a.com/?utm_source=x&id=1").unwrap();
+        assert_eq!(b.url_clean.as_deref(), Some("https://a.com/?id=1"));
+        assert!(b.zero_width_stripped.is_none());
+        assert!(b.quotes_normalized.is_none());
+        let dirty = "他说“hi”\u{200B}";
+        let b2 = convert_all(dirty).unwrap();
+        assert_eq!(
+            b2.quotes_normalized.as_deref(),
+            Some("他说\"hi\"\u{200B}"),
+            "引号规范不碰零宽字符——各清洗各的",
+        );
+        assert_eq!(b2.zero_width_stripped.as_deref(), Some("他说“hi”"));
+    }
+
+    #[test]
+    fn 识别出链接清洗内联答案() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let url = "https://a.com/p?id=1&utm_source=x";
+        assert_eq!(kinds(url), vec!["链接清洗"]);
+        let items = TextToolsPlugin.probe(url);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "识别到链接清洗 → https://a.com/p?id=1");
+        // 干净 URL 不出识别条目（交给网页/URL 直达兜底，不抢）
+        assert!(TextToolsPlugin.probe("https://a.com/p?id=1").is_empty());
+        // detect 同款
+        let items = TextToolsPlugin.detect(9, url);
+        assert_eq!(
+            items[0].title,
+            "检测到剪贴板链接清洗 → https://a.com/p?id=1"
+        );
     }
 }
