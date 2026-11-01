@@ -27,6 +27,7 @@ import {
   useHotkeyRecording,
   type HotkeySettings,
 } from "./settings/useHotkeyRecording";
+import { normalizeSettings, settingsSnapshot } from "./settings/dirty";
 import type { AppSettings, Shortcut } from "./settings/types";
 
 interface Props {
@@ -45,15 +46,16 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   const [scList, setScList] = useState<Shortcut[]>([]);
   const [scErr, setScErr] = useState("");
   // ---------- 脏态保护（评审 P1-03） ----------
-  // 基线快照（挂载到齐 / 保存成功后写）：设置 + 捷径整体 JSON 化对比——
-  // 字段改回原值仍算脏是可接受的保守语义，换取零侵入（不包 20+ 个 setSt）
+  // 基线快照（挂载到齐 / 保存成功后写）：设置 + 捷径整体 JSON 化对比。
+  // 序列化必须走 settingsSnapshot——曾因基线与 dirty 两处字面量键名不一致
+  // （sc/scList）恒脏（真机实测发现），见 settings/dirty.ts
   const baselineRef = useRef<string | null>(null);
   /// Esc 触发的退出确认条（有未保存更改时拦截，防静默丢弃）
   const [exitConfirm, setExitConfirm] = useState(false);
   const dirty =
     !!st &&
     baselineRef.current !== null &&
-    JSON.stringify({ st, scList }) !== baselineRef.current;
+    settingsSnapshot(st, scList) !== baselineRef.current;
 
   // ---------- 账号库备份：分区+弹窗+流程内聚在 VaultBackupSection（审计 E1） ----------
   // bkOpen 镜像弹窗开合：备份弹窗存活时本页 Esc 让位（弹窗组件自管关弹窗，
@@ -68,28 +70,10 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
       invoke<Shortcut[]>("shortcuts_list"),
     ])
       .then(([res, sc]) => {
-        const normalized: AppSettings = {
-          ...res,
-          clipAutoPaste: res.clipAutoPaste ?? true,
-          stageMax: res.stageMax ?? 50,
-          stagedropEnabled: res.stagedropEnabled ?? true,
-          stagedropOpenPanel: res.stagedropOpenPanel ?? false,
-          stagedropPosition: res.stagedropPosition ?? "bottom_right",
-          appearance: res.appearance ?? "dark",
-          panelTransparency: res.panelTransparency ?? true,
-          superpanelHotkey: res.superpanelHotkey ?? "",
-          stageHotkey: res.stageHotkey ?? "",
-          vaultHotkey: res.vaultHotkey ?? "",
-          clipHotkey: res.clipHotkey ?? "",
-          plugins: (res.plugins ?? []).map((p) => ({
-            ...p,
-            entries: p.entries ?? [],
-            conflicts: p.conflicts ?? [],
-          })),
-        };
+        const normalized = normalizeSettings(res);
         setSt(normalized);
         setScList(sc);
-        baselineRef.current = JSON.stringify({ st: normalized, sc });
+        baselineRef.current = settingsSnapshot(normalized, sc);
       })
       .catch(() => {});
     // 版本号异步读取（tauri.conf.json 的 version），失败时留空
@@ -111,22 +95,27 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   const { hkSlot, hkError, startRecording, setHkError } =
     useHotkeyRecording(patchHotkey);
 
+  // 退出请求（Esc 与「返回」按钮共用——按钮此前直接 onClose，脏态被绕过、
+  // 未保存更改会静默丢弃）：有未保存更改先弹确认条——再按 Esc=留在页面，
+  // 「放弃更改」才真正退出；无更改直接退出零打扰
+  const requestClose = () => {
+    if (dirty) {
+      setExitConfirm(true);
+      return;
+    }
+    onClose();
+  };
+
   // 窗口捕获兜 Esc 关设置页（焦点掉 body 后面板 onKeyDown 收不到）。
   // 录制态让位（enabled=false，录制监听自己管 Esc=取消录制）；备份弹窗存活时
   // 同样让位（bkOpen 由 VaultBackupSection 上报，弹窗组件自管关弹窗）。
-  // 脏态拦截（评审 P1-03）：有未保存更改先弹确认条——再按 Esc=留在页面，
-  // 「放弃更改」才真正退出；无更改直接退出零打扰
   useEscCapture(
     () => {
       if (exitConfirm) {
         setExitConfirm(false);
         return;
       }
-      if (dirty) {
-        setExitConfirm(true);
-        return;
-      }
-      onClose();
+      requestClose();
     },
     hkSlot === null && !bkOpen
   );
@@ -173,16 +162,22 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
       setDirectErr(directError);
       if (res.hotkeyError || directError) {
         // 任一热键失败都重拉实际生效值：直达槽位冲突/占用时存档串与显示值会漂移；
-        // 且此场景不算保存成功，不显示「已保存 ✓」
+        // 且此场景不算保存成功，不显示「已保存 ✓」。重拉后 UI 显示即权威值，
+        // 基线随之对齐
         if (res.hotkeyError) setHkError(res.hotkeyError);
-        const fresh = await invoke<AppSettings>("get_app_settings");
+        const fresh = normalizeSettings(
+          await invoke<AppSettings>("get_app_settings")
+        );
         setSt(fresh);
-        // 保存成功即对齐基线（权威值来自后端重拉）：dirty 归零
-        baselineRef.current = JSON.stringify({ st: fresh, scList });
+        baselineRef.current = settingsSnapshot(fresh, scList);
       } else {
         setHkError("");
         setSaveMsg("已保存 ✓");
         setTimeout(() => setSaveMsg(""), 2000);
+        // 保存成功即对齐基线（本次提交的 st/scList 就是权威值）：dirty 归零、
+        // 保存键置灰、Esc 直接退出。此前基线只在热键错误分支写，保存成功后
+        // 仍算脏、Esc 依旧弹确认（真机实测发现）
+        baselineRef.current = settingsSnapshot(st, scList);
       }
     } catch (e) {
       setHkError(String(e));
@@ -211,7 +206,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           variant="ghost"
           size="sm"
           className="ml-auto h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-          onClick={onClose}
+          onClick={requestClose}
         >
           <ArrowLeft className="size-3" />
           返回（Esc）
