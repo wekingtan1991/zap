@@ -1,4 +1,5 @@
 import React, {
+  useMemo,
   useCallback,
   useEffect,
   useRef,
@@ -8,20 +9,13 @@ import React, {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
-import { CircleHelp, Layers, Lock, Pin, Search, TriangleAlert, Zap } from "lucide-react";
+import { Lock, TriangleAlert, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Kbd } from "@/components/ui/kbd";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { kindUi, type ItemActions } from "@/plugins/registry";
 import { routeItem } from "@/plugins/dispatch";
-import { isPinned, clipRowId, type SearchItem } from "@/plugins/types";
+import { clipRowId, type SearchItem } from "@/plugins/types";
 import {
   kickEverythingEnsure,
   runCommand,
@@ -44,10 +38,13 @@ import { VaultImportView } from "@/plugins/vault/VaultImportView";
 import { useVaultActions } from "@/plugins/vault/useVaultActions";
 import { JsonWorkbench } from "@/plugins/json/JsonWorkbench";
 import { ToolWorkbench } from "@/plugins/text/ToolWorkbench";
+import { PanelFooter } from "@/views/PanelFooter";
+import { ResultsContextMenu } from "@/views/ResultsContextMenu";
+import { ResultsList } from "@/views/ResultsList";
+import { useMergeMode } from "@/views/useMergeMode";
 import { SettingsView } from "@/views/SettingsView";
 import { useUpdater } from "@/views/useUpdater";
 import { applyAppearance, applyPanelTransparency, type Appearance } from "@/lib/appearance";
-import { clampMenuPos } from "@/lib/ctxMenu";
 
 /// 工作台内容源：入口进入 = 空文本等待粘贴；输入识别（万能输入框）= 携带
 /// 进入时刻的搜索词全文；剪贴板识别 = 按行号回查呼出时刻的内容
@@ -89,22 +86,6 @@ const VAULT_IMPORT_ENTRY: SearchItem = {
   score: -2,
 };
 
-/// 账号库保护域的 Alt 组合键说明（底栏问号图标的悬停提示内容）
-const ALT_ACTIONS: [string, string][] = [
-  ["1", "打开网址"],
-  ["2", "复制密码（阅后即焚）"],
-  ["3", "删除（弹确认条，不会直接删）"],
-  ["4", "查看密码"],
-  ["5", "置顶 / 取消置顶"],
-  ["6", "编辑"],
-];
-
-/// 普通域条目的次级操作说明（底栏问号图标悬停提示）
-const SECONDARY_ACTIONS: [string, string][] = [
-  ["Ctrl+Shift+Enter", "管理员运行"],
-  ["Ctrl+Enter", "打开所在文件夹"],
-  ["Ctrl+Shift+C", "复制路径"],
-];
 
 /// 渲染兜底：任何视图抛错都不再整页白屏，而是提示可读信息 + 一键复位
 class ErrorBoundary extends React.Component<
@@ -176,10 +157,6 @@ function AppView() {
     y: number;
     item: SearchItem;
   } | null>(null);
-  /// 剪贴板合并粘贴模式：mergeSel 收勾选的 rowid，数组保序（点选顺序 =
-  /// 拼接顺序）。仅普通域剪贴板条目可勾；面板隐藏/呼出/进保护域即清
-  const [mergeMode, setMergeMode] = useState(false);
-  const [mergeSel, setMergeSel] = useState<number[]>([]);
 
   // 子页面（设置/详情/表单/导入/查看密码）挂载时接管焦点：主面板卸载后焦点会掉到
   // body（React 根节点之外），面板上的 onKeyDown 收不到任何按键，Esc 将失效。
@@ -281,9 +258,8 @@ function AppView() {
     const un = listen("zap://hidden", () => {
       setQuery("");
       setActive(0);
-      // 合并勾选是即时意图：跨呼出保留没有意义，隐藏即清
-      setMergeMode(false);
-      setMergeSel([]);
+      // 合并勾选是即时意图：跨呼出保留没有意义，隐藏即清（hook 复位）
+      mergeReset();
       // 右键菜单同理：跨呼出的菜单是陈旧状态（呼出即重置视图）
       setCtxMenu(null);
     });
@@ -306,8 +282,7 @@ function AppView() {
       setActive(0);
       setCtxMenu(null); // 兜底：hidden 已清，这里对齐 hidden 的复位口径
       // 呼出重置为 main 后合并模式若残留会重新可用：与 hidden 同款全清
-      setMergeMode(false);
-      setMergeSel([]);
+      mergeReset();
       // 重播呼出动画：面板窗口只隐藏不销毁，跨 shown 组件不重挂——
       // 移除→reflow→重挂让 panel-in 重新起播；从子视图返回走重挂的静态类
       const panel = panelRef.current;
@@ -587,56 +562,6 @@ function AppView() {
     [repullClips]
   );
 
-  // ---------- 剪贴板合并粘贴 ----------
-  /// 模式开关：退出即清勾选（重进从零开始，避免残留旧意图）
-  const toggleMerge = useCallback(() => {
-    setMergeMode((m) => !m);
-    setMergeSel([]);
-  }, []);
-
-  /// 勾选/取消一条（保序，点击与 Enter 共用）：仅文本剪贴板条目；
-  /// 行号取自 target（clipRowId，与图片条目同构——内容本体不随列表过 IPC）
-  const toggleClipSelection = useCallback((it: SearchItem | undefined) => {
-    if (!it || it.kind !== "clip") return;
-    const id = clipRowId(it);
-    if (Number.isNaN(id)) return;
-    setMergeSel((s) =>
-      s.includes(id) ? s.filter((x) => x !== id) : [...s, id]
-    );
-  }, []);
-
-  /// 执行合并：勾选顺序 = 拼接顺序。**只清勾选、不退模式**——自动粘贴关闭时
-  /// 面板不收，用户往往要连着合下一批；自动粘贴开启时面板收起，zap://hidden
-  /// 兜底清掉整个模式。个别条目已被清理时后端跳过并返回实际条数；全部被
-  /// 清理则报错（面板不收，toast 可见）
-  const performMergePaste = useCallback(async () => {
-    const ids = [...mergeSel];
-    setMergeSel([]);
-    if (ids.length === 0) return;
-    try {
-      const r = await invoke<{ count: number; pasted: boolean }>(
-        "clip_merge_paste",
-        { ids }
-      );
-      const skipped = ids.length - r.count;
-      const head = r.pasted
-        ? `已合并粘贴 ${r.count} 条`
-        : `已合并 ${r.count} 条到剪贴板`;
-      toast.success(skipped > 0 ? `${head}（${skipped} 条已被清理，已跳过）` : head);
-    } catch (e) {
-      toast.error(String(e));
-    }
-  }, [mergeSel]);
-
-  // 进入保护域（pw）即退合并模式：勾选只对普通域剪贴板列表有意义，
-  // 保护域下 Enter/Ctrl+Enter 另有语义，不能被合并分支截走
-  useEffect(() => {
-    if (isVault && mergeMode) {
-      setMergeMode(false);
-      setMergeSel([]);
-    }
-  }, [isVault, mergeMode]);
-
   // 右键菜单键盘面挂窗口捕获——模式化键盘面纪律第四次收口：菜单项是真实
   // button，点击执行后按钮卸载焦点掉 body，面板 onKeyDown 收不到任何键
   // （2026-10-22 表单 Esc / 2026-10-28 合并模式 / 2026-10-28 StageView 同根因）。
@@ -675,46 +600,16 @@ function AppView() {
     return () => window.removeEventListener("keydown", onKey, true);
   });
 
-  // 合并模式的键盘面挂窗口捕获——**不能挂面板/输入框 onKeyDown**：点击
-  // 底栏按钮或条目后焦点掉到按钮/body，输入框的 onKeyDown 收不到任何键
-  // （与 2026-10-22 表单 Esc 失效同根因，本次在合并功能上重犯后按同一
-  // 修法收口）。捕获阶段拦下合并语义键并 stopPropagation，防输入框的
-  // onKeyDown 对同一按键再处理一遍；其余按键放行不干扰打字。
-  // 不传依赖数组：每次渲染重挂保闭包新鲜（VaultFormView Esc 同款）。
-  // isComposing 卫兵挡 IME 选词键（合成期 keydown 不该触发勾选/合并）。
-  // view 守卫：合并是 main 视图内的模式，进设置/工作台等子页面期间整体
-  // 休眠——旧实现泄漏进设置页，备份弹窗的 Enter 提交被合并勾选劫持。
-  // 右键菜单的 Esc 已由上方 ctxMenu 捕获拦掉（stopPropagation 收不到），无重复
-  useEffect(() => {
-    if (!mergeMode || view.kind !== "main") return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.isComposing) return;
-      if (e.key === "Enter" && e.ctrlKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        void performMergePaste();
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        e.stopPropagation();
-        toggleClipSelection(items[active]);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        toggleMerge();
-      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        e.stopPropagation();
-        kbNavRef.current = true;
-        setActive((a) =>
-          e.key === "ArrowDown"
-            ? Math.min(a + 1, Math.max(items.length - 1, 0))
-            : Math.max(a - 1, 0)
-        );
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+  // ---------- 剪贴板合并粘贴（hook 化，审计 F3）：状态/动作/键盘面内聚 useMergeMode ----------
+  const merge = useMergeMode({
+    isVault,
+    view,
+    items,
+    active,
+    setActive,
+    kbNavRef,
   });
+  const mergeReset = merge.resetMerge;
 
   /// 工作台进入：按条目 target 定内容源——q = 万能输入框识别（携带当前
   /// 搜索词全文）、entry = 搜索入口（空内容等待粘贴）、数字 = 剪贴板行号回查；
@@ -773,10 +668,41 @@ function AppView() {
     }
   }, []);
 
+  /// 右键菜单动作分发（自 JSX 内联 if-else 链抽出，审计 F2）：菜单展示层
+  /// 在 ResultsContextMenu，这里只收动作名
+  const runCtxAction = useCallback(
+    (act: string, item: SearchItem) => {
+      if (act === "stage_add") void stageAdd(item);
+      else if (act === "clip_pin") void clipPin(item);
+      else if (act === "clip_delete") void clipDelete(item);
+      else if (act === "clipimg_preview") openClipImagePreview(item);
+      // vault 域（评审 P1-04）：与 Alt 快捷键同一 vault_action 分发
+      else if (act === "vault_reveal") void vault.vaultAction(item, "reveal");
+      else if (act === "vault_url") void vault.vaultAction(item, "url");
+      else if (act === "vault_edit") void vault.startEdit(item);
+      else if (act === "vault_pin") void vault.vaultAction(item, "pin");
+      else if (act === "vault_delete") void vault.openDeleteConfirm(item);
+      else void secondaryAction(
+        act as "admin" | "reveal" | "copy_path" | "clip_copy" | "close_window",
+        item
+      );
+    },
+    [stageAdd, clipPin, clipDelete, openClipImagePreview, vault.vaultAction, vault.startEdit, vault.openDeleteConfirm, secondaryAction]
+  );
+
+  /// 行右键入口（ResultsList 行 memo 的稳定引用）：有右键动作的 kind 弹
+  /// 次级操作菜单；其余只压掉 WebView 默认菜单
+  const onRowContext = useCallback((e: React.MouseEvent, it: SearchItem) => {
+    e.preventDefault();
+    if ((kindUi(it.kind)?.ctxActions?.length ?? 0) > 0) {
+      setCtxMenu({ x: e.clientX, y: e.clientY, item: it });
+    }
+  }, []);
+
   // ---------- 统一条目分发 ----------
   // Enter 与点击共用：伪条目（新增/导入）→ 注册表 activate → 默认 openExternal。
   // kind 行为收敛在 plugins/registry.tsx，这里只接装配，不写 kind 特判
-  const actions: ItemActions = {
+  const actions: ItemActions = useMemo(() => ({
     openVaultDetail: (it) => void vault.openDetail(it),
     openJson: (it) => openWorkbench("json", it),
     openTool: (it) => openWorkbench("tool", it),
@@ -791,7 +717,7 @@ function AppView() {
     clipPin: (it) => void clipPin(it),
     openStage: () => void openStage(),
     openClipImagePreview: openClipImagePreview,
-  };
+  }), [activate, vault.openDetail, vault.vaultAction, clipPin, openStage, openClipImagePreview, openWorkbench]);
 
   const runItem = useCallback(
     (it: SearchItem | undefined) => {
@@ -801,11 +727,11 @@ function AppView() {
       // 非 clip 行禁用（评审 P1-05）：合并模式「点=选」的心智下，误点非 clip
       // 行直接启动应用/打开文件是真实副作用——禁用态由渲染层降透明度提示，
       // 这里静默忽略
-      if (mergeMode && it.kind === "clip") {
-        toggleClipSelection(it);
+      if (merge.mergeMode && it.kind === "clip") {
+        merge.toggleClipSelection(it);
         return;
       }
-      if (mergeMode) return;
+      if (merge.mergeMode) return;
       // 同一条目 300ms 内去重：双击行（Explorer 迁移习惯）= 两次 click，
       // 文件/应用类会 ShellExecute 两次开两份；Enter 连击同理
       const now = performance.now();
@@ -838,7 +764,7 @@ function AppView() {
     },
     // actions 引用稳定的 useState setter / useCallback 闭包，逐项列出即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activate, vault.openDetail, vault.vaultAction, mergeMode]
+    [activate, vault.openDetail, vault.vaultAction, merge.mergeMode]
   );
 
   // 表单数据更新器：与旧 setForm 同签名（Dispatch<SetStateAction<AccountForm|null>>），
@@ -1098,281 +1024,34 @@ function AppView() {
           </svg>
         </Button>
       </div>
-      <div className="zap-results" ref={resultsRef}>
-        {items.length === 0 ? (
-          <div className="zap-empty">
-            <span className="zap-empty-ico">
-              {isVault ? (
-                <Lock className="size-5" />
-              ) : (
-                <Search className="size-5" />
-              )}
-            </span>
-            <span className="zap-empty-title">
-              {isVault ? "没有匹配的账号" : "开始输入，即时搜索"}
-            </span>
-            <span className="zap-empty-sub">
-              {isVault
-                ? "换个关键词，或清空后按 Enter 新增账号"
-                : "应用 · 文件 · 窗口 · 剪贴板 · 最近使用"}
-            </span>
-          </div>
-        ) : (
-          items.map((it, i) => {
-            const ui = kindUi(it.kind);
-            return (
-            <div
-              // key 去索引（评审 P2-11）：id 后端唯一（kind:path/行号），重排时
-              // React 按 id 复用 DOM——索引 key 在过滤重排时整行重挂闪帧
-              key={it.id}
-              ref={i === active ? activeItemRef : undefined}
-              className={
-                "zap-item" +
-                (i === active ? " active" : "") +
-                // 合并模式的非 clip 行禁用态（评审 P1-05）：点=选 心智下
-                // 非目标行降透明度并吞点击，防误启动/误打开
-                (mergeMode && it.kind !== "clip" ? " merge-disabled" : "")
-              }
-              onMouseEnter={() => setActive(i)}
-              onClick={() => runItem(it)}
-              onContextMenu={(e) => {
-                // 有右键动作的 kind 弹次级操作菜单；其余只压掉 WebView 默认菜单
-                e.preventDefault();
-                if ((kindUi(it.kind)?.ctxActions?.length ?? 0) > 0) {
-                  setCtxMenu({ x: e.clientX, y: e.clientY, item: it });
-                }
-              }}
-            >
-              {it.icon ? (
-                <img className="zap-ico" src={it.icon} alt="" draggable={false} />
-              ) : (
-                <Badge variant={ui?.badge ?? "secondary"}>
-                  {ui?.label ?? it.kind}
-                </Badge>
-              )}
-              <div className="zap-texts">
-                <div className="zap-title">
-                  {isPinned(it) && <Pin className="zap-title-pin size-3" />}
-                  {it.title.replace(/^📌 /, "")}
-                </div>
-                {it.subtitle && <div className="zap-sub">{it.subtitle}</div>}
-              </div>
-              {/* 合并模式：文本剪贴板条目行尾勾选框，点选顺序即拼接顺序 */}
-              {mergeMode && it.kind === "clip" && (
-                <span
-                  className={
-                    "zap-merge-check" +
-                    (mergeSel.includes(clipRowId(it)) ? " on" : "")
-                  }
-                  aria-hidden="true"
-                >
-                  ✓
-                </span>
-              )}
-              {ui?.rowAction?.(it, actions)}
-            </div>
-            );
-          })
-          )}
-      </div>
+      <ResultsList
+        items={items}
+        active={active}
+        isVault={isVault}
+        mergeMode={merge.mergeMode}
+        mergeSel={merge.mergeSel}
+        resultsRef={resultsRef}
+        activeItemRef={activeItemRef}
+        onHover={setActive}
+        onRun={runItem}
+        onContext={onRowContext}
+        actions={actions}
+      />
       {ctxMenu && (
-        <>
-          <div
-            className="zap-ctx-backdrop"
-            onClick={() => setCtxMenu(null)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setCtxMenu(null);
-            }}
-          />
-          <div
-            className="zap-ctx-menu"
-            data-ctx-menu=""
-            style={clampMenuPos(
-              ctxMenu.x,
-              ctxMenu.y,
-              kindUi(ctxMenu.item.kind)?.ctxActions?.length ?? 0,
-            )}
-          >
-            {(kindUi(ctxMenu.item.kind)?.ctxActions ?? []).map(
-              ([act, label]) => (
-                <button
-                  key={act}
-                  type="button"
-                  className="zap-ctx-item"
-                  onClick={() => {
-                    setCtxMenu(null);
-                    if (act === "stage_add") void stageAdd(ctxMenu.item);
-                    else if (act === "clip_pin") void clipPin(ctxMenu.item);
-                    else if (act === "clip_delete")
-                      void clipDelete(ctxMenu.item);
-                    else if (act === "clipimg_preview")
-                      openClipImagePreview(ctxMenu.item);
-                    // vault 域（评审 P1-04）：与 Alt 快捷键同一 vault_action 分发
-                    else if (act === "vault_reveal")
-                      void vault.vaultAction(ctxMenu.item, "reveal");
-                    else if (act === "vault_url")
-                      void vault.vaultAction(ctxMenu.item, "url");
-                    else if (act === "vault_edit")
-                      void vault.startEdit(ctxMenu.item);
-                    else if (act === "vault_pin")
-                      void vault.vaultAction(ctxMenu.item, "pin");
-                    else if (act === "vault_delete")
-                      void vault.openDeleteConfirm(ctxMenu.item);
-                    else void secondaryAction(
-                      act as "admin" | "reveal" | "copy_path" | "clip_copy" | "close_window",
-                      ctxMenu.item
-                    );
-                  }}
-                >
-                  {label}
-                </button>
-              )
-            )}
-          </div>
-        </>
+        <ResultsContextMenu
+          menu={ctxMenu}
+          onClose={() => setCtxMenu(null)}
+          onAction={(act) => runCtxAction(act, ctxMenu.item)}
+        />
       )}
-      <div className="zap-footer">
-        <span className="zap-footer-hints">
-          <Kbd>↑</Kbd>
-          <Kbd>↓</Kbd>
-          <span>选择</span>
-          <span className="zap-footer-sep" />
-          <Kbd>Enter</Kbd>
-          <span>{isVault ? "详情" : "启动"}</span>
-          {isVault ? (
-            <>
-              <span className="zap-footer-sep" />
-              <Kbd>Alt</Kbd>
-              <span>+</span>
-              <Kbd>1~6</Kbd>
-              <span>行内操作</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span
-                    className="zap-footer-help"
-                    aria-label="Alt 组合键说明"
-                    tabIndex={-1}
-                  >
-                    <CircleHelp className="size-3.5" />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top" align="start">
-                  <div className="zap-alt-help">
-                    {ALT_ACTIONS.map(([key, desc]) => (
-                      <div key={key} className="zap-alt-help-row">
-                        <span className="zap-alt-help-keys">
-                          <Kbd>Alt</Kbd>
-                          <span>+</span>
-                          <Kbd>{key}</Kbd>
-                        </span>
-                        <span>{desc}</span>
-                      </div>
-                    ))}
-                  </div>
-                </TooltipContent>
-              </Tooltip>
-            </>
-          ) : (
-            <>
-              <span className="zap-footer-sep" />
-              {mergeMode ? (
-                <>
-                  <span className="zap-merge-status">
-                    合并模式 · 已选 {mergeSel.length} 条
-                  </span>
-                  <button
-                    type="button"
-                    className="zap-merge-go"
-                    disabled={mergeSel.length === 0}
-                    onClick={() => void performMergePaste()}
-                  >
-                    <Kbd>Ctrl</Kbd>
-                    <span>+</span>
-                    <Kbd>Enter</Kbd>
-                    <span>合并粘贴</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="zap-merge-exit"
-                    onClick={toggleMerge}
-                  >
-                    退出
-                  </button>
-                </>
-              ) : (
-                // 合并入口只在列表实际含 clip 条目时露出（评审 P1-05）：
-                // 对纯应用/文件结果显示「合并粘贴」是无指向的死按钮
-                items.some((x) => x.kind === "clip") && (
-                  <button
-                    type="button"
-                    className="zap-merge-enter"
-                    onClick={toggleMerge}
-                    title="连续点选多条剪贴板文本条目，按点选顺序合并成一条粘贴"
-                  >
-                    <Layers className="size-3" />
-                    <span>合并粘贴</span>
-                  </button>
-                )
-              )}
-              <span className="zap-footer-sep" />
-              <Kbd>pw</Kbd>
-              <span>账号库</span>
-              <span className="zap-footer-sep" />
-              <Kbd>Ctrl</Kbd>
-              <span>+</span>
-              <Kbd>V</Kbd>
-              <span>粘贴即识别</span>
-              <span className="zap-footer-sep" />
-              <Kbd>json</Kbd>
-              <span>/</span>
-              <Kbd>tool</Kbd>
-              <span>搜索工具</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span
-                    className="zap-footer-help"
-                    aria-label="次级操作说明"
-                    tabIndex={-1}
-                  >
-                    <CircleHelp className="size-3.5" />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top" align="start">
-                  <div className="zap-alt-help">
-                    {SECONDARY_ACTIONS.map(([keys, desc]) => (
-                      <div key={keys} className="zap-alt-help-row">
-                        <span className="zap-alt-help-keys">
-                          {keys.split("+").map((k, i) => (
-                            <span
-                              key={k}
-                              className="flex items-center gap-0.5"
-                            >
-                              {i > 0 && <span>+</span>}
-                              <Kbd>{k}</Kbd>
-                            </span>
-                          ))}
-                        </span>
-                        <span>{desc}</span>
-                      </div>
-                    ))}
-                  </div>
-                </TooltipContent>
-              </Tooltip>
-            </>
-          )}
-        </span>
-        <span className="zap-footer-hints">
-          <Kbd>Ctrl</Kbd>
-          <span>+</span>
-          <Kbd>,</Kbd>
-          <span>设置</span>
-          <span className="zap-footer-sep" />
-          <Kbd>Esc</Kbd>
-          {/* 合并模式下 Esc 的实际语义是退出合并（评审 P1-05）：提示随模式切换 */}
-          <span>{mergeMode ? "退出合并" : "清空 / 关闭"}</span>
-        </span>
-      </div>
+      <PanelFooter
+        isVault={isVault}
+        mergeMode={merge.mergeMode}
+        mergeSelected={merge.mergeSel.length}
+        hasClipItems={items.some((x) => x.kind === "clip")}
+        onMergeGo={() => void merge.performMergePaste()}
+        onToggleMerge={merge.toggleMerge}
+      />
     </div>
   );
 }
