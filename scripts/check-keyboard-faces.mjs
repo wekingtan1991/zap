@@ -16,7 +16,9 @@ const SKIP_DIRS = new Set(["components", "__tests__", "node_modules", "dist"]);
 const ALLOW = [
   ["src/App.tsx", "onKeyDown={onKeyDown}"],
   ["src/plugins/vault/VaultRevealOverlay.tsx", "onKeyDown={(e) => {"],
-  ["src/views/SettingsView.tsx", "onKeyDown={(e) => {"],
+  // 备份弹窗两处 Input Enter 提交（口令确认 doExport / 解密 doDecrypt）——
+  // 原在 SettingsView，审计 E1 随备份域迁入 VaultBackupSection
+  ["src/views/settings/VaultBackupSection.tsx", "onKeyDown={(e) => {"],
 ];
 
 function walk(dir, out) {

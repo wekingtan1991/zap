@@ -20,4 +20,7 @@ pnpm exec tsc --noEmit
 echo "[pre-push] pnpm test"
 pnpm test
 
+echo "[pre-push] 键盘面纪律自检（check:kb）"
+pnpm check:kb
+
 echo "[pre-push] 全部通过"
