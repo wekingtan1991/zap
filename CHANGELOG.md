@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-11-01
+
+### 依赖与发布工程
+
+- 依赖批量升级（dependabot 九 PR 内容合入八）：Actions 钉版 SHA 升级（checkout v7.0.1 / setup-node v7.1.0 / upload-artifact v7.0.2）；**Cargo 加密栈整族对齐 digest 0.11**（sha1/sha2/hmac/md-5/pbkdf2——digest 0.10 与 0.11 的 trait 生态不互通，单包 PR 不可合必须整族同升，TOTP 官方向量与备份加解密回环测试验证）；arboard 3.7 / clipboard-master 4.1 与 tauri 插件四件；npm 组十件（react 19.3.1 / vite 8.3.5 / lucide-react 等）；windows-core 0.62→0.100 跨版刻意未合（牵动全部 Win32 调用，单独评估）
+- 键盘面纪律自检（`pnpm check:kb`）接线 pre-push 钩子，白名单随备份域迁移更新——消除「CI 在 master 红、本地全绿」的门槛不对称
+
+### 界面
+
+- 设置页十二分区由分隔线改轻卡片：`--zap-w-04` 底 + `--zap-w-08` 描边 + 12px 圆角（与 vault 行卡同参数族），分区扫视定位更清晰；备份分区一并收编进共享 Section 壳
+- 设置页保存成功反馈改全局 toast（与全应用反馈形式统一，行内「已保存 ✓」退役；字段级校验错误保持行内）
+
 ## [0.14.0] — 2026-11-01
 
 ### 评审修复（2026-10-29 十角色三轮交叉评审落地批，P0×3 + P1×20 + P2×18 全部落地）
