@@ -212,7 +212,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           返回（Esc）
         </Button>
       </div>
-      <div className="flex-1 overflow-y-auto px-[22px] pb-3 pt-2.5">
+      <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-[22px] pb-3 pt-2.5">
         <StartupSection
           st={st}
           setSt={setSt}

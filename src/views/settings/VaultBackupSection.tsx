@@ -15,6 +15,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { useEscCapture } from "@/hooks/useEscCapture";
 import { backupReminder } from "@/lib/vaultBackup";
+import { Section } from "./Section";
 
 /// 备份条目（后端 backup::BackupEntry 的线协议镜像）
 interface BackupEntry {
@@ -166,11 +167,7 @@ export function VaultBackupSection({
 
   return (
     <>
-      <div className="mt-3 border-t border-border pt-3">
-        <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
-          <Database className="size-3 text-primary/75" />
-          账号库
-        </div>
+      <Section icon={Database} title="账号库">
         <div className="flex min-h-[42px] items-center justify-between gap-3">
           <span className="flex min-w-0 flex-col gap-px">
             <span className="text-[13px] text-foreground">备份与恢复</span>
@@ -210,7 +207,7 @@ export function VaultBackupSection({
               </div>
             );
           })()}
-      </div>
+      </Section>
       {bkDialog && (
         <div className="zap-dialog-backdrop" onClick={closeBkDialog}>
           <div
