@@ -41,7 +41,6 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   const [appVersion, setAppVersion] = useState("");
   /// 直达热键保存错误（与主热键错误分开呈现）
   const [directErr, setDirectErr] = useState("");
-  const [saveMsg, setSaveMsg] = useState("");
   /// 搜索捷径清单：随「保存」整单提交（校验失败留页修正）
   const [scList, setScList] = useState<Shortcut[]>([]);
   const [scErr, setScErr] = useState("");
@@ -162,7 +161,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
       setDirectErr(directError);
       if (res.hotkeyError || directError) {
         // 任一热键失败都重拉实际生效值：直达槽位冲突/占用时存档串与显示值会漂移；
-        // 且此场景不算保存成功，不显示「已保存 ✓」。重拉后 UI 显示即权威值，
+        // 且此场景不算保存成功，不出「已保存」toast。重拉后 UI 显示即权威值，
         // 基线随之对齐
         if (res.hotkeyError) setHkError(res.hotkeyError);
         const fresh = normalizeSettings(
@@ -172,8 +171,9 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         baselineRef.current = settingsSnapshot(fresh, scList);
       } else {
         setHkError("");
-        setSaveMsg("已保存 ✓");
-        setTimeout(() => setSaveMsg(""), 2000);
+        // 保存成功反馈统一走全局 toast（与各分区导出/导入/清空同形式），
+        // 不再行内「已保存 ✓」——那是全应用最后一个非 toast 操作反馈
+        toast.success("已保存");
         // 保存成功即对齐基线（本次提交的 st/scList 就是权威值）：dirty 归零、
         // 保存键置灰、Esc 直接退出。此前基线只在热键错误分支写，保存成功后
         // 仍算脏、Esc 依旧弹确认（真机实测发现）
@@ -234,11 +234,6 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         <AboutSection />
       </div>
       <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-[22px] py-1.5">
-        {saveMsg && (
-          <span className="shrink-0 animate-fade-in text-xs text-success">
-            {saveMsg}
-          </span>
-        )}
         <Button size="sm" className="shrink-0" disabled={!dirty} onClick={() => void saveSettings()}>
           保存
         </Button>
