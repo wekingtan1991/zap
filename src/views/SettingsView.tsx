@@ -3,7 +3,7 @@
 /// 热键录制 hook、账号库备份域在 settings/ 目录——接口/保存链路变更时主干
 /// 与对应分区各改一处。更新区消费 AppView 传入的 useUpdater 状态机。
 /// 挂载即拉取设置，卸载即停热键钩子——开关状态由父级 view 状态机决定
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "sonner";
@@ -47,14 +47,17 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   // ---------- 脏态保护（评审 P1-03） ----------
   // 基线快照（挂载到齐 / 保存成功后写）：设置 + 捷径整体 JSON 化对比。
   // 序列化必须走 settingsSnapshot——曾因基线与 dirty 两处字面量键名不一致
-  // （sc/scList）恒脏（真机实测发现），见 settings/dirty.ts
-  const baselineRef = useRef<string | null>(null);
+  // （sc/scList）恒脏（真机实测发现），见 settings/dirty.ts。
+  // 必须是 state 而非 ref：dirty 是渲染期派生值，Esc/返回闭包与保存键 disabled
+  // 消费的都是上一帧的 dirty——ref 写入不触发渲染，干净保存（无任何错误态
+  // 翻转）全程零 setState，闭包里 dirty 恒为旧值 true，Esc 必弹「未保存」确认
+  // （2026-11-02 真机实测复现：改主题→保存→Esc 仍弹窗）；state 写入驱动
+  // 重渲染，dirty 才会真正归零
+  const [baseline, setBaseline] = useState<string | null>(null);
   /// Esc 触发的退出确认条（有未保存更改时拦截，防静默丢弃）
   const [exitConfirm, setExitConfirm] = useState(false);
   const dirty =
-    !!st &&
-    baselineRef.current !== null &&
-    settingsSnapshot(st, scList) !== baselineRef.current;
+    !!st && baseline !== null && settingsSnapshot(st, scList) !== baseline;
 
   // ---------- 账号库备份：分区+弹窗+流程内聚在 VaultBackupSection（审计 E1） ----------
   // bkOpen 镜像弹窗开合：备份弹窗存活时本页 Esc 让位（弹窗组件自管关弹窗，
@@ -72,7 +75,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         const normalized = normalizeSettings(res);
         setSt(normalized);
         setScList(sc);
-        baselineRef.current = settingsSnapshot(normalized, sc);
+        setBaseline(settingsSnapshot(normalized, sc));
       })
       .catch(() => {});
     // 版本号异步读取（tauri.conf.json 的 version），失败时留空
@@ -168,7 +171,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           await invoke<AppSettings>("get_app_settings")
         );
         setSt(fresh);
-        baselineRef.current = settingsSnapshot(fresh, scList);
+        setBaseline(settingsSnapshot(fresh, scList));
       } else {
         setHkError("");
         // 保存成功反馈统一走全局 toast（与各分区导出/导入/清空同形式），
@@ -176,8 +179,11 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         toast.success("已保存");
         // 保存成功即对齐基线（本次提交的 st/scList 就是权威值）：dirty 归零、
         // 保存键置灰、Esc 直接退出。此前基线只在热键错误分支写，保存成功后
-        // 仍算脏、Esc 依旧弹确认（真机实测发现）
-        baselineRef.current = settingsSnapshot(st, scList);
+        // 仍算脏、Esc 依旧弹确认（真机实测发现）。
+        // 顺带撤掉可能已弹出的退出确认条：Esc 与在途保存竞速时先见了弹窗，
+        // 保存成功落地后「有未保存更改」的前提已不成立
+        setBaseline(settingsSnapshot(st, scList));
+        setExitConfirm(false);
       }
     } catch (e) {
       setHkError(String(e));
