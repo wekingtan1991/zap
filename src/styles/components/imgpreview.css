@@ -13,19 +13,37 @@
   flex: 1;
 }
 
-/* 舞台：中性底色，小图居中不放大；底部留出操作条的高度，
-   图片永不与悬浮条重叠 */
+/* 舞台：中性底色的纯容器；缩放视口绝对内缩铺内容区（14 呼吸 + 底部 56
+   让位操作条），图片永不与悬浮条重叠 */
 .zap-imgprev-stage {
   position: relative;
   flex: 1;
   min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 14px 14px 56px;
   border-radius: 10px;
   background: var(--zap-w-03);
   border: 1px solid var(--zap-w-07);
+}
+
+/* 缩放视口：overflow hidden + 平移 no-gap 夹紧，放大后的图永不溢出舞台；
+   touch-action none 让指针拖拽不被浏览器手势吃掉 */
+.zap-imgprev-view {
+  position: absolute;
+  inset: 14px 14px 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+/* 放大后可拖拽平移的指针态；fit（1 倍）态图像完整可见，保持默认箭头 */
+.zap-imgprev-view.zoomed {
+  cursor: grab;
+}
+
+.zap-imgprev-view.dragging {
+  cursor: grabbing;
 }
 
 /* 悬浮玻璃操作条：半透明暗底 + 背景模糊 + 发丝线，看图器惯例的
@@ -66,14 +84,47 @@
   background: rgba(255, 255, 255, 0.28);
 }
 
-/* 画布：img 盒在 max 约束下与渲染像素恒等比贴合（不 letterbox），
-   棋盘格只出现在图片背后、透明通道可辨认（中灰格子暗/浅主题通用）；
-   描边+投影把画布从舞台上托出来，白底截图与浅色舞台也有边界 */
+/* 缩放三件组：细线分隔与动作键区隔开；百分比标签即「回适应」重置钮，
+   tabular 定宽避免数字跳动挤动条形 */
+.zap-imgprev-zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.zap-imgprev-zoom-label {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-width: 46px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.zap-imgprev-zoom-label:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+/* 画布：img 盒在 max 约束下与渲染像素恒等比贴合（不 letterbox）——这是
+   fit 基准尺寸，缩放靠 transform（布局盒不变，fit 测量始终有效）；
+   pointer-events none 让滚轮/拖拽事件全部落在视口上（img 不截事件、
+   不触发原生拖图）；棋盘格只出现在图片背后、透明通道可辨认（中灰格子
+   暗/浅主题通用）；描边+投影把画布从舞台上托出来，白底截图与浅色舞台
+   也有边界 */
 .zap-imgprev-stage img {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
   display: block;
+  pointer-events: none;
   border-radius: 6px;
   border: 1px solid var(--zap-w-07);
   background:
