@@ -96,7 +96,7 @@
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   pointer-events: none;
   color: var(--zap-warn);
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: 1px;
   white-space: nowrap;
@@ -121,9 +121,9 @@
   flex-shrink: 0;
   padding: 1px 7px;
   border-radius: 999px;
-  border: 1px solid rgba(239, 68, 68, 0.4);
-  background: rgba(239, 68, 68, 0.12);
-  color: #f87171;
+  border: 1px solid var(--zap-err-soft);
+  background: var(--zap-err-bg);
+  color: var(--zap-err);
   font-size: 11px;
   white-space: nowrap;
 }
@@ -167,7 +167,7 @@ html.zap-stagedrop-doc #root {
   border: 1px solid var(--zap-w-10);
   border-radius: 12px;
   color: var(--zap-fg-soft2);
-  font-size: 12.5px;
+  font-size: 13px;
   transition:
     border-color 0.14s ease,
     background-color 0.14s ease;
@@ -216,7 +216,7 @@ html.zap-stagedrop-doc #root {
 }
 
 .zap-stagedrop-title {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.5px;
 }

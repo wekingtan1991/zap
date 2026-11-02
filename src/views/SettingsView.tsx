@@ -212,7 +212,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           返回（Esc）
         </Button>
       </div>
-      <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-[22px] pb-3 pt-2.5">
+      <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-[18px] pb-3 pt-2.5">
         <StartupSection
           st={st}
           setSt={setSt}
@@ -233,7 +233,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         <UpdateSection updater={updater} appVersion={appVersion} />
         <AboutSection />
       </div>
-      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-[22px] py-1.5">
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-[18px] py-1.5">
         <Button size="sm" className="shrink-0" disabled={!dirty} onClick={() => void saveSettings()}>
           保存
         </Button>

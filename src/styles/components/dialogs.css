@@ -73,7 +73,7 @@
 }
 
 .zap-bk-err {
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--zap-err);
 }
@@ -97,7 +97,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 3px 5px;
-  border-radius: 5px;
+  border-radius: 6px;
 }
 
 .zap-bk-row:hover {
@@ -127,7 +127,7 @@
 
 .zap-bk-badge {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
   border-radius: 999px;
   background: rgba(var(--zap-accent-rgb), 0.15);

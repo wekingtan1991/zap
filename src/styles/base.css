@@ -53,6 +53,14 @@ body {
   background: transparent;
 }
 
+/* 键盘焦点兜底：shadcn 组件（data-slot 标记）自带 focus ring；原生 button
+   （右键菜单项/底栏合并按钮/热键键帽/JSON 折叠钮/错误页重载）走浏览器默认
+   outline，与组件库焦点观感不一——统一琥珀 ring */
+button:focus-visible:not([data-slot]) {
+  outline: 2px solid rgba(var(--zap-accent-rgb), 0.6);
+  outline-offset: 2px;
+}
+
 /* 尊重系统的"减少动态效果"偏好 */
 @media (prefers-reduced-motion: reduce) {
   *,

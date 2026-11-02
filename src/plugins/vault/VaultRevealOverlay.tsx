@@ -66,7 +66,7 @@ export function VaultRevealOverlay({ reveal, onClose, focusRef }: Props) {
           <Input
             autoFocus
             readOnly
-            className="zap-pw-reveal h-12 border-0 bg-transparent px-0 font-mono text-[17px] tracking-[0.2em] text-primary shadow-none"
+            className="zap-pw-reveal h-12 border-0 bg-transparent px-0 font-mono text-[16px] tracking-[0.2em] text-primary shadow-none"
             value={reveal.password}
             onFocus={(e) => e.currentTarget.select()}
             onContextMenu={(e) => e.preventDefault()}

@@ -64,10 +64,10 @@ export function HotkeyButton({
         onClick={onRecord}
       >
         {recording ? (
-          <span className="text-[12.5px]">按下新组合…（Esc 取消）</span>
+          <span className="text-[13px]">按下新组合…（Esc 取消）</span>
         ) : (
           <>
-            <b className="font-mono text-[12.5px] font-medium">
+            <b className="font-mono text-[13px] font-medium">
               {value ? formatHotkey(value) : "未绑定"}
             </b>
             <span className="text-[11px] text-muted-foreground">点击录制</span>

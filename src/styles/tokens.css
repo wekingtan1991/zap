@@ -6,6 +6,10 @@
    ============================================================ */
 :root {
   --radius: 0.5rem;
+  /* ---------- 字号阶梯（唯一允许档）：11 / 12 / 13 / 14 / 16 ----------
+     正文 14（base.css body）；孤档与半像素档已收敛归位：
+     10→11、10.5→11、11.5→12、12.5→13、15→16、17→16。
+     新增文本先对表取档，不引入新值 */
   --background: #181a1f;
   --foreground: #e8eaed;
   --card: rgba(255, 255, 255, 0.07);
@@ -44,11 +48,11 @@
   --zap-fg-mid: #d1d5db;
   --zap-fg-mute: #9aa1ad;
   --zap-fg-mute2: #8a8f98;
-  --zap-fg-dim: #6b7280;
-  --zap-fg-faint: #4b5563;
+  --zap-fg-dim: #838892;
+  --zap-fg-faint: #666c76;
   --zap-fg-soft: #b6bac1;
   --zap-fg-soft2: #c9ccd2;
-  --zap-fg-ph: #5f6368;
+  --zap-fg-ph: #7a7f88;
   /* 白系发丝线/表面（按 alpha 分档） */
   --zap-w-025: rgba(255, 255, 255, 0.025);
   --zap-w-03: rgba(255, 255, 255, 0.03);
@@ -114,11 +118,11 @@
   --zap-fg-mid: #1f2937;
   --zap-fg-mute: #4b5563;
   --zap-fg-mute2: #4b5563;
-  --zap-fg-dim: #6b7280;
-  --zap-fg-faint: #9ca3af;
+  --zap-fg-dim: #4b5563;
+  --zap-fg-faint: #6b7280;
   --zap-fg-soft: #4b5563;
   --zap-fg-soft2: #6b7280;
-  --zap-fg-ph: #9ca3af;
+  --zap-fg-ph: #6b7280;
   --zap-w-025: rgba(17, 24, 39, 0.045);
   --zap-w-03: rgba(17, 24, 39, 0.05);
   --zap-w-04: rgba(17, 24, 39, 0.06);
