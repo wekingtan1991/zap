@@ -10,6 +10,7 @@ describe("kindUi 注册表", () => {
       clip: "剪贴板",
       clipimg: "图片",
       file: "文件",
+      folder: "文件夹",
       win: "窗口",
       recent: "最近",
       settings: "设置",
@@ -33,6 +34,7 @@ describe("kindUi 注册表", () => {
       "clip",
       "clipimg",
       "file",
+      "folder",
       "win",
       "recent",
       "settings",
@@ -79,6 +81,9 @@ describe("kindUi 注册表", () => {
       ["copy_path", "复制路径"],
     ]);
     expect(kindUi("file")?.ctxActions).toEqual(kindUi("recent")?.ctxActions);
+    // 文件夹同族：与 file 完全同菜单（放入中转站/所在文件夹/复制路径），
+    // 仅徽标文案区分（激活走 open_item 目录分支 explorer 直开）
+    expect(kindUi("folder")?.ctxActions).toEqual(kindUi("file")?.ctxActions);
     // 剪贴板：仅复制（不粘贴）+ 固定 + 删除（敏感内容误入库的单条补救）；
     // 窗口：关闭
     expect(kindUi("clip")?.ctxActions).toEqual([

@@ -97,6 +97,18 @@ const REGISTRY: Record<string, KindUi> = {
       ["copy_path", "复制路径"],
     ],
   },
+  // 文件夹：Everything 结果按 type 字段分流（files.rs），与 file 同族配色、
+  // 文案区分；激活走 open_item 目录分支（explorer 直开——open crate 的目录
+  // API 本机实测静默失效，不依赖它）
+  folder: {
+    label: "文件夹",
+    badge: "file",
+    ctxActions: [
+      ["stage_add", "放入中转站"],
+      ["reveal", "打开所在文件夹"],
+      ["copy_path", "复制路径"],
+    ],
+  },
   win: {
     label: "窗口",
     badge: "win",

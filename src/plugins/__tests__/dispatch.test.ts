@@ -33,7 +33,7 @@ describe("routeItem（runItem 的分发决策）", () => {
   });
 
   it("外发 kind 落 openExternal", () => {
-    for (const kind of ["app", "clip", "file", "win", "recent", "settings", "web", "url"]) {
+    for (const kind of ["app", "clip", "file", "folder", "win", "recent", "settings", "web", "url"]) {
       const route = routeItem(item({ kind }));
       expect(route.type, kind).toBe("external");
     }

@@ -422,8 +422,8 @@ function AppView() {
       if (!it) return;
       const allow: Record<typeof action, string[]> = {
         admin: ["app"],
-        reveal: ["app", "file", "recent"],
-        copy_path: ["app", "file", "recent", "web", "url"],
+        reveal: ["app", "file", "folder", "recent"],
+        copy_path: ["app", "file", "folder", "recent", "web", "url"],
         clip_copy: ["clip"],
         close_window: ["win"],
       };

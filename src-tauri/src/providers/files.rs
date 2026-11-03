@@ -169,33 +169,39 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
         mark_failed();
         return Vec::new();
     };
-    let items: Vec<SearchItem> = results
+    results
         .iter()
-        .filter_map(|r| {
-            let name = r.get("name")?.as_str()?.to_string();
-            let dir = r.get("path")?.as_str()?.to_string();
-            Some((name, dir))
-        })
         .enumerate()
-        .map(|(i, (name, dir))| {
-            let full = if dir.ends_with('\\') {
-                format!("{dir}{name}")
-            } else {
-                format!("{dir}\\{name}")
-            };
-            SearchItem {
-                id: format!("file:{i}"),
-                title: name,
-                subtitle: dir,
-                kind: "file".into(),
-                target: full,
-                icon: None,
-                pinned: false,
-                score: 45.0 - i as f32,
-            }
-        })
-        .collect();
-    items
+        .filter_map(|(i, r)| item_from_result(r, i))
+        .collect()
+}
+
+/// 单条 Everything 结果 → 搜索条目（纯函数，可测）。kind 按 JSON 的 `type`
+/// 字段分流 folder/file（本机探针实证 1.4 的 ?json=1 稳定携带 `"type":"folder"`）；
+/// 字段缺失（旧版/改版）时回退本地 is_dir 探测，防静默全归「文件」
+fn item_from_result(r: &serde_json::Value, i: usize) -> Option<SearchItem> {
+    let name = r.get("name")?.as_str()?.to_string();
+    let dir = r.get("path")?.as_str()?.to_string();
+    let full = if dir.ends_with('\\') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}\\{name}")
+    };
+    let is_folder = match r.get("type").and_then(serde_json::Value::as_str) {
+        Some("folder") => true,
+        Some("file") => false,
+        _ => std::path::Path::new(&full).is_dir(),
+    };
+    Some(SearchItem {
+        id: format!("file:{i}"),
+        title: name,
+        subtitle: dir,
+        kind: if is_folder { "folder" } else { "file" }.into(),
+        target: full,
+        icon: None,
+        pinned: false,
+        score: 45.0 - i as f32,
+    })
 }
 
 /// 全盘文件源插件适配（Everything HTTP）。搜索热路径上含 250ms 超时的网络请求，
@@ -210,7 +216,30 @@ impl super::plugin::Plugin for FilesPlugin {
 
 #[cfg(test)]
 mod tests {
-    use super::auth_from_ini;
+    use super::{auth_from_ini, item_from_result};
+
+    #[test]
+    fn 结果条目按type分流文件夹与文件() {
+        // 实机响应形态（探针）：type 字段区分 folder/file
+        let folder = serde_json::json!({"name":"下载","path":"E:\\迅雷下载","type":"folder"});
+        let it = item_from_result(&folder, 0).unwrap();
+        assert_eq!(it.kind, "folder");
+        assert_eq!(it.target, "E:\\迅雷下载\\下载");
+        assert_eq!(it.score, 45.0);
+
+        let file = serde_json::json!({"name":"a.png","path":"C:\\pics","type":"file"});
+        assert_eq!(item_from_result(&file, 1).unwrap().kind, "file");
+
+        // type 缺失/为 null 回退 is_dir：C:\ 必然是目录，随机名必然不存在
+        let no_type_dir = serde_json::json!({"name":".","path":"C:\\","type":null});
+        assert_eq!(
+            item_from_result(&no_type_dir, 2).unwrap().kind,
+            "folder",
+            "type 缺失时按本地 is_dir 探测"
+        );
+        let no_type_missing = serde_json::json!({"name":"zap-no-such-thing-xyz","path":"C:\\"});
+        assert_eq!(item_from_result(&no_type_missing, 3).unwrap().kind, "file");
+    }
 
     #[test]
     fn 凭证提取两键齐备才算() {

@@ -581,7 +581,7 @@ pub(crate) fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> 
     // 粘贴前的等待（焦点回落最长 ~600ms）不能压在这里
     let mut paste_started = false;
     let result = match item.kind.as_str() {
-        "app" | "recent" | "file" | "stage" => {
+        "app" | "recent" | "file" | "folder" | "stage" => {
             // 启动计数（frecency 排序依据）：仅应用类，按 target 路径累计。
             // DB 写压 spawn_blocking（评审 P1-07）——frecency 无即时性要求，
             // 不占用同步命令的主线程窗口
@@ -594,6 +594,16 @@ pub(crate) fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> 
             }
             if item.target.starts_with("shell:") {
                 // UWP/商店应用：explorer 接管 shell:AppsFolder\<AUMID>
+                let _ = std::process::Command::new("explorer")
+                    .arg(&item.target)
+                    .spawn();
+                Ok(())
+            } else if std::path::Path::new(&item.target).is_dir() {
+                // 文件夹（含中转站里的目录条目）直开：不用 open crate 的目录
+                // 分支——其 SHOpenFolderAndSelectItems 在本机实测静默 no-op 却
+                // 返回 Ok（探针实证：同路径 start/explorer 正常），且语义是
+                // 「父窗口里选中」而非「打开本目录」。explorer 直开 = 以目录
+                // 为根的窗口，与上方 shell: 分支同构
                 let _ = std::process::Command::new("explorer")
                     .arg(&item.target)
                     .spawn();
