@@ -30,6 +30,10 @@ urlencoding = "2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 clipboard-master = "4.0.0"
 arboard = "3.6.1"
+# Everything 官网便携版下载用（everything.rs blocking 客户端）。
+# 注（2026-11-04 评审 R15 实证）：default-tls 特性名有误导——cargo tree 里
+# 无 native-tls/schannel，实际解析走 rustls（rustls-platform-verifier +
+# ring/aws-lc 双密码后端，aws-lc-sys 经 cmake 构建）
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "default-tls"] }
 base64 = "0.23.1"
 pinyin = "0.11.0"

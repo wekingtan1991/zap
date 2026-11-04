@@ -489,3 +489,62 @@ pub(crate) async fn transparency_set(
         if enable { "1" } else { "0" },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 线协议键集快照（2026-11-04 评审 R13 P1）：AppSettingsDto 的 serde 键是
+    /// 前端 normalizeSettings 的输入，后端键名漂移会让缺键被前端默认值静默
+    /// 兜底（dirty.test.ts 实证该兜底行为）——键集一动此处先红，提醒同步
+    /// 前端类型与设置页字段。
+    #[test]
+    fn appsettingsdto_键集快照() {
+        let dto = AppSettingsDto {
+            hotkey: String::new(),
+            vault_hotkey: String::new(),
+            clip_hotkey: String::new(),
+            superpanel_hotkey: String::new(),
+            stage_hotkey: String::new(),
+            clip_enabled: false,
+            clip_max: 0,
+            clip_autopaste: true,
+            stage_max: 0,
+            stagedrop_enabled: true,
+            stagedrop_open_panel: false,
+            stagedrop_position: String::new(),
+            pwd_clear_secs: 0,
+            autostart: false,
+            everything_autostart: false,
+            appearance: String::new(),
+            panel_transparency: false,
+            plugins: Vec::new(),
+        };
+        let obj = serde_json::to_value(&dto).unwrap();
+        let mut keys: Vec<String> = obj.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "appearance",
+                "autostart",
+                "clipAutopaste",
+                "clipEnabled",
+                "clipHotkey",
+                "clipMax",
+                "everythingAutostart",
+                "hotkey",
+                "panelTransparency",
+                "plugins",
+                "pwdClearSecs",
+                "stageHotkey",
+                "stageMax",
+                "stagedropEnabled",
+                "stagedropOpenPanel",
+                "stagedropPosition",
+                "superpanelHotkey",
+                "vaultHotkey",
+            ]
+        );
+    }
+}

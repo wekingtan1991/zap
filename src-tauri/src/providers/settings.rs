@@ -237,4 +237,22 @@ mod tests {
         assert_eq!(item.target, "ms-settings:display");
         assert_eq!(item.kind, "settings");
     }
+
+    /// 安全闸门直接测试（2026-11-04 评审 R13 P1）：open_item 的 settings 分支
+    /// 把 target 拼进 `cmd /C start`，本白名单是唯一防线——此前零直接测试，
+    /// 只被 search 的间接路径覆盖
+    #[test]
+    fn 已知设置项放行未知值拒绝() {
+        // 表内值：协议 URI 与经典工具名各抽几枚（含 search 侧实证过的两枚）
+        assert!(is_known_target("ms-settings:display"));
+        assert!(is_known_target("appwiz.cpl"));
+        assert!(is_known_target("taskmgr"));
+        assert!(is_known_target("regedit"));
+        // 表外值：大小写变形 / 拼接注入 / 空串 / 任意可执行名一律拒绝
+        assert!(!is_known_target("ms-settings:Display"));
+        assert!(!is_known_target("ms-settings:display & calc"));
+        assert!(!is_known_target("appwiz.cpl & calc"));
+        assert!(!is_known_target(""));
+        assert!(!is_known_target("evil.exe"));
+    }
 }
