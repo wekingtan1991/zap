@@ -94,7 +94,10 @@ pub fn resolve_paths(paths: &[String]) -> Vec<Result<(String, bool), String>> {
 /// 锁内提交放入：逐条入库（个别失败不影响其余），返回新增数/总数/失败明细。
 /// 整批包一个事务（评审 P1-07）：逐条 autocommit 时 N 条放入 = N 次独立
 /// fsync，中途断电/被杀会留下「放了一半」的库存态。单条语句失败在事务内
-/// 只回滚自身不牵连其余，「个别失败不影响其余」语义保持
+/// 只回滚自身不牵连其余，「个别失败不影响其余」语义保持。
+/// BEGIN/COMMIT 失败不再吞（2026-11-04 评审 R8 P2）：BEGIN 失败（如 16MB
+/// 大图长事务占锁 1.5s busy 超时）留痕后降级逐条 autocommit——整批语义
+/// 退化为尽力而为但不再无声；COMMIT 失败回滚防悬挂事务毒化后续操作
 pub fn commit_add(
     conn: &Connection,
     resolved: Vec<Result<(String, bool), String>>,
@@ -104,7 +107,31 @@ pub fn commit_add(
         total: 0,
         failed: Vec::new(),
     };
-    let _ = conn.execute_batch("BEGIN IMMEDIATE");
+    if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+        super::diag::log_warn(&format!("stage\tBEGIN 失败，降级逐条入库\t{e}"));
+    } else {
+        for r in &resolved {
+            if let Ok((p, is_dir)) = r {
+                match insert_one(conn, p, *is_dir) {
+                    Ok(is_new) => outcome.added += i64::from(is_new),
+                    Err(e) => outcome.failed.push(e),
+                }
+            } else if let Err(e) = r {
+                outcome.failed.push(e.clone());
+            }
+        }
+        if let Err(e) = conn.execute_batch("COMMIT") {
+            super::diag::log_err(&format!("stage\tCOMMIT 失败，回滚整批\t{e}"));
+            let _ = conn.execute_batch("ROLLBACK");
+            outcome.added = 0;
+            outcome.failed.push(format!("整批放入失败（已回滚）：{e}"));
+            outcome.total = count(conn);
+            return outcome;
+        }
+        outcome.total = count(conn);
+        return outcome;
+    }
+    // BEGIN 失败的降级路径：逐条 autocommit（原吞错行为，现仅作为留痕降级）
     for r in resolved {
         match r {
             Ok((p, is_dir)) => match insert_one(conn, &p, is_dir) {
@@ -114,7 +141,6 @@ pub fn commit_add(
             Err(e) => outcome.failed.push(e),
         }
     }
-    let _ = conn.execute_batch("COMMIT");
     outcome.total = count(conn);
     outcome
 }
@@ -232,17 +258,24 @@ pub fn finish(rows: Vec<StageRowData>) -> Vec<StageRecord> {
 
 /// 图标缓存：普通文件按扩展名一份（txt/pdf 等展示类型图标即可），目录统一
 /// 一份；可执行类（exe/lnk 等）每个文件图标各异（用户拖入的应用要显示
-/// 自己的图标，不是首个样本的），按路径缓存——条目量受 stage 容量约束，
-/// data URL 均值 ~2KB 量级，无膨胀之虞
+/// 自己的图标，不是首个样本的），按 路径+mtime 缓存。上限护栏整体清空
+/// （2026-11-04 评审 R1）：容量淘汰只删库行不删缓存条目，无上限 = 被移出
+/// 条目的图标永久驻留缓慢泄漏
 static ICON_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Option<String>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 缓存条目上限：越限整体清空（图标重提取毫秒级、按需惰性重建，同
+/// sysutil PID_STEMS 口径）
+const ICON_CACHE_CAP: usize = 2048;
 
 /// 可执行类扩展名：图标随文件而异，缓存键退化为完整路径（小写归一）
 fn icon_is_per_file(ext: &str) -> bool {
     matches!(ext, "exe" | "lnk" | "msi" | "com" | "bat" | "cmd" | "scr")
 }
 
-/// 缓存键：目录固定 "/"；可执行类按路径，其余按扩展名
+/// 缓存键：目录固定 "/"；可执行类按 路径+mtime（2026-11-04 评审 R1：应用
+/// 更新后图标自动失效，与 apps.rs 索引缓存同口径；mtime 不可读退化纯路径，
+/// 提取失败本就不缓存故无害），其余按扩展名
 fn icon_cache_key(path: &str, is_dir: bool) -> String {
     if is_dir {
         return "/".to_string();
@@ -252,7 +285,18 @@ fn icon_cache_key(path: &str, is_dir: bool) -> String {
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     if icon_is_per_file(&ext) {
-        path.to_lowercase()
+        match std::fs::metadata(path).and_then(|md| md.modified()) {
+            Ok(t) => {
+                let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                format!(
+                    "{}|{}|{}",
+                    path.to_lowercase(),
+                    d.as_secs(),
+                    d.subsec_nanos()
+                )
+            }
+            Err(_) => path.to_lowercase(),
+        }
     } else {
         ext
     }
@@ -292,6 +336,9 @@ fn icon_for(path: &str, is_dir: bool) -> Option<String> {
     if let Some(data) = icon.clone()
         && let Ok(mut cache) = ICON_CACHE.lock()
     {
+        if cache.len() >= ICON_CACHE_CAP {
+            cache.clear();
+        }
         cache.entry(key).or_insert(Some(data));
     }
     icon

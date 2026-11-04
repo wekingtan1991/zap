@@ -53,17 +53,21 @@ pub(crate) async fn everything_status() -> Result<String, String> {
 /// 未安装不自动下载（留给面板里的手动入口）；失败 5 分钟内不重复尝试。
 #[tauri::command]
 pub(crate) async fn everything_ensure(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let auto = state
-        .engine
-        .get_setting(crate::providers::appconfig::KEY_EVERYTHING_AUTOSTART)
-        .map(|v| v != "0")
-        .unwrap_or(crate::providers::appconfig::DEFAULT_EVERYTHING_AUTOSTART);
-    if !auto {
-        return Ok("disabled".into());
-    }
-    tauri::async_runtime::spawn_blocking(crate::providers::everything::ensure)
-        .await
-        .map_err(|e| e.to_string())
+    // 设置读取一并压进阻塞线程（2026-11-04 评审 R4 P2）：get_setting 抢
+    // conn 锁不做在 tokio worker 上
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let auto = engine
+            .get_setting(crate::providers::appconfig::KEY_EVERYTHING_AUTOSTART)
+            .map(|v| v != "0")
+            .unwrap_or(crate::providers::appconfig::DEFAULT_EVERYTHING_AUTOSTART);
+        if !auto {
+            return Ok("disabled".into());
+        }
+        Ok(crate::providers::everything::ensure())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -466,11 +470,15 @@ pub(crate) async fn vault_backup_export(
 /// 账号库上次成功导出的 Unix 毫秒（0 = 从未备份）：设置页备份提醒的事实源
 #[tauri::command]
 pub(crate) async fn vault_last_export_at(state: tauri::State<'_, AppState>) -> Result<i64, String> {
-    Ok(state
-        .engine
-        .get_setting(crate::providers::appconfig::KEY_VAULT_LAST_EXPORT)
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0))
+    // spawn_blocking（2026-11-04 互验 V1 P3）：get_setting 抢 conn 锁不做在
+    // tokio worker 上——备份导出长锁时会拖住整个命令系统
+    let engine = state.engine.clone();
+    blocking!(
+        engine
+            .get_setting(crate::providers::appconfig::KEY_VAULT_LAST_EXPORT)
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+    )
 }
 
 /// 解密备份文件为预览（条目 + 疑似重复标记，恢复前交前端确认）
