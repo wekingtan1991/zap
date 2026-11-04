@@ -116,6 +116,12 @@ pub fn decrypt_backup(content: &str, passphrase: &str) -> Result<Vec<BackupEntry
     }
     let salt = b64_decode(&env.salt)?;
     let nonce = b64_decode(&env.nonce)?;
+    // 长度先行校验（2026-11-04 P2）：Nonce::from_slice 对非 12 字节直接 panic，
+    // panic=abort 下打开一个损坏/恶意 .zapvault 会崩整个应用——收编为与
+    // 「口令错误或文件已损坏」同款报错，不区分（防枚举试探口径不变）
+    if nonce.len() != NONCE_LEN {
+        return Err("口令错误或文件已损坏".to_string());
+    }
     let ct = b64_decode(&env.ct)?;
     let key = derive_key(passphrase, &salt);
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
@@ -194,5 +200,24 @@ mod tests {
         assert!(decrypt_backup("hello world", "x").is_err());
         assert!(decrypt_backup("{\"v\":2}", "x").is_err(), "版本不符应拒绝");
         assert!(encrypt_backup(&sample(), "").is_err(), "空口令应拒绝");
+    }
+
+    /// 恶意/损坏信封不得 panic（2026-11-04 P2）：Nonce::from_slice 对非 12 字节
+    /// 原生 panic，panic=abort 下即崩整个应用；修后必须走统一报错
+    #[test]
+    fn 非法_nonce_长度报错不崩() {
+        let file = encrypt_backup(&sample(), "正确口令").unwrap();
+        let env: BackupEnvelope = serde_json::from_str(&file).unwrap();
+        let bad = serde_json::to_string(&BackupEnvelope {
+            v: env.v,
+            kdf: env.kdf.clone(),
+            iter: env.iter,
+            salt: env.salt.clone(),
+            nonce: b64_encode(&[0u8; 4]), // 长度不足 12
+            ct: env.ct.clone(),
+        })
+        .unwrap();
+        let err = decrypt_backup(&bad, "正确口令").unwrap_err();
+        assert!(err.contains("口令错误"), "实际：{err}");
     }
 }

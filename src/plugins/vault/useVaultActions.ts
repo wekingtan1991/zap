@@ -214,7 +214,10 @@ export function useVaultActions(deps: VaultActionsDeps) {
       try {
         const msg = await invoke<string>("vault_action", {
           id,
-          action: field === "totp" ? "totp_copy" : field,
+          // 复制流动作映射：TOTP 走 totp_copy（受保护复制）、网址走 url_copy
+          //（"url" 是打开网址流的返回契约，不能混用）
+          action:
+            field === "totp" ? "totp_copy" : field === "url" ? "url_copy" : field,
         });
         toast.success(msg);
         return true;

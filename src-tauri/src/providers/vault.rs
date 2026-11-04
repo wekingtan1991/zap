@@ -380,8 +380,24 @@ pub fn action(
                     r.get(0)
                 })
                 .map_err(|e| e.to_string())?;
+            // 返回网址本身：前端「打开网址」流拿它作 open_item 的 target
+            //（与 "url_copy" 是两个消费方，2026-11-04 P1 拆分）
             bump(conn);
             Ok(url)
+        }
+        "url_copy" => {
+            let url: String = conn
+                .query_row("SELECT url FROM accounts WHERE id=?1", params![id], |r| {
+                    r.get(0)
+                })
+                .map_err(|e| e.to_string())?;
+            // 详情页网址行一键复制（2026-11-04 P1）：原实现无复制动作，前端
+            // 把网址当成功消息 toast 且亮 ✓，粘贴到的是旧剪贴板内容——
+            // README 明确承诺此功能
+            super::clipboard::begin_self_copy();
+            copy_text_private(&url)?;
+            bump(conn);
+            Ok("网址已复制".into())
         }
         "notes" => {
             // 详情页备注行的一键复制：同样抑制剪贴板历史（备注可能含敏感信息）
@@ -851,6 +867,14 @@ mod crud_tests {
             return;
         };
         assert_eq!(notes_msg, "备注已复制");
+        // 网址行一键复制（2026-11-04 P1）：复制流走 "url_copy"，返回反馈
+        // 文案；"url" 保持返回网址本身（打开流契约）
+        let Some(url_msg) = copy_action(&conn, 1, "url_copy") else {
+            eprintln!("跳过：系统剪贴板被长期占用，写剪贴板断言无法执行");
+            return;
+        };
+        assert_eq!(url_msg, "网址已复制");
+        assert_eq!(action(&conn, 1, "url", 0).unwrap(), "https://a.com");
         assert!(
             crate::providers::clipboard::in_suppress_window(),
             "账号库复制应抑制剪贴板历史"

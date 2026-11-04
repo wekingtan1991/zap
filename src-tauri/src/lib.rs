@@ -113,6 +113,15 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .on_window_event(|window, event| {
+            // Alt+F4 不销毁面板窗口（2026-11-04 评审 R20 P1）：main 窗被销毁而
+            // 进程存活 = 托盘/热键/二次启动全变无声 no-op 的半死态，唯一出路
+            // 是托盘退出。启动器语义下「关闭面板」就是隐藏，与 Esc 同效
+            if window.label() == WINDOW_LABEL
+                && let WindowEvent::CloseRequested { api, .. } = event
+            {
+                api.prevent_close();
+                hide_panel_window(window.app_handle());
+            }
             // 中转站拖拽落区：wry→tauri DragDrop 路径作为自有 IDropTarget 的
             // 兜底（主路径在 stagedrop.rs 的 StageDropTarget，替换了 wry 在该
             // 窗口的注册；两条路互斥不会双触发）
