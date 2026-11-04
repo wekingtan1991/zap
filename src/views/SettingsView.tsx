@@ -3,7 +3,7 @@
 /// 热键录制 hook、账号库备份域在 settings/ 目录——接口/保存链路变更时主干
 /// 与对应分区各改一处。更新区消费 AppView 传入的 useUpdater 状态机。
 /// 挂载即拉取设置，卸载即停热键钩子——开关状态由父级 view 状态机决定
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "sonner";
@@ -29,6 +29,7 @@ import {
 } from "./settings/useHotkeyRecording";
 import { normalizeSettings, settingsSnapshot } from "./settings/dirty";
 import { applyPanelTransparency } from "@/lib/appearance";
+import { useDialogA11y } from "@/hooks/useDialogA11y";
 import type { AppSettings, Shortcut } from "./settings/types";
 
 interface Props {
@@ -59,6 +60,8 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   const [baseline, setBaseline] = useState<string | null>(null);
   /// Esc 触发的退出确认条（有未保存更改时拦截，防静默丢弃）
   const [exitConfirm, setExitConfirm] = useState(false);
+  const exitDialogRef = useRef<HTMLDivElement | null>(null);
+  useDialogA11y(exitDialogRef, exitConfirm);
   const dirty =
     !!st && baseline !== null && settingsSnapshot(st, scList) !== baseline;
 
@@ -271,12 +274,14 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
       {exitConfirm && (
         <div className="zap-dialog-backdrop" onClick={() => setExitConfirm(false)}>
           <div
+            ref={exitDialogRef}
             className="zap-dialog"
             role="alertdialog"
             aria-modal="true"
+            aria-labelledby="settings-exit-confirm-text"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="zap-confirm-text">
+            <div className="zap-confirm-text" id="settings-exit-confirm-text">
               <TriangleAlert className="size-3.5" />
               有未保存的更改，确定放弃并退出？
             </div>

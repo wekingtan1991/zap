@@ -592,6 +592,8 @@ function AppView() {
         e.preventDefault();
         e.stopPropagation();
         setCtxMenu(null);
+        // 关菜单回焦输入框（R3 P1）：菜单项聚焦后关闭否则焦点掉 body
+        setTimeout(() => inputRef.current?.focus(), 0);
         return;
       }
       const inMenu =
@@ -1019,6 +1021,15 @@ function AppView() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
+          // combobox 语义（2026-11-04 评审 R3 P1）：免焦点 UI 的键盘面在
+          // window 捕获里，DOM 侧把 active state 翻译成 activedescendant
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="zap-results"
+          aria-activedescendant={
+            items.length > 0 && active >= 0 ? `zap-row-${active}` : undefined
+          }
+          aria-label={isVault ? "搜索账号" : "搜索"}
           placeholder={
             isVault ? "搜索账号…" : "搜索应用、文件、窗口、剪贴板…粘贴内容自动识别"
           }
@@ -1029,6 +1040,9 @@ function AppView() {
           size="icon"
           className="zap-gear size-7 text-muted-foreground/70 hover:text-foreground"
           title="设置（Ctrl+,）"
+          // icon-only 按钮的名称不能只靠 title（R3 P2：title 优先级最低，
+          // 各 SR 读法不一致）
+          aria-label="设置（Ctrl+,）"
           onClick={openSettings}
         >
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

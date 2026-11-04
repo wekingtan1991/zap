@@ -42,6 +42,12 @@ const ResultRow = React.memo(function ResultRow({
   return (
     <div
       ref={isActive ? activeItemRef : undefined}
+      id={`zap-row-${index}`}
+      role="option"
+      // 合并模式下选中语义让位给勾选（R3 P3）：active 高亮由输入框的
+      // aria-activedescendant 表达，两态不冲突
+      aria-selected={showMergeCheck ? mergeChecked : isActive}
+      aria-disabled={mergeDisabled || undefined}
       className={
         "zap-item" +
         (isActive ? " active" : "") +
@@ -111,7 +117,14 @@ export function ResultsList({
   actions,
 }: Props) {
   return (
-    <div className="zap-results" ref={resultsRef}>
+    <div
+      className="zap-results"
+      ref={resultsRef}
+      // combobox 的列表语义（2026-11-04 评审 R3 P1）：免焦点 UI 下键盘面
+      // 走 window 捕获，DOM 侧以 listbox/option + activedescendant 补位
+      role={items.length > 0 ? "listbox" : undefined}
+      aria-label={isVault ? "账号搜索结果" : "搜索结果"}
+    >
       {items.length === 0 ? (
         <div className="zap-empty">
           <span className="zap-empty-ico">

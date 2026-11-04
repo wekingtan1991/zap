@@ -96,25 +96,30 @@ export function SuperPanel({ text, actions }: Props) {
   });
 
   return (
-    <div
-      ref={rootRef}
-      className="zap-panel zap-super outline-none"
-      tabIndex={-1}
-    >
-      <div className="zap-super-head">
-        <Sparkles className="size-3 text-primary" />
-        <span className="truncate" title={text}>
-          {text || "已选内容"}
-        </span>
-      </div>
-      {actions.map((a, i) => (
-        <button
-          key={a.id}
-          type="button"
-          className={"zap-super-item" + (i === active ? " zap-super-active" : "")}
-          onMouseEnter={() => setActive(i)}
-          onClick={() => run(a.id)}
-        >
+      <div
+        ref={rootRef}
+        className="zap-panel zap-super outline-none"
+        tabIndex={-1}
+        // 动作菜单语义（R3 P3）：active 高亮此前仅 CSS class，SR 感知不到
+        role="menu"
+        aria-label="超级面板动作"
+      >
+        <div className="zap-super-head">
+          <Sparkles className="size-3 text-primary" />
+          <span className="truncate" title={text}>
+            {text || "已选内容"}
+          </span>
+        </div>
+        {actions.map((a, i) => (
+          <button
+            key={a.id}
+            type="button"
+            role="menuitem"
+            aria-current={i === active || undefined}
+            className={"zap-super-item" + (i === active ? " zap-super-active" : "")}
+            onMouseEnter={() => setActive(i)}
+            onClick={() => run(a.id)}
+          >
           <span className="zap-super-label">{a.label}</span>
           {done === a.id ? (
             <Check className="size-3.5 shrink-0 text-success" />

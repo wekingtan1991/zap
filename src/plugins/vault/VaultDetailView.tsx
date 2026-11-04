@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
@@ -22,6 +22,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useEscCapture } from "@/hooks/useEscCapture";
+import { useDialogA11y } from "@/hooks/useDialogA11y";
 
 /// 账号详情页数据（vault_get 的完整记录，密码为解密后明文，默认掩码展示）
 export interface VaultDetail {
@@ -75,6 +76,8 @@ export function VaultDetailView({
   const [showPw, setShowPw] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(initialConfirmDelete);
   const [copiedField, setCopiedField] = useState<CopyableField | null>(null);
+  const deleteDialogRef = useRef<HTMLDivElement | null>(null);
+  useDialogA11y(deleteDialogRef, confirmDelete);
 
   // 明文展示 30 秒自动掩码：焚除只清剪贴板，屏幕上的明文也要有兜底
   // （手动「隐藏」随时可用；每次点亮重新计时）
@@ -243,7 +246,11 @@ export function VaultDetailView({
                       className="text-muted-foreground hover:text-foreground"
                       disabled={!r.value}
                       onClick={() => doCopy(r.field)}
-                      aria-label={"复制" + r.label}
+                      aria-label={
+                        copiedField === r.field
+                          ? "已复制" + r.label
+                          : "复制" + r.label
+                      }
                     >
                       {copiedField === r.field ? (
                         <Check className="size-3.5 text-success animate-pop" />
@@ -321,12 +328,14 @@ export function VaultDetailView({
             onClick={() => setConfirmDelete(false)}
           >
             <div
+              ref={deleteDialogRef}
               className="zap-dialog"
               role="alertdialog"
               aria-modal="true"
+              aria-labelledby="vault-del-confirm-text"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="zap-confirm-text">
+              <div className="zap-confirm-text" id="vault-del-confirm-text">
                 <TriangleAlert className="size-3.5" />
                 删除后无法恢复，确认删除「{detail.title}」？
               </div>

@@ -5,7 +5,7 @@
 /// 文件对话框会抢主窗口焦点触发「失焦即隐」：期间一律 set_hold_panel 保前台。
 /// 弹窗存活时本组件自管 Esc（关弹窗并重置口令/预览），父级设置页 Esc 经
 /// onDialogOpenChange 让位（useEscCapture 的互斥 enabled 口径）
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { useEscCapture } from "@/hooks/useEscCapture";
+import { useDialogA11y } from "@/hooks/useDialogA11y";
 import { backupReminder } from "@/lib/vaultBackup";
 import { Section } from "./Section";
 
@@ -52,6 +53,8 @@ export function VaultBackupSection({
   const [bkSkip, setBkSkip] = useState(true);
   /// 上次成功导出的 Unix 毫秒（null = 尚未取到；0 = 从未备份）
   const [bkLast, setBkLast] = useState<number | null>(null);
+  const bkDialogRef = useRef<HTMLDivElement | null>(null);
+  useDialogA11y(bkDialogRef, bkDialog !== null);
 
   // 弹窗开合上报：父级设置页的 Esc 据此让位（互斥 enabled，无顺序耦合）
   useEffect(() => {
@@ -211,14 +214,16 @@ export function VaultBackupSection({
       {bkDialog && (
         <div className="zap-dialog-backdrop" onClick={closeBkDialog}>
           <div
+            ref={bkDialogRef}
             className="zap-dialog zap-bk-dialog"
             role="dialog"
             aria-modal="true"
+            aria-labelledby="bk-dialog-title"
             onClick={(e) => e.stopPropagation()}
           >
             {bkDialog.kind === "export" ? (
               <>
-                <div className="zap-bk-title">导出备份</div>
+                <div className="zap-bk-title" id="bk-dialog-title">导出备份</div>
                 <div className="zap-bk-desc">
                   全部账号将加密导出为一个 .zapvault 文件（PBKDF2 +
                   AES-256-GCM）。口令自行妥善保管，恢复时必须一致。
@@ -268,7 +273,7 @@ export function VaultBackupSection({
               </>
             ) : bkDialog.stage === "pass" ? (
               <>
-                <div className="zap-bk-title">导入恢复</div>
+                <div className="zap-bk-title" id="bk-dialog-title">导入恢复</div>
                 <div className="zap-bk-desc truncate" title={bkDialog.path}>
                   备份文件：{bkDialog.path}
                 </div>
@@ -311,7 +316,7 @@ export function VaultBackupSection({
                   : 0;
                 return (
                   <>
-                    <div className="zap-bk-title">确认恢复</div>
+                    <div className="zap-bk-title" id="bk-dialog-title">确认恢复</div>
                     <div className="zap-bk-desc">
                       解密成功：{bkPreview?.entries.length ?? 0} 条账号
                       {dupCount > 0 &&
@@ -342,11 +347,18 @@ export function VaultBackupSection({
                         <Checkbox
                           checked={bkSkip}
                           onCheckedChange={(v) => setBkSkip(v === true)}
+                          // label 包裹对 radix Checkbox（button）的名称计算
+                          // 不生效（R3 P2）：名称必须挂在控件自身
+                          aria-label="跳过疑似重复的条目（推荐）"
                         />
                         <span>跳过疑似重复的条目（推荐）</span>
                       </label>
                     )}
-                    {bkErr && <div className="zap-bk-err">{bkErr}</div>}
+                    {bkErr && (
+                      <div className="zap-bk-err" role="alert">
+                        {bkErr}
+                      </div>
+                    )}
                     {toWrite === 0 && dupCount > 0 && bkSkip && (
                       <div className="zap-bk-err">
                         全部条目均与现有账号疑似重复，无可恢复项
