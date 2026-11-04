@@ -371,14 +371,15 @@ impl SearchEngine {
     }
 
     /// 加密导出全部账号到备份文件，返回条目数。
-    /// 锁内只捞行（2026-11-04 P1）：DPAPI 逐条解密、60 万轮 PBKDF2 与写盘
-    /// 都必须在 conn 锁外——原先全程闭锁 ~400ms，期间 watcher 写库被挡会
-    /// 掉条、击键搜索全部排队。时间戳记录单独取一次连接（短持锁）
+    /// 两段式（2026-11-04 P1）：锁内只捞密文行；DPAPI 逐条解密、60 万轮
+    /// PBKDF2 与写盘全部在 conn 锁外——原先全程闭锁 ~400ms，期间 watcher
+    /// 写库被挡会掉条、击键搜索全部排队。时间戳记录单独取一次连接（短持锁）
     pub fn vault_backup_export(&self, path: &str, passphrase: &str) -> Result<usize, String> {
-        let entries = {
+        let encrypted = {
             let conn = self.conn();
-            vault::backup_read_all(&conn)?
+            vault::backup_fetch_encrypted(&conn)?
         };
+        let entries = vault::backup_decrypt_rows(encrypted)?;
         let content = backup::encrypt_backup(&entries, passphrase)?;
         std::fs::write(path, content).map_err(|e| e.to_string())?;
         // 落盘成功才记时间：设置页「上次备份 N 天前 / 30 天提醒」的事实源

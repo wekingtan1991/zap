@@ -160,6 +160,9 @@ pub fn paste_to_prev(prev_hwnd: isize) -> bool {
                 break;
             }
             if Instant::now() >= deadline {
+                // 前台切换失败 = 仅回填未注入（2026-11-04 互验 V1 P3）：
+                // 三个调用方都拿不到 app 句柄做用户反馈，在此单点留痕
+                super::diag::log_warn("paste_to_prev\t前台切换超时，仅回填未注入 Ctrl+V");
                 return false;
             }
             std::thread::sleep(Duration::from_millis(40));

@@ -115,12 +115,26 @@ pub fn run() {
         .on_window_event(|window, event| {
             // Alt+F4 不销毁面板窗口（2026-11-04 评审 R20 P1）：main 窗被销毁而
             // 进程存活 = 托盘/热键/二次启动全变无声 no-op 的半死态，唯一出路
-            // 是托盘退出。启动器语义下「关闭面板」就是隐藏，与 Esc 同效
+            // 是托盘退出。启动器语义下「关闭面板」就是隐藏，与 Esc 同效。
+            // superpanel/stagedrop 两窗同理（V1 互验：销毁后各自热键/拖放
+            // 永久 no-op 残留）
             if window.label() == WINDOW_LABEL
                 && let WindowEvent::CloseRequested { api, .. } = event
             {
                 api.prevent_close();
                 hide_panel_window(window.app_handle());
+            }
+            if window.label() == "superpanel"
+                && let WindowEvent::CloseRequested { api, .. } = event
+            {
+                api.prevent_close();
+                providers::superpanel::superpanel_hide(window.app_handle());
+            }
+            if window.label() == "stagedrop"
+                && let WindowEvent::CloseRequested { api, .. } = event
+            {
+                api.prevent_close();
+                providers::stagedrop::hide_for_handoff(window.app_handle());
             }
             // 中转站拖拽落区：wry→tauri DragDrop 路径作为自有 IDropTarget 的
             // 兜底（主路径在 stagedrop.rs 的 StageDropTarget，替换了 wry 在该

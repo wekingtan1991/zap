@@ -438,10 +438,10 @@ fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
 
     unsafe {
         // COM 按线程初始化（2026-11-04 P2）：S_OK=本线程首次初始化，收尾权归
-        // 本调用、每个出口配对 CoUninitialize；S_FALSE/其他模式沿用现有初始化
+        // 本调用、每个出口配对 CoUninitialize；S_OK 与 S_FALSE 都要配对收尾，
         // 不收尾（原「忽略错误继续用现有初始化」语义保留，只是不再漏配对）
         let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let owns_com = hr == windows::core::HRESULT(0);
+        let owns_com = hr.is_ok();
 
         let path = wide("shell:AppsFolder");
         let Some(folder) = SHCreateItemFromParsingName::<_, Option<&IBindCtx>, IShellItem>(

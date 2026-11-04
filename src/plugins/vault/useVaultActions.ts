@@ -325,12 +325,19 @@ export function useVaultActions(deps: VaultActionsDeps) {
     }
     void (async () => {
       try {
-        const [title, username, password, url, notes, pinned, totp] = await invoke<
-          [string, string, string, string, string, number, string]
-        >("vault_get", { id });
+        const rec = await invoke<VaultRecordDto>("vault_get", { id });
         setView({
           kind: "detail",
-          data: { id, title, username, password, url, notes, pinned, totp },
+          data: {
+            id,
+            title: rec.title,
+            username: rec.username,
+            password: rec.password,
+            url: rec.url,
+            notes: rec.notes,
+            pinned: rec.pinned,
+            totp: rec.totp,
+          },
         });
       } catch {
         // 详情打不开（账号已被删等）退回旧行为：列表 + 焦点回输入框

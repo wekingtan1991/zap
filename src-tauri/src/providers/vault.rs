@@ -611,8 +611,14 @@ pub fn import(conn: &Connection, entries: Vec<ParsedAccount>) -> Result<usize, S
 
 // ---------- 备份（加密导出/恢复）----------
 
-/// 读全部账号为备份条目（密码解密为明文——密文由 backup 模块整体加密保护）
-pub fn backup_read_all(conn: &Connection) -> Result<Vec<super::backup::BackupEntry>, String> {
+/// 备份导出的中转行（title, username, password_enc, url, notes, pinned, totp_enc）：
+/// 与 VaultRecord 不同——密码/密钥仍是密文，仅存在于导出两段式之间
+pub type EncryptedRow = (String, String, String, String, String, i64, String);
+
+/// 备份导出两段式的第一段（2026-11-04 P1 完整语义）：锁内只捞密文行，
+/// DPAPI/TOTP 解密由 backup_decrypt_rows 在连接锁外逐条进行——逐条解密
+/// 的耗时不再占住共用连接（原 backup_read_all 全程闭锁）
+pub fn backup_fetch_encrypted(conn: &Connection) -> Result<Vec<EncryptedRow>, String> {
     let Ok(mut stmt) = conn.prepare(
         "SELECT title, username, password_enc, url, notes, pinned, totp_enc FROM accounts ORDER BY id",
     ) else {
@@ -631,19 +637,27 @@ pub fn backup_read_all(conn: &Connection) -> Result<Vec<super::backup::BackupEnt
     }) else {
         return Err("读取账号失败".into());
     };
-    let mut out = Vec::new();
-    for row in rows.flatten() {
-        out.push(super::backup::BackupEntry {
-            title: row.0,
-            username: row.1,
-            password: dpapi::decrypt(&row.2)?,
-            url: row.3,
-            notes: row.4,
-            pinned: row.5,
-            totp: totp_plain(&row.6)?,
-        });
-    }
-    Ok(out)
+    Ok(rows.flatten().collect())
+}
+
+/// 备份导出两段式的第二段：密文行 → 备份条目（解密失败整批报错，
+/// 与原 backup_read_all 语义一致——带病导出只会埋雷）
+pub fn backup_decrypt_rows(
+    rows: Vec<EncryptedRow>,
+) -> Result<Vec<super::backup::BackupEntry>, String> {
+    rows.into_iter()
+        .map(|row| {
+            Ok(super::backup::BackupEntry {
+                title: row.0,
+                username: row.1,
+                password: dpapi::decrypt(&row.2)?,
+                url: row.3,
+                notes: row.4,
+                pinned: row.5,
+                totp: totp_plain(&row.6)?,
+            })
+        })
+        .collect()
 }
 
 /// 备份条目的有效标题（与 backup_restore 的入库标题同一套兜底规则）：
@@ -999,7 +1013,8 @@ mod crud_tests {
         action(&conn, 1, "pin", 0).unwrap();
 
         // 导出读全量：密码明文、pinned 保留
-        let entries = backup_read_all(&conn).unwrap();
+        // 走导出同款两段式：锁内捞密文 + 锁外解密（复合入口已删，测试即真路径）
+        let entries = backup_decrypt_rows(backup_fetch_encrypted(&conn).unwrap()).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].password, "p1");
         assert_eq!(entries[0].pinned, 1);

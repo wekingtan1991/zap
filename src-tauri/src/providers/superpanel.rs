@@ -127,7 +127,13 @@ pub fn trigger_from_hotkey(app: &AppHandle) {
                 break;
             }
             if Instant::now() >= deadline {
-                return; // 无选中内容/应用拦了 Ctrl+C：seq 未变剪贴板未动，静默放弃
+                // 无选中内容/应用拦了 Ctrl+C：seq 未变剪贴板未动（V1 互验 P3：
+                // SendInput 失败经 seq 等待在此出口收口，留一行排障线索）
+                super::diag::log(&format!(
+                    "super\t抓取超时放弃\tseq 未变\t{}ms",
+                    CAPTURE_TIMEOUT_MS
+                ));
+                return;
             }
             std::thread::sleep(Duration::from_millis(20));
         }

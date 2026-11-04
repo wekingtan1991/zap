@@ -28,10 +28,10 @@ pub(crate) fn extract_uwp_icon(target: &str) -> Option<Vec<u8>> {
     let app_path = wide(target);
     unsafe {
         // COM 按线程初始化（2026-11-04 P2）：S_OK=本线程首次初始化，收尾权归
-        // 本调用、出口配对 CoUninitialize；S_FALSE/其他模式沿用现有初始化不收尾
+        // 本调用、出口配对 CoUninitialize；S_OK 与 S_FALSE 都要配对收尾，
         // （原「忽略错误继续用现有初始化」语义保留，只是不再漏配对）
         let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let owns_com = hr == windows::core::HRESULT(0);
+        let owns_com = hr.is_ok();
         let png = (|| {
             let factory: IShellItemImageFactory =
                 SHCreateItemFromParsingName(PCWSTR(app_path.as_ptr()), None::<&IBindCtx>).ok()?;
