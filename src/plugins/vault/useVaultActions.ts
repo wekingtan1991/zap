@@ -10,6 +10,19 @@ import { toast } from "sonner";
 import type { View } from "@/App";
 import type { SearchItem } from "@/plugins/types";
 
+/// vault_get 返回（Rust 侧 VaultRecord 命名字段结构体，2026-11-04 P2）：
+/// 键名与 Rust 字段一一对应——后端调换字段不再会静默错位（原位置七元组
+/// 换序会把密码填成网址），前端按键取值且类型可编译期核对
+export interface VaultRecordDto {
+  title: string;
+  username: string;
+  password: string;
+  url: string;
+  notes: string;
+  pinned: number;
+  totp: string;
+}
+
 /// vault 列表空词时追加的两个伪条目（新增/智能导入），与 App 保持同源
 const VAULT_ADD_ENTRY: SearchItem = {
   id: "vault:add",
@@ -134,20 +147,18 @@ export function useVaultActions(deps: VaultActionsDeps) {
       const id = Number(item.target);
       if (Number.isNaN(id)) return;
       try {
-        const [title, username, password, url, notes, pinned, totp] = await invoke<
-          [string, string, string, string, string, number, string]
-        >("vault_get", { id });
+        const rec = await invoke<VaultRecordDto>("vault_get", { id });
         setView({
           kind: "form",
           data: {
             id,
-            title,
-            username,
-            password,
-            url,
-            notes,
-            pinned: pinned === 1,
-            totp,
+            title: rec.title,
+            username: rec.username,
+            password: rec.password,
+            url: rec.url,
+            notes: rec.notes,
+            pinned: rec.pinned === 1,
+            totp: rec.totp,
           },
         });
       } catch {
@@ -167,12 +178,19 @@ export function useVaultActions(deps: VaultActionsDeps) {
       const id = Number(item.target);
       if (Number.isNaN(id)) return;
       try {
-        const [title, username, password, url, notes, pinned, totp] = await invoke<
-          [string, string, string, string, string, number, string]
-        >("vault_get", { id });
+        const rec = await invoke<VaultRecordDto>("vault_get", { id });
         setView({
           kind: "detail",
-          data: { id, title, username, password, url, notes, pinned, totp },
+          data: {
+            id,
+            title: rec.title,
+            username: rec.username,
+            password: rec.password,
+            url: rec.url,
+            notes: rec.notes,
+            pinned: rec.pinned,
+            totp: rec.totp,
+          },
         });
       } catch (e) {
         toast.error("打开失败：" + String(e));
@@ -188,12 +206,19 @@ export function useVaultActions(deps: VaultActionsDeps) {
       const id = Number(item.target);
       if (Number.isNaN(id)) return;
       try {
-        const [title, username, password, url, notes, pinned, totp] = await invoke<
-          [string, string, string, string, string, number, string]
-        >("vault_get", { id });
+        const rec = await invoke<VaultRecordDto>("vault_get", { id });
         setView({
           kind: "detail",
-          data: { id, title, username, password, url, notes, pinned, totp },
+          data: {
+            id,
+            title: rec.title,
+            username: rec.username,
+            password: rec.password,
+            url: rec.url,
+            notes: rec.notes,
+            pinned: rec.pinned,
+            totp: rec.totp,
+          },
           askDelete: true,
         });
       } catch (e) {

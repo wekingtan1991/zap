@@ -490,8 +490,22 @@ pub fn action(
     }
 }
 
-/// 账号完整记录（get 的返回）：title, username, password明文, url, notes, pinned, totp密钥
-pub type VaultRecord = (String, String, String, String, String, i64, String);
+/// 账号完整记录（vault_get 的返回）：编辑预填与详情展示用。
+/// 命名字段替代位置七元组（2026-11-04 P2，2026-11-03 共识 #5）：序列化为
+/// JSON 对象，Rust 侧调换字段只会改变键序不会静默错位（原位置元组一旦
+/// 换序，密码会静默填成网址），前端按键取值可在编译期核对
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VaultRecord {
+    pub title: String,
+    pub username: String,
+    /// 明文——仅显式查看/编辑预填时经 vault_get 返回
+    pub password: String,
+    pub url: String,
+    pub notes: String,
+    pub pinned: i64,
+    /// TOTP Base32 密钥明文（归一化后），空串 = 未配置
+    pub totp: String,
+}
 
 /// 取单条完整记录（编辑预填用，含解密后的密码明文与 TOTP 密钥）
 pub fn get(conn: &Connection, id: i64) -> Result<VaultRecord, String> {
@@ -514,7 +528,15 @@ pub fn get(conn: &Connection, id: i64) -> Result<VaultRecord, String> {
         .map_err(|e| e.to_string())?;
     let plain = dpapi::decrypt(&row.2)?;
     let totp = totp_plain(&row.6)?;
-    Ok((row.0, row.1, plain, row.3, row.4, row.5, totp))
+    Ok(VaultRecord {
+        title: row.0,
+        username: row.1,
+        password: plain,
+        url: row.3,
+        notes: row.4,
+        pinned: row.5,
+        totp,
+    })
 }
 
 /// 更新条目：密码字段留空 = 保持不变（其余字段照常覆盖，TOTP 空串 = 清除）
@@ -889,8 +911,8 @@ mod crud_tests {
     fn 更新留空密码保持原值() {
         let conn = mem_db();
         add(&conn, "站点", "user", "old-pass", "https://a.com", "", "").unwrap();
-        let (_, _, plain, _, _, _, _) = get(&conn, 1).unwrap();
-        assert_eq!(plain, "old-pass");
+        let rec = get(&conn, 1).unwrap();
+        assert_eq!(rec.password, "old-pass");
 
         update(
             &conn,
@@ -904,18 +926,18 @@ mod crud_tests {
             "",
         )
         .unwrap();
-        let (t, u, p, url, notes, _, totp) = get(&conn, 1).unwrap();
-        assert_eq!(t, "站点2");
-        assert_eq!(u, "user2");
-        assert_eq!(p, "old-pass", "留空密码应保持原值");
-        assert_eq!(url, "https://b.com");
-        assert_eq!(notes, "备注");
-        assert_eq!(totp, "", "未配置 TOTP 应为空");
+        let rec = get(&conn, 1).unwrap();
+        assert_eq!(rec.title, "站点2");
+        assert_eq!(rec.username, "user2");
+        assert_eq!(rec.password, "old-pass", "留空密码应保持原值");
+        assert_eq!(rec.url, "https://b.com");
+        assert_eq!(rec.notes, "备注");
+        assert_eq!(rec.totp, "", "未配置 TOTP 应为空");
 
         // 传入新密码则覆盖
         update(&conn, 1, "站点2", "user2", "new-pass", "", "", 0, "").unwrap();
-        let (_, _, p, _, _, _, _) = get(&conn, 1).unwrap();
-        assert_eq!(p, "new-pass");
+        let rec = get(&conn, 1).unwrap();
+        assert_eq!(rec.password, "new-pass");
     }
 
     #[test]
@@ -987,12 +1009,19 @@ mod crud_tests {
         let (n, skipped) = backup_restore(&conn2, entries, false).unwrap();
         assert_eq!(n, 2);
         assert_eq!(skipped, 0, "空库恢复无重复可跳");
-        let (t, u, p, url, notes, pinned, totp) = get(&conn2, 1).unwrap();
-        assert_eq!((t.as_str(), u.as_str(), p.as_str()), ("甲", "u1", "p1"));
-        assert_eq!(url, "https://a.com");
-        assert_eq!(notes, "备注甲");
-        assert_eq!(pinned, 1, "置顶状态应随备份还原");
-        assert_eq!(totp, "", "未配置 TOTP 恢复为空");
+        let rec = get(&conn2, 1).unwrap();
+        assert_eq!(
+            (
+                rec.title.as_str(),
+                rec.username.as_str(),
+                rec.password.as_str()
+            ),
+            ("甲", "u1", "p1")
+        );
+        assert_eq!(rec.url, "https://a.com");
+        assert_eq!(rec.notes, "备注甲");
+        assert_eq!(rec.pinned, 1, "置顶状态应随备份还原");
+        assert_eq!(rec.totp, "", "未配置 TOTP 恢复为空");
         let items = search(&conn2, "");
         assert_eq!(items.len(), 2);
         assert!(items[0].pinned, "恢复后置顶仍排最前");
@@ -1012,8 +1041,8 @@ mod crud_tests {
             "otpauth://totp/x?secret=gezd gnbv gy3t qojq",
         )
         .unwrap();
-        let (_, _, _, _, _, _, totp) = get(&conn, 1).unwrap();
-        assert_eq!(totp, "GEZDGNBVGY3TQOJQ", "应去空白并大写化归一存储");
+        let rec = get(&conn, 1).unwrap();
+        assert_eq!(rec.totp, "GEZDGNBVGY3TQOJQ", "应去空白并大写化归一存储");
         // 当前码为合法 6 位且可受保护复制
         let code = action(&conn, 1, "totp", 0).unwrap();
         assert_eq!(code.len(), 6, "应为 6 位验证码");
