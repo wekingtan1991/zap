@@ -487,6 +487,17 @@ export function StageView({ focusRef, onClose }: Props) {
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
+            // combobox 语义（R3 P1，与主面板同口径）：active 行经
+            // activedescendant 对 SR 可见
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="zap-stage-list"
+            aria-activedescendant={
+              shown.length > 0 && active >= 0
+                ? `zap-stage-row-${active}`
+                : undefined
+            }
+            aria-label="过滤中转站条目"
             placeholder="过滤名称或路径…"
             spellCheck={false}
           />
@@ -500,6 +511,10 @@ export function StageView({ focusRef, onClose }: Props) {
             "zap-results zap-stage" +
             (dragging || processing !== null ? " zap-stage-drop" : "")
           }
+          // 列表语义（R3 P1，与主面板 ResultsList 同口径）
+          role={shown.length > 0 ? "listbox" : undefined}
+          id="zap-stage-list"
+          aria-label="中转站条目"
           onContextMenu={(e) => {
             e.preventDefault();
             setMenu({ x: e.clientX, y: e.clientY, row: null });
@@ -537,6 +552,10 @@ export function StageView({ focusRef, onClose }: Props) {
               )}
               <div
                 ref={i === active ? activeItemRef : undefined}
+                id={`zap-stage-row-${i}`}
+                role="option"
+                aria-selected={i === active}
+                aria-disabled={row.missing || undefined}
                 title={row.path}
                 className={
                   "zap-item" +
