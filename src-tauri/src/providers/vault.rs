@@ -31,19 +31,31 @@ pub fn invalidate_password_cache() {
 }
 
 /// 复制内容是否命中账号库密码明文（命中即不应入剪贴板历史）。
-/// 构建失败（DPAPI 异常等）按「空集」处理——防护是尽力而为，不能反把
-/// 正常复制拦下；未配置任何密码时集合为空，contains 恒 false 零开销
+/// 逐行解密、单行失败只跳过该行（2026-11-04 评审）：走 backup_read_all 全量
+/// 时一行密文解不开会放大成整个防护集为空——其余可解密的密码全漏进历史。
+/// 只取 password_enc 列，未配置密码时集合为空 contains 恒 false 零开销
 pub fn password_cache_hit(conn: &Connection, text: &str) -> bool {
     let mut guard = PWD_CACHE.lock().expect("vault pwd cache poisoned");
     if guard.is_none() {
-        let set: std::collections::HashSet<String> = match backup_read_all(conn) {
-            Ok(entries) => entries
-                .into_iter()
-                .filter(|e| !e.password.is_empty())
-                .map(|e| e.password)
-                .collect(),
-            Err(_) => Default::default(),
-        };
+        let mut set: std::collections::HashSet<String> = Default::default();
+        let mut stmt =
+            match conn.prepare("SELECT password_enc FROM accounts WHERE password_enc <> ''") {
+                Ok(s) => s,
+                // 表都查不到（迁移半途等）：按空集尽力而为，不拦正常复制
+                Err(_) => {
+                    *guard = Some(set);
+                    return false;
+                }
+            };
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for enc in rows.flatten() {
+                if let Ok(plain) = dpapi::decrypt(&enc)
+                    && !plain.is_empty()
+                {
+                    set.insert(plain);
+                }
+            }
+        }
         *guard = Some(set);
     }
     guard.as_ref().is_some_and(|s| s.contains(text))
@@ -452,7 +464,10 @@ pub fn action(
         "delete" => {
             conn.execute("DELETE FROM accounts WHERE id=?1", params![id])
                 .map_err(|e| e.to_string())?;
+            // 密码集必须同步失效（2026-11-04 P1）：只失效形态缓存会让已删
+            // 密码继续抑制剪贴板入库——从历史翻不出、入库又静默失败，双向都错
             invalidate_forms_cache();
+            invalidate_password_cache();
             Ok("已删除".into())
         }
         _ => Err("未知操作".into()),

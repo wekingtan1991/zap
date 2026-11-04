@@ -39,51 +39,62 @@ pub fn resolve_lnk_target(path: &str) -> Option<String> {
     }
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-        IPersistFile, STGM_READ,
+        CoUninitialize, IPersistFile, STGM_READ,
     };
     use windows::Win32::UI::Shell::{IShellLinkW, SLGP_RAWPATH, ShellLink};
     use windows::core::{Interface, PCWSTR};
 
     let path_w = wide(path);
     unsafe {
-        // COM 按线程初始化；已是其他模式时忽略错误继续用现有初始化
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
-        let pf: IPersistFile = link.cast().ok()?;
-        pf.Load(PCWSTR(path_w.as_ptr()), STGM_READ).ok()?;
-        let mut buf = [0u16; 1024];
-        // SLGP_RAWPATH = 4（windows 0.62 的 GetPath 收裸指针 + u32）
-        link.GetPath(&mut buf, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)
-            .ok()?;
-        let end = buf.iter().position(|&c| c == 0)?;
-        let raw = String::from_utf16_lossy(&buf[..end]);
-        if raw.is_empty() {
-            return None;
+        // COM 按线程初始化（2026-11-04 P2）：S_OK=本线程首次初始化，收尾权归
+        // 本调用、出口配对 CoUninitialize；S_FALSE/其他模式沿用现有初始化不收尾
+        // （原「忽略错误继续用现有初始化」语义保留，只是不再漏配对）。
+        // 主体包进闭包：原路径上的 `?` 早退不再跳过收尾
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let owns_com = hr == windows::core::HRESULT(0);
+        let resolved = (|| {
+            let link: IShellLinkW =
+                CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+            let pf: IPersistFile = link.cast().ok()?;
+            pf.Load(PCWSTR(path_w.as_ptr()), STGM_READ).ok()?;
+            let mut buf = [0u16; 1024];
+            // SLGP_RAWPATH = 4（windows 0.62 的 GetPath 收裸指针 + u32）
+            link.GetPath(&mut buf, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)
+                .ok()?;
+            let end = buf.iter().position(|&c| c == 0)?;
+            let raw = String::from_utf16_lossy(&buf[..end]);
+            if raw.is_empty() {
+                return None;
+            }
+            // 环境变量展开；相对路径拼 lnk 的工作目录（lnk 自身目录兜底）
+            let mut target = expand_env_vars(&raw);
+            if !std::path::Path::new(&target).is_absolute() {
+                let mut wd_buf = [0u16; 1024];
+                let work_dir = link
+                    .GetWorkingDirectory(&mut wd_buf)
+                    .ok()
+                    .and_then(|_| {
+                        let e = wd_buf.iter().position(|&c| c == 0)?;
+                        let wd = String::from_utf16_lossy(&wd_buf[..e]);
+                        (!wd.is_empty()).then_some(wd)
+                    })
+                    .unwrap_or_else(|| {
+                        std::path::Path::new(path)
+                            .parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    });
+                let base = expand_env_vars(&work_dir);
+                target = std::path::Path::new(&base)
+                    .join(&target)
+                    .to_string_lossy()
+                    .to_string();
+            }
+            (!target.is_empty()).then_some(target)
+        })();
+        if owns_com {
+            CoUninitialize();
         }
-        // 环境变量展开；相对路径拼 lnk 的工作目录（lnk 自身目录兜底）
-        let mut target = expand_env_vars(&raw);
-        if !std::path::Path::new(&target).is_absolute() {
-            let mut wd_buf = [0u16; 1024];
-            let work_dir = link
-                .GetWorkingDirectory(&mut wd_buf)
-                .ok()
-                .and_then(|_| {
-                    let e = wd_buf.iter().position(|&c| c == 0)?;
-                    let wd = String::from_utf16_lossy(&wd_buf[..e]);
-                    (!wd.is_empty()).then_some(wd)
-                })
-                .unwrap_or_else(|| {
-                    std::path::Path::new(path)
-                        .parent()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                });
-            let base = expand_env_vars(&work_dir);
-            target = std::path::Path::new(&base)
-                .join(&target)
-                .to_string_lossy()
-                .to_string();
-        }
-        (!target.is_empty()).then_some(target)
+        resolved
     }
 }

@@ -164,14 +164,15 @@ pub fn paste_to_prev(prev_hwnd: isize) -> bool {
             }
             std::thread::sleep(Duration::from_millis(40));
         }
-        send_ctrl_v();
+        send_ctrl_v()
     }
-    true
 }
 
 /// 扫描码注入 Ctrl+V：虚拟键事件在只认物理键序的应用里会丢，
-/// 按扫描码下发 make/break 对（与真实键盘一致，本机调试经验）
-fn send_ctrl_v() {
+/// 按扫描码下发 make/break 对（与真实键盘一致，本机调试经验）。
+/// 返回是否全部事件注入成功（2026-11-04 P1）：SendInput 返回成功条数，
+/// 被前台锁/权限层拦截时返回 0——调用方据实反馈，不再把失败当成功
+fn send_ctrl_v() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, SendInput,
     };
@@ -197,9 +198,8 @@ fn send_ctrl_v() {
         key(0x2F, true),  // V up
         key(0x1D, true),  // Left Ctrl up
     ];
-    unsafe {
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-    }
+    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    sent == inputs.len() as u32
 }
 
 /// 后台进程的前台切换兜底（drop 呼出面板专用）：SetForegroundWindow 受系统

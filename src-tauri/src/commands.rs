@@ -10,7 +10,7 @@ use crate::hotkey_capture;
 use crate::panel::{hide_panel_window, paste_bg, paste_text_async, take_prev_foreground};
 use crate::providers::SearchItem;
 use crate::state::{AppState, spawn_hidden};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt;
 
@@ -682,17 +682,25 @@ pub(crate) fn open_item(app: AppHandle, item: SearchItem) -> Result<(), String> 
             if is_img {
                 // 图片的点查全图 + PNG 解码不能占主线程消息泵，压后台线程：
                 // DIBV5 直写毫秒级，注入前的等待才不会随图放大成秒级
+                let app_bg = app.clone();
                 std::thread::spawn(move || {
-                    if let Some((w, h, png)) = engine.clip_image(rowid)
+                    // 取图/解码/DIB 写入任一失败即止（2026-11-04 P1）：照旧注入
+                    // Ctrl+V 会把旧剪贴板内容贴进前台窗口；失败走全局 toast
+                    let filled = if let Some((w, h, png)) = engine.clip_image(rowid)
                         && let Ok((_, _, rgba)) = crate::providers::clipimage::decode_png(&png)
                     {
-                        let _ = crate::providers::clipboard::set_image_dib(
-                            w as usize, h as usize, &rgba,
-                        );
-                    }
-                    if let Some(hwnd) = prev {
-                        std::thread::sleep(Duration::from_millis(80));
-                        crate::providers::winsys::paste_to_prev(hwnd);
+                        crate::providers::clipboard::set_image_dib(w as usize, h as usize, &rgba)
+                            .is_ok()
+                    } else {
+                        false
+                    };
+                    if filled {
+                        if let Some(hwnd) = prev {
+                            std::thread::sleep(Duration::from_millis(80));
+                            crate::providers::winsys::paste_to_prev(hwnd);
+                        }
+                    } else {
+                        let _ = app_bg.emit("zap://stage-drop-error", "图片回填失败，未执行粘贴");
                     }
                 });
             } else {

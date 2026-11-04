@@ -10,8 +10,8 @@ use rusqlite::Connection;
 
 use super::util::now_ms;
 
-pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(path)?;
+pub fn open_db(path: &Path) -> Result<Connection, String> {
+    let conn = Connection::open(path).map_err(|e| e.to_string())?;
     conn.execute_batch(
         // busy_timeout 显式化（评审 P1-07）：rusqlite 默认已是 5000ms，但那是
         // 隐式依赖——显式设 1500ms 把「写-写冲突时最多等 1.5s」变成明文契约，
@@ -27,11 +27,13 @@ pub fn open_db(path: &Path) -> rusqlite::Result<Connection> {
              content TEXT NOT NULL UNIQUE,
              created_at INTEGER NOT NULL
          );",
-    )?;
+    )
+    .map_err(|e| e.to_string())?;
     init_all(&conn);
-    if let Err(e) = migrate(&conn) {
-        super::diag::log_err(&format!("db\tschema 迁移失败: {e}"));
-    }
+    // 迁移失败不再静默继续（2026-11-04 P1）：schema 停在旧版会让下游查询
+    // 静默空返回（历史凭空消失零提示）。向上传播让 open_db_resilient 走
+    // 坏库隔离重建，空库可自救，重建再失败才把错误摆到用户面前
+    migrate(&conn)?;
     Ok(conn)
 }
 

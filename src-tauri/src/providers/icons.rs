@@ -17,7 +17,9 @@ pub(crate) fn to_data_url(png: &[u8]) -> String {
 pub(crate) fn extract_uwp_icon(target: &str) -> Option<Vec<u8>> {
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::DeleteObject;
-    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, IBindCtx};
+    use windows::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IBindCtx,
+    };
     use windows::Win32::UI::Shell::{
         IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK,
     };
@@ -25,15 +27,24 @@ pub(crate) fn extract_uwp_icon(target: &str) -> Option<Vec<u8>> {
 
     let app_path = wide(target);
     unsafe {
-        // COM 按线程初始化；已是其他模式时忽略错误继续用现有初始化
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let factory: IShellItemImageFactory =
-            SHCreateItemFromParsingName(PCWSTR(app_path.as_ptr()), None::<&IBindCtx>).ok()?;
-        let hbm = factory
-            .GetImage(SIZE { cx: 64, cy: 64 }, SIIGBF_BIGGERSIZEOK)
-            .ok()?;
-        let png = bitmap_to_rgba(hbm).and_then(|(w, h, buf)| bitmap_to_png(w, h, buf));
-        let _ = DeleteObject(hbm.into());
+        // COM 按线程初始化（2026-11-04 P2）：S_OK=本线程首次初始化，收尾权归
+        // 本调用、出口配对 CoUninitialize；S_FALSE/其他模式沿用现有初始化不收尾
+        // （原「忽略错误继续用现有初始化」语义保留，只是不再漏配对）
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let owns_com = hr == windows::core::HRESULT(0);
+        let png = (|| {
+            let factory: IShellItemImageFactory =
+                SHCreateItemFromParsingName(PCWSTR(app_path.as_ptr()), None::<&IBindCtx>).ok()?;
+            let hbm = factory
+                .GetImage(SIZE { cx: 64, cy: 64 }, SIIGBF_BIGGERSIZEOK)
+                .ok()?;
+            let png = bitmap_to_rgba(hbm).and_then(|(w, h, buf)| bitmap_to_png(w, h, buf));
+            let _ = DeleteObject(hbm.into());
+            png
+        })();
+        if owns_com {
+            CoUninitialize();
+        }
         png
     }
 }

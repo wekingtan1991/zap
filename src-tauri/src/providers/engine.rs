@@ -569,7 +569,9 @@ fn entry_conflicts<'a>(
 /// 插件并行执行：总延迟从"串行求和"变"最慢一路"（files 的 HTTP 超时 250ms 与
 /// winsys 的窗口枚举不再逐个叠加在每次击键上）。输出按注册序回槽，展示顺序与
 /// 串行版完全一致。needs_conn 的插件留在当前线程——rusqlite Connection 非 Sync
-/// 不能跨线程；其余各占一个 scoped 线程，单个插件 panic 只损失该源（空结果）。
+/// 不能跨线程；其余各占一个 scoped 线程。注意（2026-11-04 复核更正）：Cargo.toml
+/// panic=abort 是有意取舍（防数据损坏优于局部容错）——abort 下线程 panic 即整个
+/// 进程退出，下面的 join 兜底只在非 abort 构建里成立，勿把这里当 panic 隔离边界。
 fn run_parallel(
     plugins: &[std::sync::Arc<dyn plugin::Plugin>],
     q: &str,

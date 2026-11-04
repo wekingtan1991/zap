@@ -83,10 +83,16 @@ where
         let Some(text) = fetch() else {
             return;
         };
-        let _ = providers::clipboard::retrying(|| {
+        // 回填失败必须止步（2026-11-04 P1）：此刻剪贴板还是用户的旧内容，
+        // 照旧注入 Ctrl+V 等于把上一条无关内容贴进前台窗口——宁可什么都不发生
+        if providers::clipboard::retrying(|| {
             let text = text.clone();
             arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text))
-        });
+        })
+        .is_err()
+        {
+            return;
+        }
         if let Some(hwnd) = prev {
             std::thread::sleep(Duration::from_millis(80));
             providers::winsys::paste_to_prev(hwnd);

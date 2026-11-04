@@ -114,10 +114,14 @@ pub fn spawn_watcher(db_path: PathBuf) {
                         let vault_hit =
                             !text.is_empty() && super::vault::password_cache_hit(&self.conn, &text);
                         if vault_hit {
-                            let _ = self.conn.execute(
+                            if let Err(e) = self.conn.execute(
                                 "DELETE FROM clipboard_history WHERE content=?1",
                                 params![text],
-                            );
+                            ) {
+                                // 清除失败 = 密码仍在历史可翻出（防泄漏链路静默
+                                // 失效），必须留痕（2026-11-04 P1）
+                                super::diag::log_err(&format!("clip\t密码历史清除失败\t{e}"));
+                            }
                             return CallbackResult::Next;
                         }
                         // 单条硬上限（评审 P1-08）：超长粘贴拒收录（诊断留痕），
@@ -134,21 +138,27 @@ pub fn spawn_watcher(db_path: PathBuf) {
                         if !text.is_empty() && !is_from_password_manager() {
                             let now = now_ms();
                             // head/nl_count 物化在写路径（评审 P1-08）：SQL 侧
-                            // 一次算好，读取路径不再对全文现算
-                            let _ = self.conn.execute(
+                            // 一次算好，读取路径不再对全文现算。
+                            // 入库失败（磁盘满/锁超时）静默丢条无任何线索，留痕
+                            // （2026-11-04 评审 R18）
+                            if let Err(e) = self.conn.execute(
                                 "INSERT INTO clipboard_history(content, created_at, head, nl_count)
                                  VALUES(?1, ?2, substr(?1, 1, 256),
                                         length(?1) - length(replace(?1, char(10), '')))
                                  ON CONFLICT(content) DO UPDATE SET created_at=excluded.created_at",
                                 params![text, now],
-                            );
+                            ) {
+                                super::diag::log_err(&format!("clip\t剪贴板入库失败\t{e}"));
+                            }
                             // 清理让位于固定：置顶条目不参与保留条数淘汰
-                            let _ = self.conn.execute(
+                            if let Err(e) = self.conn.execute(
                                 "DELETE FROM clipboard_history WHERE pinned=0 AND id NOT IN (
                                      SELECT id FROM clipboard_history ORDER BY created_at DESC LIMIT ?1
                                  )",
                                 params![RETENTION_LIMIT.load(Ordering::Relaxed)],
-                            );
+                            ) {
+                                super::diag::log_warn(&format!("clip\t保留条数淘汰失败\t{e}"));
+                            }
                         }
                     } else if let Ok(img) = self.cb.get_image() {
                         // 无文本可取时尝试图片（截图类）：只取 RGBA 丢队列，编码/哈希/

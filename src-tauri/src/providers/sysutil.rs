@@ -25,22 +25,22 @@ pub fn hwnd_pid(hwnd: HWND) -> Option<u32> {
 }
 
 pub fn process_path_of_pid(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        // 句柄必须归还（2026-11-04 P1）：watcher 每条剪贴板文本事件都查来源，
+        // 不关闭 = 常驻进程内核句柄无界累积
         let mut buf = [0u16; 1024];
         let mut len = buf.len() as u32;
-        if QueryFullProcessImageNameW(
+        let ok = QueryFullProcessImageNameW(
             handle,
             PROCESS_NAME_WIN32,
             windows::core::PWSTR(buf.as_mut_ptr()),
             &mut len,
         )
-        .is_ok()
-        {
-            Some(String::from_utf16_lossy(&buf[..len as usize]))
-        } else {
-            None
-        }
+        .is_ok();
+        let _ = CloseHandle(handle);
+        ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))
     }
 }
 

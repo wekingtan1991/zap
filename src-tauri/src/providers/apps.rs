@@ -415,7 +415,7 @@ fn cache_key(lnk: &str) -> u64 {
 
 fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
     use windows::Win32::System::Com::{
-        COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, IBindCtx,
+        COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx,
     };
     use windows::Win32::UI::Shell::{
         BHID_EnumItems, IEnumShellItems, IShellItem, SHCreateItemFromParsingName,
@@ -437,8 +437,11 @@ fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
     }
 
     unsafe {
-        // COM 按线程初始化；线程已是其他模式时忽略错误继续用现有初始化
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        // COM 按线程初始化（2026-11-04 P2）：S_OK=本线程首次初始化，收尾权归
+        // 本调用、每个出口配对 CoUninitialize；S_FALSE/其他模式沿用现有初始化
+        // 不收尾（原「忽略错误继续用现有初始化」语义保留，只是不再漏配对）
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let owns_com = hr == windows::core::HRESULT(0);
 
         let path = wide("shell:AppsFolder");
         let Some(folder) = SHCreateItemFromParsingName::<_, Option<&IBindCtx>, IShellItem>(
@@ -447,6 +450,9 @@ fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
         )
         .ok() else {
             super::diag::log_warn("shell:AppsFolder 打开失败，UWP 应用未收录");
+            if owns_com {
+                CoUninitialize();
+            }
             return;
         };
         let Some(items) = folder
@@ -454,6 +460,9 @@ fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
             .ok()
         else {
             super::diag::log_warn("shell:AppsFolder 枚举失败");
+            if owns_com {
+                CoUninitialize();
+            }
             return;
         };
 
@@ -495,6 +504,9 @@ fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
                     forms,
                 });
             }
+        }
+        if owns_com {
+            CoUninitialize();
         }
     }
 }
