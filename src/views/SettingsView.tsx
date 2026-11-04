@@ -28,6 +28,7 @@ import {
   type HotkeySettings,
 } from "./settings/useHotkeyRecording";
 import { normalizeSettings, settingsSnapshot } from "./settings/dirty";
+import { applyPanelTransparency } from "@/lib/appearance";
 import type { AppSettings, Shortcut } from "./settings/types";
 
 interface Props {
@@ -38,6 +39,8 @@ interface Props {
 
 export function SettingsView({ updater, focusRef, onClose }: Props) {
   const [st, setSt] = useState<AppSettings | null>(null);
+  /// 开机自启勾选是否被用户动过（R20 P2 防回滚，见 saveSettings）
+  const [autostartTouched, setAutostartTouched] = useState(false);
   const [appVersion, setAppVersion] = useState("");
   /// 直达热键保存错误（与主热键错误分开呈现）
   const [directErr, setDirectErr] = useState("");
@@ -132,16 +135,22 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
       setScErr(String(e));
       return;
     }
-    // 开机自启随保存生效（注册表写；失败提示但不阻塞其余设置）
-    try {
-      await invoke("autostart_set", { enable: st.autostart });
-    } catch (e) {
-      toast.error("开机自启设置失败：" + String(e));
+    // 开机自启随保存生效（注册表写；失败提示但不阻塞其余设置）。
+    // 防回滚（2026-11-04 评审 R20 P2）：勾选没被用户动过就不写——页面开着
+    // 时托盘可能已改过注册表，挂载快照回写会把托盘的改动静默还原
+    if (autostartTouched) {
+      try {
+        await invoke("autostart_set", { enable: st.autostart });
+      } catch (e) {
+        toast.error("开机自启设置失败：" + String(e));
+      }
+      setAutostartTouched(false);
     }
     try {
       const res = await invoke<{
         hotkeyError: string | null;
         directHotkeyError: string | null;
+        transparencyError: string | null;
       }>("save_settings", {
         hotkey: st.hotkey,
         vaultHotkey: st.vaultHotkey ?? "",
@@ -158,10 +167,21 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         pwdClearSecs: st.pwdClearSecs,
         everythingAutostart: st.everythingAutostart,
         appearance: st.appearance ?? "dark",
+        panelTransparency: st.panelTransparency ?? true,
         plugins: st.plugins.map((p) => ({ id: p.id, enabled: p.enabled })),
       });
       const directError = res.directHotkeyError ?? "";
       setDirectErr(directError);
+      if (res.transparencyError) {
+        // 透明随保存落库失败（系统不支持等）：提示并按存档值回退预览
+        toast.error(res.transparencyError);
+        const fresh = normalizeSettings(await invoke<AppSettings>("get_app_settings"));
+        applyPanelTransparency(fresh.panelTransparency);
+        void invoke("transparency_set", { enable: fresh.panelTransparency }).catch(() => {});
+        setSt(fresh);
+        setBaseline(settingsSnapshot(fresh, scList));
+        return;
+      }
       if (res.hotkeyError || directError) {
         // 任一热键失败都重拉实际生效值：直达槽位冲突/占用时存档串与显示值会漂移；
         // 且此场景不算保存成功，不出「已保存」toast。重拉后 UI 显示即权威值，
@@ -226,6 +246,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
           hkError={hkError}
           directErr={directErr}
           startRecording={startRecording}
+          onAutostartTouched={() => setAutostartTouched(true)}
         />
         <ClipboardSection st={st} setSt={setSt} />
         <StageSection st={st} setSt={setSt} />

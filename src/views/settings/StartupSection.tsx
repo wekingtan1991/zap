@@ -17,6 +17,9 @@ interface Props {
   /// 直达热键保存错误（与主热键错误分开呈现）
   directErr: string;
   startRecording: (slot: HkSlot) => void;
+  /// 开机自启勾选被用户动过（2026-11-04 评审 R20 P2）：保存链据此决定
+  /// 是否回写注册表——页面开着时托盘可能已改过，没动过的保存不得回滚
+  onAutostartTouched: () => void;
 }
 
 export function StartupSection({
@@ -26,6 +29,7 @@ export function StartupSection({
   hkError,
   directErr,
   startRecording,
+  onAutostartTouched,
 }: Props) {
   return (
     <Section icon={Zap} title="启动">
@@ -115,9 +119,10 @@ export function StartupSection({
         <Checkbox
           id="set-autostart"
           checked={st.autostart}
-          onCheckedChange={(v) =>
-            setSt((s) => (s ? { ...s, autostart: v === true } : s))
-          }
+          onCheckedChange={(v) => {
+            onAutostartTouched();
+            setSt((s) => (s ? { ...s, autostart: v === true } : s));
+          }}
         />
       </div>
     </Section>

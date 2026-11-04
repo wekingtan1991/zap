@@ -1,5 +1,5 @@
 /// 设置页「外观」分区（自 SettingsView 拆出，审计 E3）：主题（即时预览）、
-/// 透明效果（即时应用并持久化，失败回弹）
+/// 透明效果（即时预览，随「保存」落库——2026-11-04 评审 R19 语义修正）
 import type { Dispatch, SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";

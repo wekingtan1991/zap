@@ -206,6 +206,11 @@ function AppView() {
           : "dark";
         applyAppearance(mode);
         applyPanelTransparency(s.panelTransparency ?? true);
+        // 窗口特效也随存档值回滚（2026-11-04 评审 R19）：透明预览不落库后，
+        // 放弃更改 = 特效按存档值复位（transparency_set 现为纯预览命令）
+        void invoke("transparency_set", {
+          enable: s.panelTransparency ?? true,
+        }).catch(() => {});
       })
       .catch(() => {});
   }, []);

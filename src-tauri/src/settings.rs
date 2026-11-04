@@ -127,6 +127,9 @@ pub(crate) struct SaveOutcome {
     hotkey_error: Option<String>,
     /// 直达热键保存失败的原因；None = 生效（保存其余设置不受影响）
     direct_hotkey_error: Option<String>,
+    /// 透明面板应用失败的原因（2026-11-04 评审 R19：随保存落库时系统不支持
+    /// 等失败在此带回，前端回退预览）；None = 生效
+    transparency_error: Option<String>,
 }
 
 /// 启动时按存档注册直达热键（自 lib.rs 拆出，审计 B2）：与 save_settings 共用
@@ -186,6 +189,8 @@ pub(crate) fn save_settings(
     pwd_clear_secs: i64,
     everything_autostart: bool,
     appearance: Option<String>,
+    // Option 容错：半新半旧的会话（前端未带上新键）保存时不再整单被拒
+    panel_transparency: Option<bool>,
     plugins: Vec<PluginSwitchDto>,
 ) -> Result<SaveOutcome, String> {
     let hotkey = hotkey.trim().to_lowercase();
@@ -366,6 +371,20 @@ pub(crate) fn save_settings(
     if let Some(item) = state.clip_item.lock().expect("clip_item poisoned").as_ref() {
         let _ = item.set_checked(clip_enabled);
     }
+    // 透明面板随保存生效（2026-11-04 评审 R19）：toggle 只做即时预览不落库，
+    // 落库在保存这一步统一发生；应用失败不落偏好，错误随 outcome 带回前端
+    // 回退预览（Option 容错旧前端未带键 = 跳过）
+    let mut transparency_error = None;
+    if let Some(on) = panel_transparency {
+        if let Err(e) = apply_window_effects(&app, on) {
+            transparency_error = Some(format!("透明效果应用失败：{e}"));
+        } else {
+            state.engine.set_setting(
+                crate::providers::appconfig::KEY_PANEL_TRANSPARENCY,
+                if on { "1" } else { "0" },
+            )?;
+        }
+    }
     let direct_hotkey_error = if direct_errors.is_empty() {
         None
     } else {
@@ -374,6 +393,7 @@ pub(crate) fn save_settings(
     Ok(SaveOutcome {
         hotkey_error,
         direct_hotkey_error,
+        transparency_error,
     })
 }
 
@@ -475,19 +495,14 @@ pub(crate) fn apply_window_effects(app: &AppHandle, on: bool) -> Result<(), Stri
     result.map_err(|e| e.to_string())
 }
 
-/// 透明面板开关：应用/清除亚克力并持久化偏好；失败（系统不支持）不落偏好，
-/// 前端据此回退为不透明并提示
+/// 透明面板预览（2026-11-04 评审 R19 语义修正）：toggle 只应用窗口特效做
+/// 即时预览，**不再落库**——落库统一走 save_settings 的 panel_transparency，
+/// 与 README「改动随保存生效（外观与透明即时预览）」的文档语义对齐；
+/// Esc/放弃更改由前端按存档值回调本命令回滚预览（启动恢复仍读存档键，
+/// lib.rs:301）
 #[tauri::command]
-pub(crate) async fn transparency_set(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-    enable: bool,
-) -> Result<(), String> {
-    apply_window_effects(&app, enable)?;
-    state.engine.set_setting(
-        crate::providers::appconfig::KEY_PANEL_TRANSPARENCY,
-        if enable { "1" } else { "0" },
-    )
+pub(crate) async fn transparency_set(app: AppHandle, enable: bool) -> Result<(), String> {
+    apply_window_effects(&app, enable)
 }
 
 #[cfg(test)]
