@@ -8,13 +8,13 @@
 
 - [ ] 冷启动：热键（默认 ctrl+alt+space）呼出面板，焦点在搜索框可直接输入
 - [ ] zap.log 馧行 `startup version=… hotkey=… registered=true clip_enabled=…`
-- [ ] 馐面板四角停靠均能呼出（改设置后逐角验证）
+- [ ] 主面板四角停靠均能呼出（改设置后逐角验证）
 - [ ] 睡眠唤醒后热键仍可用、剪贴板监听仍收录（zap.log watcher 无 respawn）
 
 ## 拖拽与中转站
 
 - [ ] 资源管理器拖文件→落区条出现→悬停展开→松手→面板开启（开面板开关开/关两态）
-- [ ] 萱图/多文件/网络路径（NAS 死链）拖入不卡不崩
+- [ ] 截图/多文件/网络路径（NAS 死链）拖入不卡不崩
 - [ ] 多显示器 + 不同 DPI 缩放下落区条与面板定位正确
 
 ## 剪贴板与密码库
@@ -26,8 +26,9 @@
 
 ## 更新链路（发版机）
 
+- [ ] 私钥与 tauri.conf.json 公钥同对：发版机本地用 `TAURI_SIGNING_PRIVATE_KEY` 对任意文件跑一次 `pnpm tauri signer sign`，签名成功即私钥可用（2026-11-04 评审 R16：CI 无法校验配对，错配=全绿发版但全体用户更新静默失败）
 - [ ] 旧版本收到更新提示→下载→自动重启到新版（tauri updater /R 行为）
-- [ ] Release 三件套齐（setup.exe / latest.json / .sig / setup.sha256）且哈希一致
+- [ ] Release 四件套齐（setup.exe / setup.exe.sig / latest.json / setup.sha256）且哈希一致
 - [ ] 未签名提示（SmartScreen）文案与 release notes 的 SHA256 对得上
 
 ## 系统环境

@@ -46,9 +46,12 @@ pub struct SearchItem {
     pub id: String,
     pub title: String,
     pub subtitle: String,
-    /// app | clip | win | recent | web | url
+    /// app | clip | clipimg | win | recent | web | url | file | folder |
+    /// settings | stage | vault | info | cmd（各来源 id 前缀另见各自模块；
+    /// 前端镜像见 src/plugins/types.ts）
     pub kind: String,
-    /// 应用/文件为路径，窗口为 hwnd 数值，其余为 URL，剪贴板为内容本体
+    /// 应用/文件为路径，窗口为 hwnd 数值，其余为 URL；**剪贴板两 kind 为行号**
+    /// （回查全文/全图按行号走 DB，行可能已被清理——open_item 先探存在性）
     pub target: String,
     /// 应用图标 data URL（PNG），仅应用类有值；其余为 None
     pub icon: Option<String>,

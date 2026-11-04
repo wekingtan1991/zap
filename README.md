@@ -28,6 +28,7 @@ Tauri 2 + React 19 + shadcn/ui + Rust，仅支持 Windows 10/11。
 | JSON 工具 | 直接把 JSON 粘贴进输入框即识别（合法给摘要、疑似给错误定位），Enter 进工具：校验 / 美化 / 压缩 / 树形折叠 / 转 YAML / TS 类型；也可搜 `json`、`格式化` 等词进入 |
 | 文本工具 | 直接粘贴或键入时间戳 / UUID / Base64 / URL 编码即识别，Enter 进工具：时间戳↔日期 / Base64 / URL 编解码 / UUID v4 / MD5·SHA1·SHA256；也可搜 `tool`、`时间戳`、`base64` 等词进入 |
 | 链接清洗 | 粘贴带追踪参数的链接即识别并给出清洗后地址（复制即走）：去 `utm_*`、`share_*` 与广告/分享链高频追踪参数（gclid、fbclid、spm、vd_source、chksm 等）；工具内另有去零宽字符、弯引号转半角 |
+| 中转站 | 拖文件到屏幕角落的**落区条**（四角停靠可选）即暂存，面板内也可拖入/右键放入；跨应用接力搬运：多选批量、📌 固定、撤销恢复、合并粘贴；可呼出独立工作台视图集中处理（`Ctrl+,` 设置 → 中转站） |
 
 > **万能输入框**：不用记任何前缀词——JSON、时间戳、UUID、Base64、URL 编码这些内容粘贴（或打）进输入框，识别条目会自动置顶；呼出面板时若剪贴板里正是这类内容，同样自动识别。工具面板内可「粘贴替换」换一段内容继续处理，Esc 返回时搜索词原样保留。
 
@@ -113,7 +114,7 @@ Tauri 2 + React 19 + shadcn/ui + Rust，仅支持 Windows 10/11。
 - `%APPDATA%\com.ais.zap\` — `zap.db`（剪贴板历史 + 账号库，账号密码经 Windows DPAPI 加密）、`icons\`（应用图标缓存，键为路径+mtime，应用更新自动失效）
 - `%LOCALAPPDATA%\zap\everything\` — 托管的 Everything 便携版
 
-**隐私**：以上数据全部只存在本机，zap 不联网、不上传任何数据（Everything 仅在本地回环查询）。上传到 GitHub 的只是源码，不含任何个人数据。
+**隐私**：以上数据全部只存在本机，zap **不上传任何个人数据**。搜索与数据检索全部在本机完成（Everything 仅在本地回环查询）。zap 自身的外联仅限三处：①启动时检查更新（GitHub API）；②Everything 托管安装在你点「启用」时从 voidtools 官网下载便携版；③网页/网址类动作交给系统浏览器打开。上传到 GitHub 的只是源码，不含任何个人数据。
 
 ## 开发
 
@@ -144,7 +145,7 @@ pnpm test                                           # 前端单元测试（vites
 pnpm build                                          # 类型检查 + 构建（tsc && vite build）
 ```
 
-前端用 Tailwind CSS v4 + shadcn/ui（组件在 `src/components/ui/`，主题令牌在 `src/index.css`）。新增 shadcn 组件：
+前端用 Tailwind CSS v4 + shadcn/ui（组件在 `src/components/ui/`，主题令牌在 `src/styles/tokens.css`，样式入口 `src/styles/index.css`）。新增 shadcn 组件：
 
 ```bash
 pnpm dlx shadcn@latest add <component>     # components.json 已配置好别名与主题
@@ -152,11 +153,12 @@ pnpm dlx shadcn@latest add <component>     # components.json 已配置好别名�
 
 ## 架构速览
 
-- `src-tauri/src/providers/` — 每个搜索来源一个模块（apps / clipboard / everything / files / recent / settings / sysutil / vault / web / winsys），统一产出 `SearchItem`
-- `src-tauri/src/providers/mod.rs` — `SearchEngine` 汇总各源，`score_match` 统一打分（直连 → 拼音全拼 → 首字母）
-- `src-tauri/src/lib.rs` — 窗口/托盘/全局热键/失焦隐藏、Everything 托管安装与自动启动、命令入口
+- `src-tauri/src/providers/` — 每个搜索来源与领域一个模块（apps / clipboard〔拆 db·winclip·watcher 三层〕 / everything / files / recent / settings / stage / stagedrop / superpanel / texttools / jsontools / shortcuts / vault / totp / backup / icons / lnk / winsys 等 30+），统一产出 `SearchItem`
+- `src-tauri/src/providers/engine.rs` — `SearchEngine` 汇总各源并行执行；`matching.rs` 统一打分（直连 → 拼音全拼 → 首字母）
+- `src-tauri/src/lib.rs` — 窗口/托盘/全局热键/失焦隐藏/启动装配；`commands.rs` — Tauri 命令层（约 50 个命令，async + spawn_blocking）
 - `src/App.tsx` — 单面板 React 组件，输入防抖调用后端 `search`，账号库保护域与表单/导入/详情页状态机
-- `src/components/ui/` — shadcn/ui 组件；`src/index.css` — 设计令牌与全局动效关键帧
+- `src/plugins/` — 前端插件域（账号库 / 超级面板 / 中转站落区 / 注册表装配）
+- `src/components/ui/` — shadcn/ui 组件；`src/styles/` — 设计令牌（`tokens.css`）与按界面区域分类的样式文件
 
 ## 许可
 
