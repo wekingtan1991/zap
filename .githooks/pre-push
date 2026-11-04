@@ -1,5 +1,7 @@
 #!/bin/sh
-# pre-push 门禁：与 CI 同门槛，任一失败即中止推送（--no-verify 可跳过）
+# pre-push 门禁：fmt/clippy/Rust 单测/版本一致性/tsc/vitest/check:kb（2026-11-04
+# 评审 R16 补齐 Rust 单测），任一失败即中止推送（--no-verify 可跳过）。
+# vite build 不在此处：tsc 已覆盖类型面，构建耗时留 CI 兜底
 set -e
 root="$(git rev-parse --show-toplevel)"
 cd "$root/src-tauri"
@@ -9,6 +11,9 @@ cargo fmt --check
 
 echo "[pre-push] cargo clippy --all-targets -- -D warnings"
 cargo clippy -q --all-targets -- -D warnings
+
+echo "[pre-push] cargo test --lib"
+cargo test --lib
 
 cd "$root"
 echo "[pre-push] 版本一致性（四处 bump 同步）"

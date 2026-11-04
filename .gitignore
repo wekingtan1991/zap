@@ -41,6 +41,9 @@ src-tauri/target/
 # 诊断日志（保险）
 capture.log
 
+# 临时产物（CI 轮询脚本、SHA 快照等一次性文件）
+.tmp-*
+
 # IDE / 工具本地数据
 .codebuddy/
 .claude/

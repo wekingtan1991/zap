@@ -6,6 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 同分支连续 push：取消未完成的旧 run 只跑最新（2026-11-04 评审 R16——
+# 否则连续推送烧 Actions 配额且结果过时）
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: windows-latest

@@ -42,6 +42,8 @@ jobs:
       - name: Setup Rust
         # stable 分支头；具体版本钉在 src-tauri/rust-toolchain.toml（评审 P2-06）
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
 
       - name: Rust cache
         # v2.9.3
@@ -52,9 +54,32 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # 出包前门禁与 ci.yml 同面（2026-11-04 评审 R16：tag 可从任意机器对任意
+      # commit 打出，不经 CI——fmt/clippy/vitest/tsc/check:kb/版本一致性全部
+      # 在此重跑，从别的机器直推 tag 也逃不过）
+      - name: 格式检查（rustfmt）
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Lint（clippy 零警告）
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: 单元测试（出包前门禁）
         working-directory: src-tauri
         run: cargo test --lib
+
+      - name: 前端单元测试
+        run: pnpm test
+
+      - name: 键盘面纪律自检
+        run: pnpm check:kb
+
+      - name: 版本一致性校验
+        run: node scripts/verify-version.mjs
+
+      - name: 前端类型检查与构建
+        run: pnpm build
 
       - name: Build (tauri CLI)
         env:
