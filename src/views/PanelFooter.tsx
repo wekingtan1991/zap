@@ -62,13 +62,16 @@ export function PanelFooter({
             <span>行内操作</span>
             <Tooltip>
               <TooltipTrigger asChild>
-                <span
+                {/* 可聚焦按钮（R3 P2）：tabIndex=-1 的 span 让 radix Tooltip
+                    的 focus 触发通路永不发生，aria-label 挂 generic span 也不
+                    暴露——双失效改单点修复 */}
+                <button
+                  type="button"
                   className="zap-footer-help"
                   aria-label="Alt 组合键说明"
-                  tabIndex={-1}
                 >
                   <CircleHelp className="size-3.5" />
-                </span>
+                </button>
               </TooltipTrigger>
               <TooltipContent side="top" align="start">
                 <div className="zap-alt-help">
@@ -91,7 +94,7 @@ export function PanelFooter({
             <span className="zap-footer-sep" />
             {mergeMode ? (
               <>
-                <span className="zap-merge-status">
+                <span className="zap-merge-status" aria-live="polite">
                   合并模式 · 已选 {mergeSelected} 条
                 </span>
                 <button
@@ -143,13 +146,13 @@ export function PanelFooter({
             <span>搜索工具</span>
             <Tooltip>
               <TooltipTrigger asChild>
-                <span
+                <button
+                  type="button"
                   className="zap-footer-help"
                   aria-label="次级操作说明"
-                  tabIndex={-1}
                 >
                   <CircleHelp className="size-3.5" />
-                </span>
+                </button>
               </TooltipTrigger>
               <TooltipContent side="top" align="start">
                 <div className="zap-alt-help">

@@ -98,7 +98,10 @@ export function ShortcutsSection({ scList, scErr, setScList }: Props) {
           添加捷径
         </Button>
         {scErr && (
-          <span className="animate-shake text-[11px] text-destructive">
+          <span
+            className="animate-shake text-[11px] text-destructive"
+            role="alert"
+          >
             {scErr}
           </span>
         )}

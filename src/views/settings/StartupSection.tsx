@@ -72,7 +72,9 @@ export function StartupSection({
         />
       </div>
       {directErr && (
-        <div className="pb-1 text-[11px] text-destructive">{directErr}</div>
+        <div className="pb-1 text-[11px] text-destructive" role="alert">
+          {directErr}
+        </div>
       )}
       <div className="flex min-h-[42px] items-center justify-between gap-3">
         <span className="flex min-w-0 flex-col gap-px">
@@ -105,7 +107,10 @@ export function StartupSection({
         />
       </div>
       {hkError && (
-        <div className="animate-shake pb-1 text-[11px] text-destructive">
+        <div
+          className="animate-shake pb-1 text-[11px] text-destructive"
+          role="alert"
+        >
           {hkError}
         </div>
       )}

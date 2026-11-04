@@ -31,7 +31,7 @@ export function AppearanceSection({ st, setSt }: Props) {
     <Section icon={Palette} title="外观">
       <div className="flex min-h-[42px] items-center justify-between gap-3">
         <span className="flex min-w-0 flex-col gap-px">
-          <Label className="text-[13px] font-normal text-foreground">
+          <Label htmlFor="set-appearance" className="text-[13px] font-normal text-foreground">
             主题
           </Label>
           <span className="text-[11px] leading-snug text-muted-foreground">
@@ -46,7 +46,7 @@ export function AppearanceSection({ st, setSt }: Props) {
             applyAppearance(v as Appearance);
           }}
         >
-          <SelectTrigger className="h-[30px] w-[126px]">
+          <SelectTrigger id="set-appearance" className="h-[30px] w-[126px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

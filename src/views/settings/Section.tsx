@@ -15,7 +15,12 @@ export function Section({
 }) {
   return (
     <div className="zap-set-card">
-      <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80">
+      <div
+        // 标题导航语义（R3 P3）：一处改动覆盖十二分区，SR 可按标题跳转
+        role="heading"
+        aria-level={2}
+        className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-[0.15em] text-muted-foreground/80"
+      >
         <Icon className="size-3 text-primary/75" />
         {title}
       </div>

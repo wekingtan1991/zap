@@ -31,11 +31,14 @@
   background: var(--zap-w-12);
 }
 
-/* 底栏 Alt 组合键说明的问号图标 */
+/* 底栏 Alt 组合键说明的问号图标（R3 P2 起 span 改可聚焦 button，复位 UA 外观） */
 .zap-footer-help {
   display: inline-flex;
   align-items: center;
   margin-left: 2px;
+  padding: 0;
+  border: none;
+  background: none;
   color: var(--zap-fg-dim);
   cursor: help;
   transition: color 0.14s ease;

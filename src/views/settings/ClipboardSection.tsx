@@ -62,7 +62,7 @@ export function ClipboardSection({ st, setSt }: Props) {
         </Button>
       </div>
       <div className="flex min-h-[42px] items-center justify-between gap-3">
-        <Label className="text-[13px] font-normal text-foreground">
+        <Label htmlFor="set-clip-max" className="text-[13px] font-normal text-foreground">
           保留条数
         </Label>
         <Select
@@ -72,7 +72,7 @@ export function ClipboardSection({ st, setSt }: Props) {
             setSt((s) => (s ? { ...s, clipMax: Number(v) } : s))
           }
         >
-          <SelectTrigger className="h-[30px] w-[126px]">
+          <SelectTrigger id="set-clip-max" className="h-[30px] w-[126px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

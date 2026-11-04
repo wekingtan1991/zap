@@ -264,7 +264,14 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         <AboutSection />
       </div>
       <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-[18px] py-1.5">
-        <Button size="sm" className="shrink-0" disabled={!dirty} onClick={() => void saveSettings()}>
+        <Button
+          size="sm"
+          className="shrink-0"
+          disabled={!dirty}
+          // 置灰原因可感知（R3 P3）：颜色不再是唯一表达
+          title={dirty ? undefined : "没有未保存的更改"}
+          onClick={() => void saveSettings()}
+        >
           保存
         </Button>
       </div>

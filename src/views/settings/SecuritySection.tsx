@@ -21,7 +21,7 @@ export function SecuritySection({ st, setSt }: Props) {
   return (
     <Section icon={KeyRound} title="密码安全">
       <div className="flex min-h-[42px] items-center justify-between gap-3">
-        <Label className="text-[13px] font-normal text-foreground">
+        <Label htmlFor="set-pwd-clear" className="text-[13px] font-normal text-foreground">
           复制后清空剪贴板
         </Label>
         <Select
@@ -30,7 +30,7 @@ export function SecuritySection({ st, setSt }: Props) {
             setSt((s) => (s ? { ...s, pwdClearSecs: Number(v) } : s))
           }
         >
-          <SelectTrigger className="h-[30px] w-[126px]">
+          <SelectTrigger id="set-pwd-clear" className="h-[30px] w-[126px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

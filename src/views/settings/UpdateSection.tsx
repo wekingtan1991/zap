@@ -61,7 +61,15 @@ export function UpdateSection({ updater, appVersion }: Props) {
                 <span className="shrink-0 text-xs text-muted-foreground">
                   正在下载更新
                 </span>
-                <span className="h-1 w-[90px] shrink-0 overflow-hidden rounded-full bg-muted">
+                <span
+                  // 进度语义（R3 P3）：SR 听得到下载进度
+                  className="h-1 w-[90px] shrink-0 overflow-hidden rounded-full bg-muted"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={updateProgress}
+                  aria-label="更新下载进度"
+                >
                   <span
                     className="block h-full rounded-full bg-primary transition-[width] duration-150"
                     style={{ width: `${updateProgress}%` }}

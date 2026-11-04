@@ -24,7 +24,7 @@ export function StageSection({ st, setSt }: Props) {
     <Section icon={Inbox} title="中转站">
       <div className="flex min-h-[42px] items-center justify-between gap-3">
         <span className="flex min-w-0 flex-col gap-px">
-          <Label className="text-[13px] font-normal text-foreground">
+          <Label htmlFor="set-stage-max" className="text-[13px] font-normal text-foreground">
             未固定条目容量
           </Label>
           <span className="text-[11px] leading-snug text-muted-foreground">
@@ -37,7 +37,7 @@ export function StageSection({ st, setSt }: Props) {
             setSt((s) => (s ? { ...s, stageMax: Number(v) } : s))
           }
         >
-          <SelectTrigger className="h-[30px] w-[126px]">
+          <SelectTrigger id="set-stage-max" className="h-[30px] w-[126px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
