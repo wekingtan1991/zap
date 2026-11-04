@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Check, Copy, Layers, Search, Sparkles } from "lucide-react";
+import { toast } from "sonner";
 
 /// 后端 superpanel::SuperAction 的线协议镜像
 interface SuperAction {
@@ -55,8 +56,17 @@ export function SuperPanel({ text, actions }: Props) {
   };
 
   const run = (id: string) => {
-    setDone(id);
-    setTimeout(() => invoke("superpanel_act", { action: id, text }), 120);
+    // ✓ 只在动作真正执行成功后点亮（2026-11-04 评审 R19/R9）：原先 setDone
+    // 在执行前、invoke 不接错误——失败也亮 ✓ 且 unhandled rejection 无任何
+    // 反馈通道。失败即取消 ✓ 并 toast（本窗口的 Toaster 在 main.tsx 挂载）
+    setTimeout(() => {
+      invoke("superpanel_act", { action: id, text })
+        .then(() => setDone(id))
+        .catch((e) => {
+          setDone(null);
+          toast.error("操作失败：" + String(e));
+        });
+    }, 120);
   };
 
   // Esc 收起 / ↑↓ 移动选中 / Enter 执行——键盘语义与主面板一致

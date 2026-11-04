@@ -298,16 +298,20 @@ function AppView() {
       invoke<SearchItem[]>("search", { query: "" })
         .then(async (res) => {
           if (queryRef.current) return;
-          // 呼出期状态注入：Everything 未运行追加启用条目（逻辑收敛在 commands 模块）
+          // 首帧先出列表（2026-11-04 评审 R2）：Everything 未装时 startupEntries
+          // 的端口探测最坏 3×250ms，不该扣住呼出的第一帧——先渲染再追加启用条目
+          setItems(res);
           const extra = await startupEntries();
-          if (!queryRef.current) setItems([...res, ...extra]);
-          if (extra.length > 0) {
-            kickEverythingEnsure(() => {
-              if (!queryRef.current) {
-                setItems((cur) => cur.filter((x) => x.id !== "cmd:everything"));
-              }
-            });
-          }
+          if (queryRef.current || extra.length === 0) return;
+          setItems((cur) => {
+            const have = new Set(cur.map((x) => x.id));
+            return [...cur, ...extra.filter((x) => !have.has(x.id))];
+          });
+          kickEverythingEnsure(() => {
+            if (!queryRef.current) {
+              setItems((cur) => cur.filter((x) => x.id !== "cmd:everything"));
+            }
+          });
         })
         .catch(() => {});
     });
@@ -881,7 +885,10 @@ function AppView() {
     return (
       <VaultRevealOverlay
         reveal={view.data}
-        onClose={() => setView({ kind: "main" })}
+        // 复用 closeDetail（稳定引用，2026-11-04 评审 R9）：内联箭头每次渲染
+        // 新建会让浮层 30s 自动关闭计时器随父级渲染无限重置——安全语义靠
+        // 巧合成立；closeDetail 同样回主列表并归还输入焦点
+        onClose={vault.closeDetail}
         focusRef={focusPanelRef}
       />
     );

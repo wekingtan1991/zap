@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Toaster } from "@/components/ui/sonner";
 import App from "./App";
 import { SuperPanelRoot } from "./plugins/super/SuperPanel";
 import { StageDropRoot } from "./plugins/stage/StageDropRoot";
@@ -19,7 +20,12 @@ if (label === "stagedrop") {
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     {label === "superpanel" ? (
-      <SuperPanelRoot />
+      <>
+        <SuperPanelRoot />
+        {/* 超级面板窗口此前没有任何错误反馈通道（2026-11-04 评审 R19）：
+            动作失败的 toast 落在这里，与主面板同一 sonner 组件 */}
+        <Toaster />
+      </>
     ) : label === "stagedrop" ? (
       <StageDropRoot />
     ) : (
