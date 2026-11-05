@@ -28,7 +28,6 @@
     "build": "tsc && vite build",
     "test": "vitest run",
     "check:kb": "node scripts/check-keyboard-faces.mjs",
-    "check:chat": "node scripts/check-chat.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
