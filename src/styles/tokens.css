@@ -75,6 +75,11 @@
   --zap-err-fg: #fecaca;
   --zap-warn: #fbbf24;
   --zap-warn-2: #fcd34d;
+  /* logo 磁贴品牌色（2026-11-04 评审 R11）：渐变端点与图标色入令牌，
+     浅色保琥珀渐变不再吃深棕 warn；图标近黑在两端琥珀上均 ≥3:1 */
+  --zap-logo-grad-a: var(--zap-warn);
+  --zap-logo-grad-b: #d97706;
+  --zap-logo-fg: #1a1205;
   --zap-green-soft: #a5d6a7;
   --zap-green: #7ed957;
   --zap-json-key: #7dd3fc;
@@ -143,6 +148,11 @@
   --zap-err-fg: #991b1b;
   --zap-warn: #92400e;
   --zap-warn-2: #92400e;
+  /* logo 磁贴浅色端：琥珀品牌色自持（不走深棕 warn），近黑图标对两端
+     #d97706/#b45309 分别 5.8:1 与 3.7:1，过 WCAG 1.4.11 图形件 3:1 */
+  --zap-logo-grad-a: #d97706;
+  --zap-logo-grad-b: #b45309;
+  --zap-logo-fg: #1a1205;
   --zap-green-soft: #15803d;
   --zap-green: #16a34a;
   --zap-json-key: #0369a1;

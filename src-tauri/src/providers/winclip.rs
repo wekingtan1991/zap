@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::util::now_ms;
-/// 账号库复制（密码/用户名/备注）时开启：窗口期内的剪贴板变更不入库（阅后即焚）。
+/// 账号库复制（密码/用户名/备注）时开启：窗口期内的剪贴板变更不入库（延时清空）。
 /// 用时间窗而非单次标记：密码复制会连续写多次剪贴板（明文 + 2 个排除格式），
 /// 每次都触发变更事件，单次标记只能挡第一条。
 pub static SUPPRESS_CLIP_UNTIL: AtomicU64 = AtomicU64::new(0);

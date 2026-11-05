@@ -60,7 +60,7 @@ interface Props {
   onOpenUrl: () => void;
 }
 
-/// 账号详情：逐行展示，行尾一键复制（密码带掩码切换与阅后即焚，均不入剪贴板历史）。
+/// 账号详情：逐行展示，行尾一键复制（密码带掩码切换与延时清空，均不入剪贴板历史）。
 /// showPw/确认删除弹窗/复制 ✓ 全部本地自持——它们只在本页有意义，随挂载复位
 export function VaultDetailView({
   detail,

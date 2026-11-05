@@ -229,7 +229,7 @@ export function useVaultActions(deps: VaultActionsDeps) {
   );
 
   /// 详情页行尾复制：username / password / url / notes / totp
-  /// （密码带阅后即焚、验证码排除剪贴板历史，均不入历史）。
+  /// （密码带延时清空、验证码排除剪贴板历史，均不入历史）。
   /// 返回成功与否，✓ 点亮状态由详情页本地持有
   const copyField = useCallback(
     async (

@@ -365,7 +365,8 @@ pub fn feedback_text(outcome: &super::stage::StageAddOutcome) -> String {
         if outcome.added > 0 {
             format!("已放入 {} 条 · 共 {} 条", outcome.added, outcome.total)
         } else {
-            format!("已在中转站（已置顶）· 共 {} 条", outcome.total)
+            // 「固定」是 clip/stage 域的用词（R12 P2：原「已置顶」串了 vault 域）
+            format!("已在中转站（已固定）· 共 {} 条", outcome.total)
         }
     } else if outcome.added > 0 {
         format!(
@@ -691,8 +692,8 @@ mod tests {
         );
         assert_eq!(
             feedback_text(&outcome(0, 5, &[])),
-            "已在中转站（已置顶）· 共 5 条",
-            "纯重复放入 = 置顶不是新增"
+            "已在中转站（已固定）· 共 5 条",
+            "纯重复放入 = 固定不是新增"
         );
         assert_eq!(
             feedback_text(&outcome(2, 7, &["路径不存在：x"])),

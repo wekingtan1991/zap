@@ -96,7 +96,7 @@ pub fn spawn_watcher(db_path: PathBuf) {
             }
             impl ClipboardHandler for Handler {
                 fn on_clipboard_change(&mut self) -> CallbackResult {
-                    // 账号库阅后即焚：自身复制窗口内的变更一律不入库（高频路径，不落日志）
+                    // 账号库延时清空防护：自身复制窗口内的变更一律不入库（高频路径，不落日志）
                     if in_suppress_window() {
                         return CallbackResult::Next;
                     }
