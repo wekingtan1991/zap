@@ -23,7 +23,7 @@ describe("routeItem（runItem 的分发决策）", () => {
   });
 
   it("有专属激活行为的 kind 走 activate 且携带注册表 UI", () => {
-    for (const kind of ["vault", "json", "tool", "cmd"]) {
+    for (const kind of ["vault", "json", "tool", "port", "cmd"]) {
       const route = routeItem(item({ kind }));
       expect(route.type, kind).toBe("activate");
       if (route.type === "activate") {

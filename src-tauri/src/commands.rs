@@ -253,6 +253,35 @@ pub(crate) async fn tool_uuid() -> Result<String, String> {
         .map_err(|e| e.to_string())?
 }
 
+// ---------- 端口工具域 ----------
+
+/// 列出本地端口占用（默认只 LISTEN）。IP Helper 取表 + 进程查询都压后台线程
+#[tauri::command]
+pub(crate) async fn ports_list(
+    filter: Option<u16>,
+    only_listen: bool,
+) -> Result<Vec<crate::providers::ports::PortEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::providers::ports::list_ports(filter, only_listen)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 结束占用端口的进程：后端重查归属 + 启动时间复核 + 保护名单，前端确认弹窗之外再挡一层
+#[tauri::command]
+pub(crate) async fn ports_kill(
+    port: u16,
+    pid: u32,
+    started_at: Option<i64>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::providers::ports::kill_port(port, pid, started_at)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 识别条目回查原文：按行号读剪贴板历史（进入工作台时以识别时刻的内容为准）
 #[tauri::command]
 pub(crate) async fn clip_row(state: tauri::State<'_, AppState>, id: i64) -> Result<String, String> {

@@ -49,6 +49,8 @@ impl SearchEngine {
         let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
             std::sync::Arc::new(jsontools::JsonToolsPlugin),
             std::sync::Arc::new(texttools::TextToolsPlugin),
+            // 端口查询：probe 只做字符串判定，取表只在进入工作台后发生
+            std::sync::Arc::new(ports::PortsPlugin),
             std::sync::Arc::new(stage::StagePlugin),
             apps.clone(),
             std::sync::Arc::new(files::FilesPlugin),

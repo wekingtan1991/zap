@@ -232,7 +232,9 @@ pub fn run() {
             commands::superpanel_payload,
             commands::start_hotkey_capture,
             commands::stop_hotkey_capture,
-            commands::open_data_dir
+            commands::open_data_dir,
+            commands::ports_list,
+            commands::ports_kill
         ])
         .setup(|app| {
             // 数据库与剪贴板监听线程

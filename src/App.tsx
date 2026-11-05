@@ -38,6 +38,8 @@ import { VaultImportView } from "@/plugins/vault/VaultImportView";
 import { useVaultActions } from "@/plugins/vault/useVaultActions";
 import { JsonWorkbench } from "@/plugins/json/JsonWorkbench";
 import { ToolWorkbench } from "@/plugins/text/ToolWorkbench";
+import { PortsWorkbench } from "@/plugins/ports/PortsWorkbench";
+import { initialPortOf } from "@/plugins/ports/types";
 import { PanelFooter } from "@/views/PanelFooter";
 import { ResultsContextMenu } from "@/views/ResultsContextMenu";
 import { ResultsList } from "@/views/ResultsList";
@@ -66,6 +68,7 @@ export type View =
   | { kind: "import" }
   | { kind: "json"; source: WorkbenchSource; backQuery: string }
   | { kind: "tool"; source: WorkbenchSource; backQuery: string }
+  | { kind: "port"; port: number | null; backQuery: string }
   | { kind: "clipimg"; rowid: number; backQuery: string };
 
 const VAULT_ADD_ENTRY: SearchItem = {
@@ -648,6 +651,17 @@ function AppView() {
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
 
+  /// 端口工作台进入：target "all" = 全量列表，数字串 = 预置端口过滤。
+  /// 不改 openWorkbench（其内容源是 text/clip/empty），单独装配视图；
+  /// backQuery 沿用工作台返回语义，Esc 回主面板恢复进入前搜索词。
+  const openPorts = useCallback((it: SearchItem) => {
+    setView({
+      kind: "port",
+      port: initialPortOf(it.target),
+      backQuery: queryRef.current,
+    });
+  }, []);
+
   // ---------- 图片预览面板 ----------
   // 右键「预览大图」入口（Enter 保留回贴不占——粘贴是图片条目的第一动作）：
   // 行号寻址在 target（clipRowId，与文本 clip 同构）；
@@ -717,6 +731,7 @@ function AppView() {
     openVaultDetail: (it) => void vault.openDetail(it),
     openJson: (it) => openWorkbench("json", it),
     openTool: (it) => openWorkbench("tool", it),
+    openPort: (it) => openPorts(it),
     runCommand: (target) =>
       void runCommand(target, {
         busyRef,
@@ -728,7 +743,7 @@ function AppView() {
     clipPin: (it) => void clipPin(it),
     openStage: () => void openStage(),
     openClipImagePreview: openClipImagePreview,
-  }), [activate, vault.openDetail, vault.vaultAction, clipPin, openStage, openClipImagePreview, openWorkbench]);
+  }), [activate, vault.openDetail, vault.vaultAction, clipPin, openStage, openClipImagePreview, openWorkbench, openPorts]);
 
   const runItem = useCallback(
     (it: SearchItem | undefined) => {
@@ -971,6 +986,16 @@ function AppView() {
               : undefined
         }
         clipRow={view.source.kind === "clip" ? view.source.rowid : undefined}
+        onBack={() => closeWorkbench(view.backQuery)}
+        focusRef={focusPanelRef}
+      />
+    );
+  }
+
+  if (view.kind === "port") {
+    return (
+      <PortsWorkbench
+        initialPort={view.port}
         onBack={() => closeWorkbench(view.backQuery)}
         focusRef={focusPanelRef}
       />

@@ -19,6 +19,7 @@ describe("kindUi 注册表", () => {
       url: "网址",
       json: "JSON",
       tool: "工具",
+      port: "端口",
       cmd: "功能",
       info: "状态",
     };
@@ -28,7 +29,7 @@ describe("kindUi 注册表", () => {
   });
 
   it("专属激活行为只出现在预期的 kind 上", () => {
-    const withActivate = ["vault", "json", "tool", "cmd", "stage"];
+    const withActivate = ["vault", "json", "tool", "port", "cmd", "stage"];
     const withoutActivate = [
       "app",
       "clip",
@@ -110,7 +111,7 @@ describe("kindUi 注册表", () => {
       ["vault_delete", "删除…"],
     ]);
     // 工具/状态/功能/设置无右键菜单（undefined = 只压默认菜单）
-    for (const kind of ["json", "tool", "cmd", "info", "settings"]) {
+    for (const kind of ["json", "tool", "port", "cmd", "info", "settings"]) {
       expect(kindUi(kind)?.ctxActions, kind).toBeUndefined();
     }
   });

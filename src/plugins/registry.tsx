@@ -13,6 +13,8 @@ export interface ItemActions {
   openJson: (it: SearchItem) => void;
   /// 打开文本工具工作台（target 语义同 openJson）
   openTool: (it: SearchItem) => void;
+  /// 打开端口查询工作台（target = "all" 全量 / 数字串 = 初始端口过滤）
+  openPort: (it: SearchItem) => void;
   runCommand: (target: string) => void;
   /// 默认动作：交给后端 open_item（启动应用 / 打开文件 / 激活窗口等）
   openExternal: (it: SearchItem) => void;
@@ -162,6 +164,12 @@ const REGISTRY: Record<string, KindUi> = {
     label: "工具",
     badge: "tool",
     activate: (it, act) => act.openTool(it),
+  },
+  // 端口查询：搜索入口（target=all）与万能输入框识别（target=端口）共用同一视图
+  port: {
+    label: "端口",
+    badge: "tool",
+    activate: (it, act) => act.openPort(it),
   },
   cmd: {
     label: "功能",
