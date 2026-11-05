@@ -7,7 +7,7 @@
 ## 启动与呼出
 
 - [ ] 冷启动：热键（默认 ctrl+alt+space）呼出面板，焦点在搜索框可直接输入
-- [ ] zap.log 馧行 `startup version=… hotkey=… registered=true clip_enabled=…`
+- [ ] zap.log 记有 `startup version=… hotkey=… registered=true clip_enabled=…`
 - [ ] 主面板四角停靠均能呼出（改设置后逐角验证）
 - [ ] 睡眠唤醒后热键仍可用、剪贴板监听仍收录（zap.log watcher 无 respawn）
 
