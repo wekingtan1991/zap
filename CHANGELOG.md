@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-11-05
+
 ### 无障碍与交互（2026-11-05 续批）
 
 - **读屏与键盘**：主面板结果列表与中转站列表补 `combobox`/`listbox`/`option` 语义及 `aria-activedescendant`，免焦点键盘面对屏幕阅读器可见；三个自绘弹窗补 `aria-labelledby` 与焦点陷阱（初焦 / Tab 困笼 / 关闭回焦）；右键菜单补 `menu`/`menuitem`、打开聚焦首项、菜单内方向键循环、Esc 回焦输入框。顺路收口分区标题 heading、更新进度条 progressbar、错误 role=alert、Select 关联 Label、合并计数 aria-live 等。零键盘面行为改动、零新增组合键
