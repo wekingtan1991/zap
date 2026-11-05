@@ -268,12 +268,12 @@ mod tests {
 
     #[test]
     fn 手机号与多段() {
-        let text = "demo-mos\n13800138000\n\ndemo-REDACTED\n13900000000\n13900000001Yz\n\ndemo-job测试\nhttp://192.0.2.14:8080/demo-admin\ndemo_job/Demo!9012$o";
+        let text = "demo-mos\n13800138000\n\n演示第二组测试账号\n13900000000\n13900000001Yz\n\ndemo-job测试\nhttp://192.0.2.14:8080/demo-admin\ndemo_job/Demo!9012$o";
         let r = parse_blob(text);
         assert_eq!(r.len(), 3);
         assert_eq!(r[0].title, "demo-mos");
         assert_eq!(r[0].username, "13800138000");
-        assert_eq!(r[1].title, "demo-REDACTED");
+        assert_eq!(r[1].title, "演示第二组测试账号");
         assert_eq!(r[1].username, "13900000000");
         assert_eq!(r[1].password, "13900000001Yz");
         assert_eq!(r[2].title, "demo-job测试");
