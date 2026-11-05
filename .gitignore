@@ -80,3 +80,8 @@ coverage/
 *.msi
 *.zip
 *.sig
+
+# 评审/协作档案：本地留存，不入库
+# 注意：.gitignore 对已跟踪文件无效，已入库的 reviews/2026-10-29/ 仍继续跟踪；
+# 本规则用于防止 reviews/2026-11-04/ 及以后新建的评审目录被 git add -A 误提交。
+reviews/
