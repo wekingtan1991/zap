@@ -6252,7 +6252,7 @@ dependencies = [
  "md-5",
  "pbkdf2",
  "pinyin",
- "png 0.17.16",
+ "png 0.18.1",
  "reqwest",
  "rusqlite",
  "serde",
