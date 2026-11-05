@@ -16,6 +16,9 @@ echo "[pre-push] cargo test --lib"
 cargo test --lib
 
 cd "$root"
+echo "[pre-push] 敏感信息扫描（check:secrets）"
+pnpm check:secrets
+
 echo "[pre-push] 版本一致性（四处 bump 同步）"
 node scripts/verify-version.mjs
 
