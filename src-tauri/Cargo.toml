@@ -27,7 +27,7 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 urlencoding = "2"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 clipboard-master = "4.0.0"
 arboard = "3.6.1"
 # Everything 官网便携版下载用（everything.rs blocking 客户端）。
