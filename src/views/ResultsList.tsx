@@ -59,12 +59,13 @@ const ResultRow = React.memo(function ResultRow({
       onClick={() => onRun(it)}
       onContextMenu={(e) => onContext(e, it)}
     >
-      {it.icon ? (
+      {/* 行首类型胶囊列：常驻渲染统一行首视觉——图标行胶囊+图标并存，
+          无图标行（剪贴板文本等）胶囊独占槽位；分类色承担扫视辨识 */}
+      <Badge variant={ui?.badge ?? "secondary"} className="zap-kind">
+        {ui?.label ?? it.kind}
+      </Badge>
+      {it.icon && (
         <img className="zap-ico" src={it.icon} alt="" draggable={false} />
-      ) : (
-        <Badge variant={ui?.badge ?? "secondary"}>
-          {ui?.label ?? it.kind}
-        </Badge>
       )}
       <div className="zap-texts">
         <div className="zap-title">

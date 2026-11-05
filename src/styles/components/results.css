@@ -144,6 +144,12 @@
   object-fit: contain;
 }
 
+/* 行首类型胶囊列（ResultsList 常驻渲染）：固定最小宽让 2/3 字标签
+   对齐成列——「剪贴板」3 字撑满、「应用」2 字居中，分类色扫视辨识 */
+.zap-kind {
+  min-width: 48px;
+}
+
 /* ---------- 列表文本 ---------- */
 .zap-texts {
   min-width: 0;
