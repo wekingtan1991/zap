@@ -29,7 +29,7 @@ jobs:
           echo "版本校验通过：$TAG == v$VERSION"
 
       - name: Install pnpm
-        # v4.0.0（annotated tag 须解析成 commit SHA：tag 对象 SHA 无法被 Actions 解析）
+        # v6.1.0（annotated tag 须解析成 commit SHA：tag 对象 SHA 无法被 Actions 解析）
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - name: Setup Node

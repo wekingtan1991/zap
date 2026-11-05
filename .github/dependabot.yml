@@ -10,6 +10,11 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # TypeScript 7 为原生重写版，编译器 API 与行为均有破坏性变更，
+      # 升级需单独评估（tsc --noEmit 与 vite 插件的兼容性）。
+      - dependency-name: "typescript"
+        versions: [">= 7.0.0"]
 
   # Rust 依赖：每周一批
   - package-ecosystem: cargo
@@ -21,6 +26,21 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # 以下均为 0.x 依赖。semver 下 0.x 的跨 minor 升级（0.62→0.100）
+      # 在 dependabot 眼里不是 major，无法用 update-types 拦截，
+      # 但这些跨度均为破坏性 API 变更（CI 必然失败），统一改人工评估。
+      # 只忽略"跨到下一个 minor 及以上"，同 minor 内的 patch 仍然照常提。
+      - dependency-name: "windows-core"
+        versions: [">= 0.63.0"]
+      - dependency-name: "aes-gcm"
+        versions: [">= 0.11.0"]
+      - dependency-name: "getrandom"
+        versions: [">= 0.4.0"]
+      - dependency-name: "png"
+        versions: [">= 0.18.0"]
+      - dependency-name: "rusqlite"
+        versions: [">= 0.41.0"]
 
   # GitHub Actions：含 commit SHA 固定的引用，dependabot 会提升级 PR
   - package-ecosystem: github-actions
