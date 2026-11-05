@@ -233,50 +233,52 @@ pub fn parse_blob(text: &str) -> Vec<ParsedAccount> {
 mod tests {
     use super::parse_blob;
 
+    // 本模块测试数据一律为合成值：IP 用 RFC 5737 文档网段、域名用 RFC 2606
+    // 保留域、手机号用 138/139 测试号段。禁止把真实账号文本贴进来当用例。
     #[test]
     fn 标签行换行式() {
-        let text = "接入地址\nhttps://REDACTED:52125\n账号\nREDACTED\n密码\nREDACTED";
+        let text = "接入地址\nhttps://203.0.113.10:52125\n账号\n示例用户\n密码\nDemo#Pass123";
         let r = parse_blob(text);
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].url, "https://REDACTED:52125");
-        assert_eq!(r[0].username, "REDACTED");
-        assert_eq!(r[0].password, "REDACTED");
+        assert_eq!(r[0].url, "https://203.0.113.10:52125");
+        assert_eq!(r[0].username, "示例用户");
+        assert_eq!(r[0].password, "Demo#Pass123");
     }
 
     #[test]
     fn 键值对式() {
-        let text = "REDACTED：\nusername: REDACTED\npassword: REDACTED";
+        let text = "demo-gitlab：\nusername: demo_user\npassword: DemoPassTwo";
         let r = parse_blob(text);
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].title, "REDACTED");
-        assert_eq!(r[0].username, "REDACTED");
-        assert_eq!(r[0].password, "REDACTED");
+        assert_eq!(r[0].title, "demo-gitlab");
+        assert_eq!(r[0].username, "demo_user");
+        assert_eq!(r[0].password, "DemoPassTwo");
     }
 
     #[test]
     fn 斜杠对与域名() {
-        let text = "sql审核平台：\nREDACTED/\nREDACTED / REDACTED";
+        let text = "demo审核平台：\nsqlaudit.example.com/\ndemo_user / Demo@5678{";
         let r = parse_blob(text);
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].title, "sql审核平台");
-        assert_eq!(r[0].url, "https://REDACTED/");
-        assert_eq!(r[0].username, "REDACTED");
-        assert_eq!(r[0].password, "REDACTED");
+        assert_eq!(r[0].title, "demo审核平台");
+        assert_eq!(r[0].url, "https://sqlaudit.example.com/");
+        assert_eq!(r[0].username, "demo_user");
+        assert_eq!(r[0].password, "Demo@5678{");
     }
 
     #[test]
     fn 手机号与多段() {
-        let text = "REDACTED\nREDACTED\n\nREDACTED\nREDACTED\nREDACTED\n\nREDACTED\nhttp://REDACTED:6060/REDACTED\nREDACTED/REDACTED";
+        let text = "demo-mos\n13800138000\n\ndemo-REDACTED\n13900000000\n13900000001Yz\n\ndemo-job测试\nhttp://192.0.2.14:8080/demo-admin\ndemo_job/Demo!9012$o";
         let r = parse_blob(text);
         assert_eq!(r.len(), 3);
-        assert_eq!(r[0].title, "REDACTED");
-        assert_eq!(r[0].username, "REDACTED");
-        assert_eq!(r[1].title, "REDACTED");
-        assert_eq!(r[1].username, "REDACTED");
-        assert_eq!(r[1].password, "REDACTED");
-        assert_eq!(r[2].title, "REDACTED");
-        assert_eq!(r[2].url, "http://REDACTED:6060/REDACTED");
-        assert_eq!(r[2].username, "REDACTED");
-        assert_eq!(r[2].password, "REDACTED");
+        assert_eq!(r[0].title, "demo-mos");
+        assert_eq!(r[0].username, "13800138000");
+        assert_eq!(r[1].title, "demo-REDACTED");
+        assert_eq!(r[1].username, "13900000000");
+        assert_eq!(r[1].password, "13900000001Yz");
+        assert_eq!(r[2].title, "demo-job测试");
+        assert_eq!(r[2].url, "http://192.0.2.14:8080/demo-admin");
+        assert_eq!(r[2].username, "demo_job");
+        assert_eq!(r[2].password, "Demo!9012$o");
     }
 }

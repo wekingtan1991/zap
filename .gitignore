@@ -49,3 +49,34 @@ capture.log
 .claude/
 .workbuddy/
 *.tsbuildinfo
+
+# 本地凭证与数据库（补漏）
+*.sqlite
+*.sqlite3
+*.db-journal
+.envrc
+.npmrc
+.netrc
+credentials.json
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+id_rsa*
+*.ppk
+
+# 测试覆盖率与编辑器临时文件
+coverage/
+*.lcov
+*.bak
+*.orig
+*.rej
+*.swp
+*~
+
+# 本地打包 / 签名产物（发版产物由 CI 生成，不入库）
+*.exe
+*.msi
+*.zip
+*.sig
