@@ -715,7 +715,7 @@ mod tests {
     fn 保护判定按pid名路径三重() {
         assert!(is_protected(0, "", None));
         assert!(is_protected(4, "system", None));
-        assert!(is_protected(999, "", None) == false);
+        assert!(!is_protected(999, "", None));
         assert!(is_protected(
             std::process::id(),
             "java.exe",
@@ -797,11 +797,13 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn 解析v6表缓冲的偏移() {
-        let mut row = MIB_TCP6ROW_OWNER_PID::default();
-        row.ucLocalAddr = [0u8; 16]; // ::
-        row.dwLocalPort = 0x901F;
-        row.dwState = MIB_TCP_STATE_LISTEN.0 as u32;
-        row.dwOwningPid = 7777;
+        let row = MIB_TCP6ROW_OWNER_PID {
+            ucLocalAddr: [0u8; 16], // ::
+            dwLocalPort: 0x901F,
+            dwState: MIB_TCP_STATE_LISTEN.0 as u32,
+            dwOwningPid: 7777,
+            ..Default::default()
+        };
         let offset = std::mem::offset_of!(MIB_TCP6TABLE_OWNER_PID, table);
         let stride = std::mem::size_of::<MIB_TCP6ROW_OWNER_PID>();
         let mut buf = vec![0u8; offset + stride];
