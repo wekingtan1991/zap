@@ -237,48 +237,48 @@ mod tests {
     // 保留域、手机号用 138/139 测试号段。禁止把真实账号文本贴进来当用例。
     #[test]
     fn 标签行换行式() {
-        let text = "接入地址\nhttps://203.0.113.10:52125\n账号\n示例用户\n密码\nDemo#Pass123";
+        let text = "接入地址\nhttps://203.0.113.10:52125\n账号\n示例用户\n密码\nexample-pass-1";
         let r = parse_blob(text);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].url, "https://203.0.113.10:52125");
         assert_eq!(r[0].username, "示例用户");
-        assert_eq!(r[0].password, "Demo#Pass123");
+        assert_eq!(r[0].password, "example-pass-1");
     }
 
     #[test]
     fn 键值对式() {
-        let text = "demo-gitlab：\nusername: demo_user\npassword: DemoPassTwo";
+        let text = "Example Service：\nusername: alice\npassword: example-pass-2";
         let r = parse_blob(text);
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].title, "demo-gitlab");
-        assert_eq!(r[0].username, "demo_user");
-        assert_eq!(r[0].password, "DemoPassTwo");
+        assert_eq!(r[0].title, "Example Service");
+        assert_eq!(r[0].username, "alice");
+        assert_eq!(r[0].password, "example-pass-2");
     }
 
     #[test]
     fn 斜杠对与域名() {
-        let text = "demo审核平台：\nsqlaudit.example.com/\ndemo_user / Demo@5678{";
+        let text = "示例平台：\nwww.example.com/\nalice / example-pass{";
         let r = parse_blob(text);
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].title, "demo审核平台");
-        assert_eq!(r[0].url, "https://sqlaudit.example.com/");
-        assert_eq!(r[0].username, "demo_user");
-        assert_eq!(r[0].password, "Demo@5678{");
+        assert_eq!(r[0].title, "示例平台");
+        assert_eq!(r[0].url, "https://www.example.com/");
+        assert_eq!(r[0].username, "alice");
+        assert_eq!(r[0].password, "example-pass{");
     }
 
     #[test]
     fn 手机号与多段() {
-        let text = "demo-mos\n13800138000\n\n演示第二组测试账号\n13900000000\n13900000001Yz\n\ndemo-job测试\nhttp://192.0.2.14:8080/demo-admin\ndemo_job/Demo!9012$o";
+        let text = "Example App A\n13800138000\n\n示例服务二\n13900138000\n13800138001Yz\n\n示例任务\nhttp://192.0.2.14:8080/example-admin\nbob/example-pass!";
         let r = parse_blob(text);
         assert_eq!(r.len(), 3);
-        assert_eq!(r[0].title, "demo-mos");
+        assert_eq!(r[0].title, "Example App A");
         assert_eq!(r[0].username, "13800138000");
-        assert_eq!(r[1].title, "演示第二组测试账号");
-        assert_eq!(r[1].username, "13900000000");
-        assert_eq!(r[1].password, "13900000001Yz");
-        assert_eq!(r[2].title, "demo-job测试");
-        assert_eq!(r[2].url, "http://192.0.2.14:8080/demo-admin");
-        assert_eq!(r[2].username, "demo_job");
-        assert_eq!(r[2].password, "Demo!9012$o");
+        assert_eq!(r[1].title, "示例服务二");
+        assert_eq!(r[1].username, "13900138000");
+        assert_eq!(r[1].password, "13800138001Yz");
+        assert_eq!(r[2].title, "示例任务");
+        assert_eq!(r[2].url, "http://192.0.2.14:8080/example-admin");
+        assert_eq!(r[2].username, "bob");
+        assert_eq!(r[2].password, "example-pass!");
     }
 }

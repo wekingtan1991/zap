@@ -137,21 +137,22 @@ pub fn decrypt_backup(content: &str, passphrase: &str) -> Result<Vec<BackupEntry
 mod tests {
     use super::*;
 
+    // 测试夹具统一使用 RFC 2606 保留域与业界通用示例值，禁止贴真实账号文本。
     fn sample() -> Vec<BackupEntry> {
         vec![
             BackupEntry {
-                title: "行云账号".into(),
-                username: "tan@corp".into(),
-                password: "P@ss 中文✓".into(),
-                url: "https://a.com".into(),
+                title: "Example Account".into(),
+                username: "alice@example.com".into(),
+                password: "example-pass-1".into(),
+                url: "https://example.com".into(),
                 notes: "备注".into(),
                 pinned: 1,
                 totp: "GEZDGNBVGY3TQOJQ".into(),
             },
             BackupEntry {
-                title: "gitlab".into(),
-                username: "u2".into(),
-                password: "pw2".into(),
+                title: "Example Service".into(),
+                username: "bob".into(),
+                password: "example-pass-2".into(),
                 url: String::new(),
                 notes: String::new(),
                 pinned: 0,
@@ -164,14 +165,14 @@ mod tests {
     fn 加密解密往返全字段还原() {
         let entries = sample();
         let file = encrypt_backup(&entries, "口令123").unwrap();
-        assert!(!file.contains("P@ss"), "文件内容不得含明文密码");
+        assert!(!file.contains("example-pass-1"), "文件内容不得含明文密码");
         assert!(!file.contains("GEZDGNBV"), "文件内容不得含明文 TOTP 密钥");
         let back = decrypt_backup(&file, "口令123").unwrap();
         assert_eq!(back.len(), 2);
-        assert_eq!(back[0].password, "P@ss 中文✓");
+        assert_eq!(back[0].password, "example-pass-1");
         assert_eq!(back[0].pinned, 1);
         assert_eq!(back[0].totp, "GEZDGNBVGY3TQOJQ");
-        assert_eq!(back[1].title, "gitlab");
+        assert_eq!(back[1].title, "Example Service");
         assert_eq!(back[1].totp, "");
     }
 
