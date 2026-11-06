@@ -5,14 +5,39 @@ on:
     tags: ["v*"]
   workflow_dispatch: # 手动补发通道（评审 P2-06）：同 tag 重跑须先删 Release
 
-# 显式授予 contents:write，否则默认 GITHUB_TOKEN 无法创建 Release
+# 显式授予 contents:write，否则默认 GITHUB_TOKEN 无法创建 Release；
+# actions:read 供下方发版闸读取同仓 ci workflow run 的结论
 permissions:
   contents: write
+  actions: read
 
 jobs:
   release:
     runs-on: windows-latest
     steps:
+      # 发版闸（2026-11-06）：tag 可从任意机器对任意 commit 打出、不经 CI
+      # （见下方出包门禁注释）。只查 master HEAD 会被「tag 打在旧的/红的
+      # commit」绕过，因此按 GITHUB_SHA（tag 所指 commit）查它自己的 ci run；
+      # 非 success 一律拒发，含被取消 / 仍在跑 / 从未跑过。放在 Checkout
+      # 之前，fail fast，且不依赖仓库内容。（2026-11-05 v0.17.0 的 ci 红
+      # 却发版成功，就是这道闸缺位。）
+      - name: 发版闸：本 commit 的 ci 必须 success
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA="${GITHUB_SHA}"
+          CI="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100" \
+            --jq '[.workflow_runs[] | select(.name == "ci")] | sort_by(.created_at) | last | .conclusion // "none"')"
+          echo "commit ${SHA}（${GITHUB_REF}）的 ci 结论：${CI}"
+          if [ "${CI}" != "success" ]; then
+            echo "::error::发版闸拦截：ci 结论为 ${CI}，要求 success。tag 打在未跑完或未跑过 ci 的 commit 上一律拒发；被取消、仍在跑、从未跑过都算不过。等 ci 重跑 success 后再打 tag。"
+            echo "查看：https://github.com/${GITHUB_REPOSITORY}/actions/workflows/ci.yml"
+            exit 1
+          fi
+          echo "发版闸通过：ci=success"
+
       - name: Checkout
         # v7.0.1（评审 P2-05：action 固定 commit SHA）
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
