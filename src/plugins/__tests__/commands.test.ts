@@ -73,7 +73,7 @@ describe("runCommand（cmd 条目执行器）", () => {
     expect(mockedInvoke).toHaveBeenCalledWith("set_hold_panel", { hold: false });
   });
 
-  it("Everything 安装失败：失败条目带原因", async () => {
+  it("Everything 安装失败：失败条目带原因，hold 与 busy 仍释放", async () => {
     const ctx = makeCtx();
     mockedInvoke.mockImplementation((cmd: string) => {
       if (cmd === "everything_setup") return Promise.reject(new Error("UAC"));
@@ -88,5 +88,27 @@ describe("runCommand（cmd 条目执行器）", () => {
     }[];
     expect(last[0].id).toBe("setup-fail");
     expect(last[0].subtitle).toContain("UAC");
+    expect(ctx.setBusy).toHaveBeenLastCalledWith(false);
+    expect(mockedInvoke).toHaveBeenCalledWith("set_hold_panel", { hold: false });
+  });
+
+  it("面板隐藏后放弃等待：在途回执不回写，hold 与 busy 仍释放", async () => {
+    const ctx = makeCtx();
+    let stale = false;
+    mockedInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "everything_setup") return Promise.resolve("running");
+      return Promise.resolve(null);
+    });
+    const pending = runCommand("everything_setup", {
+      ...ctx,
+      isStale: () => stale,
+    });
+    stale = true; // 模拟等待期间用户按 Esc 隐藏面板
+    await pending;
+    // 只有占位行，没有成功/失败回写污染下次呼出的列表
+    expect(ctx.setItems).toHaveBeenCalledTimes(1);
+    expect(ctx.setItems.mock.calls[0][0][0].id).toBe("setup-busy");
+    expect(ctx.setBusy).toHaveBeenLastCalledWith(false);
+    expect(mockedInvoke).toHaveBeenCalledWith("set_hold_panel", { hold: false });
   });
 });

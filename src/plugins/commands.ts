@@ -9,13 +9,18 @@ export interface CommandCtx {
   busyRef: { current: boolean };
   setBusy: (b: boolean) => void;
   setItems: (items: SearchItem[]) => void;
+  /// 本次等待是否已被放弃（用户隐藏了面板）。缺省视为仍有效——单测沿用旧口径
+  isStale?: () => boolean;
 }
 
-/// 安装/启动 Everything 并等待就绪；期间保持面板可见（UAC 抢焦点不触发失焦即隐）
+/// 安装/启动 Everything 并等待就绪；期间保持面板可见（UAC 抢焦点不触发失焦即隐）。
+/// hold 与 busy 一律走 finally 释放——后端若挂住/抛错，不能再把面板锁成
+/// 「点不动、失焦不隐、跨呼出残留占位行」的死状态（2026-11-06 真机实证）
 async function runEverythingSetup({
   busyRef,
   setBusy,
   setItems,
+  isStale,
 }: CommandCtx): Promise<void> {
   if (busyRef.current) return;
   setBusy(true);
@@ -23,41 +28,46 @@ async function runEverythingSetup({
     {
       id: "setup-busy",
       title: "正在准备 Everything…",
-      subtitle: "下载约 2MB 并自动配置；若弹出 UAC 请点“是”",
+      subtitle: "下载约 2MB 并自动配置；若弹出 UAC 请点“是”；按 Esc 可放弃等待",
       kind: "info",
       target: "",
       score: 0,
     },
   ]);
   await invoke("set_hold_panel", { hold: true }).catch(() => {});
-  const result = await invoke<string>("everything_setup").catch(
-    (e) => "error: " + e
-  );
-  await invoke("set_hold_panel", { hold: false }).catch(() => {});
-  if (result === "running") {
-    setItems([
-      {
-        id: "setup-done",
-        title: "全盘搜索已启用 ✓",
-        subtitle: "输入任意文件名即可搜索全盘，Esc 关闭后立即生效",
-        kind: "info",
-        target: "",
-        score: 0,
-      },
-    ]);
-  } else {
-    setItems([
-      {
-        id: "setup-fail",
-        title: "启用未完成",
-        subtitle: String(result),
-        kind: "info",
-        target: "",
-        score: 0,
-      },
-    ]);
+  try {
+    const result = await invoke<string>("everything_setup").catch(
+      (e) => "error: " + e
+    );
+    // 面板已隐藏 = 用户放弃这次等待：在途回执不得覆盖下次呼出的新列表
+    if (isStale?.()) return;
+    if (result === "running") {
+      setItems([
+        {
+          id: "setup-done",
+          title: "全盘搜索已启用 ✓",
+          subtitle: "输入任意文件名即可搜索全盘，Esc 关闭后立即生效",
+          kind: "info",
+          target: "",
+          score: 0,
+        },
+      ]);
+    } else {
+      setItems([
+        {
+          id: "setup-fail",
+          title: "启用未完成",
+          subtitle: String(result),
+          kind: "info",
+          target: "",
+          score: 0,
+        },
+      ]);
+    }
+  } finally {
+    await invoke("set_hold_panel", { hold: false }).catch(() => {});
+    setBusy(false);
   }
-  setBusy(false);
 }
 
 const COMMANDS: Record<string, (ctx: CommandCtx) => Promise<void>> = {

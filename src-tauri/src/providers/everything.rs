@@ -291,12 +291,22 @@ fn write_restart_bat() -> PathBuf {
     bat
 }
 
+/// 提权脚本：只发起提权，绝不等待。**不能加 `-Wait`**——bat 里 `start` 出来的
+/// Everything.exe 是常驻后台进程，`-Wait` 会连同进程树一起等，powershell 永不
+/// 退出 → everything_setup 命令挂死 → 前端 busy/hold 锁死（2026-11-06 真机实证：
+/// Everything 12:19 已启动，powershell 从 12:18:55 一直存活）。就绪检测交给
+/// setup() 的 wait_running 轮询；UAC 取消用 ErrorAction Stop + exit 1 换成非零
+/// 退出码，保住原来「启动被取消」的失败判定
+fn elevated_script(bat: &Path) -> String {
+    format!(
+        "$ErrorActionPreference='Stop'; try {{ Start-Process -FilePath '{}' -Verb RunAs -ErrorAction Stop }} catch {{ exit 1 }}",
+        bat.display()
+    )
+}
+
 fn launch_elevated() -> Result<(), String> {
     let bat = write_restart_bat();
-    let script = format!(
-        "Start-Process -FilePath '{}' -Verb RunAs -Wait",
-        bat.display()
-    );
+    let script = elevated_script(&bat);
     let out = quiet(std::process::Command::new("powershell"))
         .args(["-NoProfile", "-Command", &script])
         .output()
@@ -386,7 +396,23 @@ pub fn ensure() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_versions, merge_ini};
+    use super::{elevated_script, extract_versions, merge_ini};
+
+    #[test]
+    fn 提权脚本不等待常驻进程() {
+        let s = elevated_script(std::path::Path::new(
+            r"C:\zap\everything\restart-everything.cmd",
+        ));
+        assert!(
+            !s.contains("-Wait"),
+            "等待常驻的 Everything.exe 会让 everything_setup 永不返回"
+        );
+        assert!(s.contains("-Verb RunAs"), "提权语义不得丢");
+        assert!(
+            s.contains("ErrorAction Stop") && s.contains("exit 1"),
+            "UAC 取消必须上抛非零退出码，否则失败判定失效"
+        );
+    }
 
     #[test]
     fn 官网页面解析版本号() {

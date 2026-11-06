@@ -152,6 +152,9 @@ function AppView() {
   const inputRef = useRef<HTMLInputElement>(null);
   const queryRef = useRef("");
   const busyRef = useRef(false);
+  /// 长耗时 cmd（Everything 安装/启动）的等待代次：面板隐藏即 +1，
+  /// 让在途回执作废，不再回写下次呼出的列表
+  const setupAbortRef = useRef(0);
   /// runItem 同条目去重锚点（双击行 = 两次 click，见 runItem 注释）
   const lastRunRef = useRef({ t: 0, key: "" });
   const vaultTermRef = useRef("");
@@ -287,6 +290,13 @@ function AppView() {
     const un = listen("zap://hidden", () => {
       setQuery("");
       setActive(0);
+      // 隐藏面板 = 放弃正在等待的长耗时 cmd：递代次让在途回执作废，
+      // 并同步复位 busyRef（不能只靠 setBusy 的 effect，shown 可能抢在它前面）。
+      // 否则 shown 里的 `if (busyRef.current) return` 会跳过重新 search，
+      // 「正在准备 Everything…」占位行跨呼出残留、列表再也点不动
+      setupAbortRef.current += 1;
+      busyRef.current = false;
+      setBusy(false);
       // 合并勾选是即时意图：跨呼出保留没有意义，隐藏即清（hook 复位）
       mergeReset();
       // 右键菜单同理：跨呼出的菜单是陈旧状态（呼出即重置视图）
@@ -767,12 +777,15 @@ function AppView() {
     openJson: (it) => openWorkbench("json", it),
     openTool: (it) => openWorkbench("tool", it),
     openPort: (it) => openPorts(it),
-    runCommand: (target) =>
+    runCommand: (target) => {
+      const gen = setupAbortRef.current;
       void runCommand(target, {
         busyRef,
         setBusy,
         setItems,
-      } satisfies CommandCtx),
+        isStale: () => setupAbortRef.current !== gen,
+      } satisfies CommandCtx);
+    },
     openExternal: activate,
     vaultPin: (it) => void vault.vaultAction(it, "pin"),
     clipPin: (it) => void clipPin(it),
