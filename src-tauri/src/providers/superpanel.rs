@@ -119,7 +119,12 @@ pub fn trigger_from_hotkey(app: &AppHandle) {
         } else {
             None
         };
-        inject_ctrl_c();
+        let injected = inject_ctrl_c();
+        if !injected {
+            // 不提前 return：sent<4 的部分注入仍可能已触发复制，跳过轮询会
+            // 漏掉恢复现场。这里只补归因，原有 seq 收口与恢复语义保持不变。
+            super::diag::log_warn("super\tCtrl+C 注入未全部成功（前台锁/权限层拦截）");
+        }
         // 轮询序列号等待复制生效
         let deadline = Instant::now() + Duration::from_millis(CAPTURE_TIMEOUT_MS);
         loop {
@@ -128,10 +133,12 @@ pub fn trigger_from_hotkey(app: &AppHandle) {
             }
             if Instant::now() >= deadline {
                 // 无选中内容/应用拦了 Ctrl+C：seq 未变剪贴板未动（V1 互验 P3：
-                // SendInput 失败经 seq 等待在此出口收口，留一行排障线索）
+                // SendInput 失败经 seq 等待在此出口收口）。注入状态单独带出，
+                // 区分「注入被挡」与「前台没选中内容」两种成因。
                 super::diag::log(&format!(
-                    "super\t抓取超时放弃\tseq 未变\t{}ms",
-                    CAPTURE_TIMEOUT_MS
+                    "super\t抓取超时放弃\tseq 未变\t{}ms\t注入{}",
+                    CAPTURE_TIMEOUT_MS,
+                    if injected { "成功" } else { "失败" }
                 ));
                 return;
             }
@@ -171,9 +178,17 @@ fn cursor_pos() -> Option<(i32, i32)> {
     Some((pt.x, pt.y))
 }
 
-/// 扫描码注入 Ctrl+C（同 paste 的 make/break 成对下发）
+/// SendInput 返回值判定：4 个事件必须全部注入成功；被前台锁/权限层拦截时
+/// 常见返回 0，部分成功也不能算成功（否则会误以为已发出 Ctrl+C）。
+fn injection_complete(sent: u32, expected: usize) -> bool {
+    sent == expected as u32
+}
+
+/// 扫描码注入 Ctrl+C（同 paste 的 make/break 成对下发）。
+/// 返回是否全部事件注入成功，口径对齐 winsys::send_ctrl_v——调用方据此
+/// 区分「注入被挡」与「前台没选中内容」，不再只留一行笼统的超时日志。
 #[cfg(windows)]
-fn inject_ctrl_c() {
+fn inject_ctrl_c() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, SendInput,
     };
@@ -200,9 +215,8 @@ fn inject_ctrl_c() {
         key(0x2E, true),
         key(0x1D, true),
     ];
-    unsafe {
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-    }
+    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    injection_complete(sent, inputs.len())
 }
 
 /// 超级面板输入卫兵：MB 级选文全文 serde_json 解析可把动作生成卡住数百毫秒
@@ -359,6 +373,14 @@ pub fn superpanel_hide(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 注入必须四个事件全部成功() {
+        assert!(injection_complete(4, 4));
+        assert!(!injection_complete(0, 4), "被前台锁拦截返回 0 不能算成功");
+        assert!(!injection_complete(3, 4), "部分注入不能算成功");
+        assert!(!injection_complete(5, 4));
+    }
 
     #[test]
     fn 抓取处置真值表() {
