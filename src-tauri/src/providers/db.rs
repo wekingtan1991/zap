@@ -159,10 +159,30 @@ fn quarantine_db(path: &Path) {
 mod tests {
     use super::*;
 
+    /// 测试用临时目录：先清掉同 PID 的历史残留，再重建。
+    /// 只在测试末尾清理不够——断言失败或进程被中断会提前退出并留下脏库，
+    /// 下次 Windows 复用同一 PID 时 `CREATE TABLE` 撞上旧表而失败，形成
+    /// 「失败留脏 → 撞脏再失败」的自增强循环（2026-11-06 pre-push 实证）。
+    fn fresh_dir(prefix: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn 临时目录每次都干净_不继承历史残留() {
+        let dir = fresh_dir("zap-freshdir-test");
+        std::fs::write(dir.join("stale.db"), b"stale").unwrap();
+        let again = fresh_dir("zap-freshdir-test");
+        assert_eq!(dir, again);
+        assert!(!again.join("stale.db").exists(), "历史残留必须被清掉");
+        let _ = std::fs::remove_dir_all(&again);
+    }
+
     #[test]
     fn 坏库隔离重建_好库原样通过() {
-        let dir = std::env::temp_dir().join(format!("zap-dbtest-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = fresh_dir("zap-dbtest");
         let db = dir.join("zap.db");
 
         // 好库：写入后 resilient 重开，数据原样、不产生 broken 文件
@@ -212,8 +232,7 @@ mod tests {
 
     #[test]
     fn 迁移器补列幂等() {
-        let dir = std::env::temp_dir().join(format!("zap-migtest-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = fresh_dir("zap-migtest");
         let db = dir.join("zap.db");
         // 造 v0 旧库：无 pinned 列、user_version=0、有存量数据
         {
