@@ -24,6 +24,14 @@
     transform 0.14s ease;
 }
 
+/* 拖拽出会话进行中：源行压暗 =「这份正在被拖走」的视觉反馈（docs/
+   design-drag-out.md §二）。invoke settle 即摘，与拖拽光标同生命周期；
+   主面板行 / 中转站行 / 图片预览画布三消费方共用同名类 */
+.zap-drag-out-src {
+  opacity: 0.55;
+  cursor: grabbing;
+}
+
 /* 刻意没有 hover 底色：两个消费方（主面板/中转站）的行都 onMouseEnter
    同步 active——悬停行必有琥珀渐变，再叠灰底是第二层语义噪音；
    :hover 仅保留给行尾按钮的点亮（见 .zap-row-pin 一节） */

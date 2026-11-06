@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useEscCapture } from "@/hooks/useEscCapture";
 import { clampMenuPos } from "@/lib/ctxMenu";
+import { isDragOutActive, startDragOut } from "@/lib/dragOut";
 import { VaultRowPin } from "@/plugins/vault/VaultRowPin";
 
 /// stage_list 行协议（providers/stage.rs StageRecord 的 camelCase 镜像）
@@ -157,12 +158,15 @@ export function StageView({ focusRef, onClose }: Props) {
   );
 
   // 拖拽落区：监听只在本视图挂载期间存活，普通搜索态不受影响（误投防护）。
-  // cancelled-flag：cleanup 先于 then 执行时立即注销，防 StrictMode 双挂载泄漏
+  // cancelled-flag：cleanup 先于 then 执行时立即注销，防 StrictMode 双挂载泄漏。
+  // 拖出门：拖出会话（自中转站行起拖）把文件拖回自身视图时，enter/over 的
+  // 降暗与「松手放入」提示、drop 的重新加回都是误触发——整监听短路（R02-P1）
   useEffect(() => {
     let cancelled = false;
     let un: (() => void) | null = null;
     getCurrentWebview()
       .onDragDropEvent((e) => {
+        if (isDragOutActive()) return;
         const t = e.payload.type;
         if (t === "enter" || t === "over") {
           setDragging(true);
@@ -563,6 +567,10 @@ export function StageView({ focusRef, onClose }: Props) {
                   (row.missing ? " zap-stage-dead" : "")
                 }
                 onMouseEnter={() => setActive(i)}
+                onMouseDown={(e) => {
+                  // 拖拽出：死链禁拖（原文件不在，备料无物可拖）
+                  if (!row.missing) startDragOut(e, "stage", row.id);
+                }}
                 onClick={() => openRow(row)}
                 onContextMenu={(e) => {
                   e.preventDefault();

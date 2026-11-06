@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::hotkey_capture;
 use crate::panel::{hide_panel_window, paste_bg, paste_text_async, take_prev_foreground};
 use crate::providers::SearchItem;
-use crate::state::{AppState, spawn_hidden};
+use crate::state::{AppState, WINDOW_LABEL, spawn_hidden};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt;
@@ -366,6 +366,111 @@ pub(crate) async fn clip_merge_paste(
         count: texts.len(),
         pasted: prev.is_some(),
     })
+}
+
+/// 拖拽出结果：effect = OLE DROPEFFECT（1=COPY，0=取消/目标未收）
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DragOutOutcome {
+    effect: u32,
+}
+
+/// 拖出会话的守卫：hold_panel 与 DRAG_OUT_ACTIVE 成对释放（含 panic=abort 之外
+/// 的所有早退路径；panic=abort 下无 unwind，残余 hold 由 panel 失焦 300ms 宽限等
+/// 既有兜底收口——设计稿 §三 RAII 裁决）。持 AppHandle 才能跨 .await 保活到拖拽结束
+struct DragOutGuard(AppHandle);
+
+impl Drop for DragOutGuard {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.0
+            .state::<AppState>()
+            .hold_panel
+            .store(false, Ordering::Relaxed);
+        crate::providers::dragout::DRAG_OUT_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
+
+/// 拖拽出：前端意图判定（mousedown + 位移阈值）后 invoke。命令体只做卫兵/备料/
+/// hold 三件事；主线程闭包内先隐藏面板让开落点，拖拽结束按 effect 决定是否
+/// 复现（effect=0 取消才复现）。拖拽循环经 run_on_main_thread 在**主线程**跑
+///（WebView2 按下捕获所在线程——专用线程跨线程拖拽两轮真机证伪，见 dragout.rs
+/// 模块头约束 5；DoDragDrop 内部自带泵，主线程 UI 不冻结）。effect 经 std mpsc
+/// 回传，前端 promise settle 即解除 click 抑制器
+#[tauri::command]
+pub(crate) async fn drag_out_begin(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    kind: String,
+    rowid: i64,
+) -> Result<DragOutOutcome, String> {
+    use std::sync::atomic::Ordering;
+    crate::providers::diag::log(&format!("dragout: begin kind={kind} rowid={rowid}"));
+    if crate::providers::dragout::DRAG_OUT_ACTIVE.swap(true, Ordering::SeqCst) {
+        return Err("已有拖出进行中".into());
+    }
+    // 守卫绑定名带下划线：拖拽在主线程同步跑（不再 spawn 线程 move guard），
+    // 但 Drop 仍在命令作用域结束/早退时释放 hold 与会话标志
+    let _guard = DragOutGuard(app.clone());
+    // 卫兵：IPC 延迟内左键已松（快速甩动被前端抢判）→ 立即退出，前端照常走单击
+    if !crate::providers::dragout::left_button_held() {
+        crate::providers::diag::log("dragout: 卫兵拒绝（左键已松）");
+        return Err("拖拽已取消".into());
+    }
+    // 备料两段式：DB 点查 owned 在 blocking 池；文本载荷零写盘（只回全文
+    // String），图片才落临时 PNG（毫秒~百 ms 级）
+    let engine = state.engine.clone();
+    let payload = tauri::async_runtime::spawn_blocking(move || {
+        crate::providers::dragout::prepare(&engine, &kind, rowid)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    // 拖拽期间面板失焦即隐不触发（起拖即 hold，guard 释放）——同时也挡住
+    // 下面主动 hide() 引发的 Focused(false)，避免二次收面板
+    state.hold_panel.store(true, Ordering::Relaxed);
+    // 拖拽必须在**主线程**跑（WebView2 按下捕获所在线程，模块头约束 5）——
+    // 两轮真机证伪「专用线程」：跨线程 ole32 拖拽进模态循环却感知不到鼠标、
+    // 阻塞不返回（用户「根本拖不动」）。DoDragDrop 内部自带泵，主线程 UI 不冻结
+    //（Windows 拖拽的标准行为）。effect 经 std mpsc 回传（主线程同步 send），
+    // async 端在 blocking 池纯等待——无 COM/STA 语义，不触发 STA-on-pool 反模式
+    let (tx, rx) = std::sync::mpsc::channel::<u32>();
+    // clone 一个 handle 作投递接收者：闭包内还要用 app 取窗口句柄，直接
+    // `app.run_on_main_thread(move || …)` 会与接收者借用冲突（E0505）
+    app.clone()
+        .run_on_main_thread(move || {
+            // 拖出期间把面板让开：面板浮层会挡住目标应用的落点。只 hide，不销毁
+            // webview、不 emit shown、不重新定位——前端搜索词/视图/行状态原样保留。
+            // hold_panel 已置位，hide 触发的 Focused(false) 不会再触发失焦即隐。
+            // 早退路径（卫兵拒绝 / 备料失败）走不到这里，面板不会被误藏。
+            let win = app.get_webview_window(WINDOW_LABEL);
+            if let Some(ref w) = win {
+                let _ = w.hide();
+                crate::providers::diag::log("dragout: panel hidden");
+            }
+
+            // 文本载荷无临时文件；图片/中转站里只有本次生成的临时 PNG 需要延迟清理
+            let cleanup = payload.temp_file();
+            let effect = crate::providers::dragout::run_drag_out(&payload);
+            if let Some(file) = cleanup {
+                crate::providers::dragout::schedule_temp_cleanup(file);
+            }
+
+            // 取消才复现面板（原位置、原状态）；落地则保持隐藏等下次呼出
+            if crate::providers::dragout::should_restore_panel(effect)
+                && let Some(ref w) = win
+            {
+                let _ = w.show();
+                let _ = w.set_focus();
+                crate::providers::diag::log("dragout: cancelled, panel restored");
+            }
+            let _ = tx.send(effect);
+        })
+        .map_err(|e| e.to_string())?;
+    let effect = tauri::async_runtime::spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "拖拽会话异常终止".to_string())?;
+    Ok(DragOutOutcome { effect })
 }
 
 /// 通用文本复制（JSON 美化/压缩结果回填等）：

@@ -22,6 +22,8 @@ interface RowProps {
   onHover: (i: number) => void;
   onRun: (it: SearchItem) => void;
   onContext: (e: React.MouseEvent, it: SearchItem) => void;
+  /// 拖拽出意图判定入口（App 层按 kind 过滤 + mergeMode 禁用；缺省 = 该行不可拖出）
+  onDragOut: ((e: React.MouseEvent, it: SearchItem) => void) | null;
   actions: ItemActions;
 }
 
@@ -36,6 +38,7 @@ const ResultRow = React.memo(function ResultRow({
   onHover,
   onRun,
   onContext,
+  onDragOut,
   actions,
 }: RowProps) {
   const ui = kindUi(it.kind);
@@ -58,6 +61,7 @@ const ResultRow = React.memo(function ResultRow({
       onMouseEnter={() => onHover(index)}
       onClick={() => onRun(it)}
       onContextMenu={(e) => onContext(e, it)}
+      onMouseDown={(e) => onDragOut?.(e, it)}
     >
       {/* 行首类型胶囊列：常驻渲染统一行首视觉——图标行胶囊+图标并存，
           无图标行（剪贴板文本等）胶囊独占槽位；分类色承担扫视辨识 */}
@@ -101,6 +105,8 @@ interface Props {
   onHover: (i: number) => void;
   onRun: (it: SearchItem) => void;
   onContext: (e: React.MouseEvent, it: SearchItem) => void;
+  /// 拖拽出意图判定入口；null = 整列表禁用（mergeMode），行不绑 mousedown
+  onDragOut: ((e: React.MouseEvent, it: SearchItem) => void) | null;
   actions: ItemActions;
 }
 
@@ -115,6 +121,7 @@ export function ResultsList({
   onHover,
   onRun,
   onContext,
+  onDragOut,
   actions,
 }: Props) {
   return (
@@ -158,6 +165,7 @@ export function ResultsList({
             onHover={onHover}
             onRun={onRun}
             onContext={onContext}
+            onDragOut={onDragOut}
             actions={actions}
           />
         ))

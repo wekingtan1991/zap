@@ -47,6 +47,7 @@ import { useMergeMode } from "@/views/useMergeMode";
 import { SettingsView } from "@/views/SettingsView";
 import { useUpdater } from "@/views/useUpdater";
 import { applyAppearance, applyPanelTransparency, type Appearance } from "@/lib/appearance";
+import { startDragOut } from "@/lib/dragOut";
 
 /// 工作台内容源：入口进入 = 空文本等待粘贴；输入识别（万能输入框）= 携带
 /// 进入时刻的搜索词全文；剪贴板识别 = 按行号回查呼出时刻的内容
@@ -724,6 +725,18 @@ function AppView() {
     }
   }, []);
 
+  /// 拖拽出意图判定入口（行 memo 的稳定引用）：仅内容域（clip 文本/图片），
+  /// 其余 kind（app/web/stage 入口等）语义不成立不绑；mergeMode 下整体禁用
+  /// ——该模式 click=勾选切换，拖动的 trailing click 会变成隐形勾选（R02-P4）
+  const onRowDragOut = useMemo(() => {
+    if (merge.mergeMode) return null;
+    return (e: React.MouseEvent, it: SearchItem) => {
+      const rowid = clipRowId(it);
+      if (Number.isNaN(rowid)) return;
+      startDragOut(e, it.kind === "clipimg" ? "clipimg" : "clip", rowid);
+    };
+  }, [merge.mergeMode]);
+
   // ---------- 统一条目分发 ----------
   // Enter 与点击共用：伪条目（新增/导入）→ 注册表 activate → 默认 openExternal。
   // kind 行为收敛在 plugins/registry.tsx，这里只接装配，不写 kind 特判
@@ -1086,6 +1099,7 @@ function AppView() {
         onHover={setActive}
         onRun={runItem}
         onContext={onRowContext}
+        onDragOut={onRowDragOut}
         actions={actions}
       />
       {ctxMenu && (

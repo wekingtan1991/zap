@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useEscCapture } from "@/hooks/useEscCapture";
 import { PanelHeader, useCopyFlash, type PanelProps } from "@/plugins/panel";
+import { startDragOut } from "@/lib/dragOut";
 import type { SearchItem } from "@/plugins/types";
 import {
   clampOffset,
@@ -322,6 +323,11 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
                 onPointerUp={onPanEnd}
                 onPointerCancel={onPanEnd}
                 onDoubleClick={() => setZoom(fitZoomState())}
+                // 拖拽出仅 fit 态（R02-P3）：zoomed 态左键拖拽 = 平移
+                // （onPanDown 分支），两分支按 zoom 状态互斥
+                onMouseDown={(e) => {
+                  if (zoom.s <= ZOOM_MIN) startDragOut(e, "clipimg", rowid);
+                }}
               >
                 <img
                   ref={imgRef}

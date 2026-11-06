@@ -7,6 +7,7 @@ pub mod clipimage;
 pub mod db;
 pub mod diag;
 pub mod dpapi;
+pub mod dragout;
 pub mod droptarget;
 pub mod engine;
 pub mod everything;

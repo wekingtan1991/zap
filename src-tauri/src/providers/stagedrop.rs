@@ -314,8 +314,20 @@ enum Poll {
 /// 驻留不足/到期且可收——反馈存在本身就是「到期即收」的充分条件）。
 /// stage_view_open = 中转站视图展开中：新会话照常记账（递增代际作废旧
 /// 反馈）但不出条——视图内拖入即落点，角落条冗余；会话中途关视图也不
-/// 补出，下轮会话恢复（b523d22 纪律：可测性集中在 decide，见 tests）
-fn decide(st: &DropState, dragging: bool, stage_view_open: bool, now: Instant) -> Poll {
+/// 补出，下轮会话恢复（b523d22 纪律：可测性集中在 decide，见 tests）。
+/// drag_out_active = 拖拽出会话进行中：防御门——默认光标拖出不产 SysDragImage
+/// （PoC 2 实证），但一旦上游/主题行为变化产生拖影窗口，拖出会被误判为拖入
+/// 会话弹条并把临时文件误收进中转站（R01-P1）；无会话时一律 Hold 不开新会话
+fn decide(
+    st: &DropState,
+    dragging: bool,
+    stage_view_open: bool,
+    drag_out_active: bool,
+    now: Instant,
+) -> Poll {
+    if drag_out_active && !st.session_active {
+        return Poll::Hold;
+    }
     if dragging {
         if !st.session_active {
             Poll::Start {
@@ -404,7 +416,13 @@ pub fn spawn(app: AppHandle) {
                 st.last_seen = Some(now);
             }
 
-            match decide(&st, dragging, STAGE_VIEW_OPEN.load(Ordering::Relaxed), now) {
+            match decide(
+                &st,
+                dragging,
+                STAGE_VIEW_OPEN.load(Ordering::Relaxed),
+                super::dragout::DRAG_OUT_ACTIVE.load(Ordering::Relaxed),
+                now,
+            ) {
                 Poll::Start { suppressed } => {
                     // 新会话：代际递增作废旧反馈、按当前光标重新定位。只由图像
                     // 可见性触发——左键按住（框选/普通点击）不得误开。
@@ -779,53 +797,95 @@ mod tests {
 
         // 拖拽信号出现且无会话 → 开新会话
         assert!(matches!(
-            decide(&mk(false, None, None, None), true, false, now),
+            decide(&mk(false, None, None, None), true, false, false, now),
             Poll::Start { suppressed: false }
         ));
         // 中转站视图展开中的新会话 → 记账但不出条（视图内拖入即落点）
         assert!(matches!(
-            decide(&mk(false, None, None, None), true, true, now),
+            decide(&mk(false, None, None, None), true, true, false, now),
             Poll::Start { suppressed: true }
         ));
         // 拖拽中反馈未到期 → 保持
         assert!(matches!(
-            decide(&mk(true, Some(0), None, Some(1200)), true, false, now),
+            decide(
+                &mk(true, Some(0), None, Some(1200)),
+                true,
+                false,
+                false,
+                now
+            ),
             Poll::Settle
         ));
         // 拖拽中反馈已到期 → 复位文案（长拖拽不残留上一轮结果）
         assert!(matches!(
-            decide(&mk(true, Some(0), None, Some(-1)), true, false, now),
+            decide(&mk(true, Some(0), None, Some(-1)), true, false, false, now),
             Poll::ResetStale
         ));
         // 信号消失 0.5s（< 1.2s 去抖）→ 宽限不动（躲猫猫修复的核心）
         assert!(matches!(
-            decide(&mk(true, Some(-500), None, None), false, false, now),
+            decide(&mk(true, Some(-500), None, None), false, false, false, now),
             Poll::Hold
         ));
         // 信号消失 1.3s（≥ 1.2s）→ 会话结束
         assert!(matches!(
-            decide(&mk(true, Some(-1300), None, None), false, false, now),
+            decide(&mk(true, Some(-1300), None, None), false, false, false, now),
             Poll::End
         ));
         // 无会话反馈未到期 → 保持展示
         assert!(matches!(
-            decide(&mk(false, None, Some(-100), Some(600)), false, false, now),
+            decide(
+                &mk(false, None, Some(-100), Some(600)),
+                false,
+                false,
+                false,
+                now
+            ),
             Poll::Settle
         ));
         // 无会话反馈已过期 → 到期即收（反馈存在是「到期即收」的充分条件）
         assert!(matches!(
-            decide(&mk(false, None, Some(-100), Some(-1)), false, false, now),
+            decide(
+                &mk(false, None, Some(-100), Some(-1)),
+                false,
+                false,
+                false,
+                now
+            ),
             Poll::Hide
         ));
         // 无会话无反馈，驻留不足 200ms → 保持
         assert!(matches!(
-            decide(&mk(false, None, Some(-100), None), false, false, now),
+            decide(&mk(false, None, Some(-100), None), false, false, false, now),
             Poll::Settle
         ));
         // 无会话无反馈，驻留已过 → 收条
         assert!(matches!(
-            decide(&mk(false, None, Some(-300), None), false, false, now),
+            decide(&mk(false, None, Some(-300), None), false, false, false, now),
             Poll::Hide
+        ));
+    }
+
+    /// 拖拽出门：DRAG_OUT_ACTIVE 期间无会话一律 Hold（R01-P1 防御——拖出会
+    /// 产生 SysDragImage 的场景下，落区条弹出会把拖出临时文件误收进中转站）；
+    /// 已有会话时门不介入（交给正常会话状态机收尾）
+    #[test]
+    fn 拖拽出门无会话不开新会话() {
+        let now = Instant::now();
+        let mk = || DropState {
+            session_active: false,
+            last_seen: None,
+            gone_since: None,
+            feedback: None,
+            generation: 0,
+        };
+        // 门开 + 拖拽信号 → Hold（不开新会话、不记账）
+        assert!(matches!(decide(&mk(), true, false, true, now), Poll::Hold));
+        // 门开 + 无信号 → 照常 Hold
+        assert!(matches!(decide(&mk(), false, false, true, now), Poll::Hold));
+        // 门关 + 拖拽信号 → 正常开新会话（回归保护）
+        assert!(matches!(
+            decide(&mk(), true, false, false, now),
+            Poll::Start { suppressed: false }
         ));
     }
 

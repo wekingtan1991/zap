@@ -177,6 +177,7 @@ pub fn run() {
             panel::hide_panel,
             commands::open_item,
             commands::clip_pin,
+            commands::drag_out_begin,
             commands::stage_list,
             commands::stage_add,
             commands::stage_remove,
@@ -241,6 +242,7 @@ pub fn run() {
             let db_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&db_dir)?;
             providers::diag::init(db_dir.join("zap.log"));
+            providers::dragout::cleanup_stale();
             let db_path = db_dir.join("zap.db");
             let engine = SearchEngine::new(&db_path);
             providers::watcher::spawn_watcher(db_path);

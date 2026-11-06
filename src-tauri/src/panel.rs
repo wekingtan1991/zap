@@ -221,6 +221,11 @@ pub(crate) fn handle_stage_drop(app: &AppHandle, paths: Vec<String>) {
     if paths.is_empty() {
         return;
     }
+    // 拖出门：拖出会话把文件拖回 zap 自身 = 静默拒绝（拖出是复制语义，
+    // 临时文件被误收进中转站是 R01-P1 场景；无任何反馈——源与目标同窗）
+    if providers::dragout::DRAG_OUT_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     // drop 即呼出中转站面板（用户拍板 2026-10-28）：压独立线程一拍——自有
     // IDropTarget 路径本就在后台线程，wry 兜底路径的调用点在主线程事件循环
     // 的拖放事件里，同步开主面板会嵌进 OLE 拖拽循环收尾；面板与入库并行，
