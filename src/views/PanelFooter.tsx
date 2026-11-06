@@ -139,11 +139,6 @@ export function PanelFooter({
             <span>+</span>
             <Kbd>V</Kbd>
             <span>粘贴即识别</span>
-            <span className="zap-footer-sep" />
-            <Kbd>json</Kbd>
-            <span>/</span>
-            <Kbd>tool</Kbd>
-            <span>搜索工具</span>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button

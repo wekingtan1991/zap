@@ -174,6 +174,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::search,
+            commands::tool_entries,
             panel::hide_panel,
             commands::open_item,
             commands::clip_pin,

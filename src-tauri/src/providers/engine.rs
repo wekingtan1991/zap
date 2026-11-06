@@ -8,6 +8,17 @@ use std::sync::Mutex;
 
 use super::*;
 
+/// 工具 Dock 的一条入口：条目本体 + 供细条渲染的短名与入口词。
+/// 短名取 PluginMeta.title（如「中转站」，比条目标题「打开中转站」更合细条），
+/// 入口词取 PluginMeta.entries 供 chip 悬停提示——两者都随插件声明走，前端不硬编码
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolEntry {
+    pub item: SearchItem,
+    pub label: String,
+    pub words: Vec<String>,
+}
+
 pub struct SearchEngine {
     /// 共享连接：剪贴板历史 / vault / appconfig 共用（WAL 下与监听线程的写连接并存）。
     /// 访问一律走 conn() 出口（run_parallel 按需传 &Mutex 除外）
@@ -440,26 +451,25 @@ impl SearchEngine {
             // 启动过的），呼出 → Enter 即启动，不必先打字
             let launches = apps::load_launch_counts(&conn);
             items.extend(self.apps.index.top_launch_items(&launches, 4));
-            // 空面板即功能首页：识别与最近剪贴板之后附上插件入口清单，
-            // 呼出即可见，可发现性不依赖记住入口词
-            items.extend(fallback_all(&self.plugins));
+            // 插件入口不在此拼入：已迁至结果区与底栏之间的常驻工具 Dock
+            // （tool_entries 命令供给），列表只留内容，黄金地产还给剪贴板/应用。
+            // 可发现性由常驻 Dock 承接，不再依赖空面板列表
             return items;
         }
         // 万能输入框：对输入框内容先跑一轮即时识别（键入/粘贴即识别），
-        // 命中条目置顶于入口条目与常规结果之前
+        // 命中条目置顶于常规结果之前。probe/detect 产出的 json/tool/port/info
+        // 是内容动作行，必须留在列表；插件入口只来自 fallback_entry()，经
+        // tool_entries 命令供给常驻 Dock，绝不按 kind 从结果里拆分
         let mut items = probe_all(&self.plugins, q);
-        let regular = run_parallel(&self.plugins, q, &self.clip);
-        // 网页兜底对任何 query 恒有产出，不足为「有结果」的凭据：除网页兜底
-        // （含捷径命中的 web 条目，id 前缀 sc:）外一无所获时，尾部附上插件入口清单
-        let has_strong = items
-            .iter()
-            .chain(regular.iter())
-            .any(|i| i.kind != "web" || i.id.starts_with("sc:"));
-        items.extend(regular);
-        if !has_strong {
-            items.extend(fallback_all(&self.plugins));
-        }
+        items.extend(run_parallel(&self.plugins, q, &self.clip));
         items
+    }
+
+    /// 工具 Dock 入口清单：按注册序收拢启用插件的 fallback_entry()，附带
+    /// PluginMeta 的短名与入口词。停用插件跳过；无 meta 的核心源退回条目标题。
+    /// 前端在挂载、呼出与设置页关闭后各拉一次，搜索热路径不再承担可发现性
+    pub fn tool_entries(&self) -> Vec<ToolEntry> {
+        tool_entries_all(&self.plugins)
     }
 
     /// 设置页插件清单（仅可开关插件；核心源不列）。
@@ -533,17 +543,38 @@ fn probe_all(plugins: &[std::sync::Arc<dyn plugin::Plugin>], q: &str) -> Vec<Sea
     items
 }
 
-/// 功能入口兜底：按注册序收拢各插件的入口条目（停用插件跳过——核心源无
-/// meta 恒过，各插件实现里再自查开关态）
-fn fallback_all(plugins: &[std::sync::Arc<dyn plugin::Plugin>]) -> Vec<SearchItem> {
-    let mut items = Vec::new();
+/// 工具 Dock 入口收集：按注册序取各插件的 fallback_entry()（停用插件跳过——
+/// 核心源无 meta 恒过，各插件实现里再自查开关态），并附带 PluginMeta 的短名与
+/// 入口词。**只认 fallback_entry()，绝不按 kind 过滤**：probe/detect 产出的
+/// 同 kind 条目是内容动作行，归搜索结果，不进 Dock
+fn tool_entries_all(plugins: &[std::sync::Arc<dyn plugin::Plugin>]) -> Vec<ToolEntry> {
+    let mut out = Vec::new();
     for p in plugins {
         if plugin_off(p.as_ref()) {
             continue;
         }
-        items.extend(p.fallback_entry());
+        let meta = p.meta();
+        let label = meta
+            .as_ref()
+            .map(|m| m.title.to_string())
+            .unwrap_or_default();
+        let words: Vec<String> = meta
+            .as_ref()
+            .map(|m| m.entries.iter().map(|w| (*w).to_string()).collect())
+            .unwrap_or_default();
+        for item in p.fallback_entry() {
+            out.push(ToolEntry {
+                label: if label.is_empty() {
+                    item.title.clone()
+                } else {
+                    label.clone()
+                },
+                words: words.clone(),
+                item,
+            });
+        }
     }
-    items
+    out
 }
 
 /// 入口词冲突：返回 插件 id → 冲突入口词。冲突 = 同一词被多个声明方认领，
@@ -812,7 +843,7 @@ mod plugin_tests {
     }
 
     #[test]
-    fn 兜底入口按注册序拼接且跳过停用插件() {
+    fn dock入口按注册序拼接且跳过停用插件() {
         let _serial = CLIP_ENABLED_LOCK.lock().unwrap();
         PROBE_Q_A.store(true, std::sync::atomic::Ordering::Relaxed);
         PROBE_Q_B.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -826,18 +857,30 @@ mod plugin_tests {
                 switch: &PROBE_Q_B,
             }),
         ];
-        let items = fallback_all(&plugins);
+        let entries = tool_entries_all(&plugins);
         assert_eq!(
-            items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            entries
+                .iter()
+                .map(|e| e.item.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["qa:fallback", "qb:fallback"],
-            "兜底入口应按注册序拼接"
+            "Dock 入口应按注册序拼接"
         );
+        // 红线：probe 产出的内容动作行（id 带 query 文本）不得混入 Dock
+        assert!(
+            entries.iter().all(|e| !e.item.id.contains("任意内容")),
+            "Dock 入口只认 fallback_entry()，probe 内容行须留在列表"
+        );
+        assert_eq!(entries[0].label, "qa", "短名取 PluginMeta.title");
         PROBE_Q_B.store(false, std::sync::atomic::Ordering::Relaxed);
-        let items = fallback_all(&plugins);
+        let entries = tool_entries_all(&plugins);
         assert_eq!(
-            items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            entries
+                .iter()
+                .map(|e| e.item.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["qa:fallback"],
-            "停用插件的兜底入口应被跳过"
+            "停用插件的 Dock 入口应被跳过"
         );
         PROBE_Q_B.store(true, std::sync::atomic::Ordering::Relaxed);
     }

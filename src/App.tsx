@@ -15,11 +15,12 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { kindUi, type ItemActions } from "@/plugins/registry";
 import { routeItem } from "@/plugins/dispatch";
-import { clipRowId, type SearchItem } from "@/plugins/types";
+import { clipRowId, type DockEntry, type SearchItem } from "@/plugins/types";
 import {
   kickEverythingEnsure,
   runCommand,
   startupEntries,
+  toolEntries,
   type CommandCtx,
 } from "@/plugins/commands";
 import { VaultDetailView, type VaultDetail } from "@/plugins/vault/VaultDetailView";
@@ -43,6 +44,7 @@ import { initialPortOf } from "@/plugins/ports/types";
 import { PanelFooter } from "@/views/PanelFooter";
 import { ResultsContextMenu } from "@/views/ResultsContextMenu";
 import { ResultsList } from "@/views/ResultsList";
+import { ToolDock } from "@/views/ToolDock";
 import { useMergeMode } from "@/views/useMergeMode";
 import { SettingsView } from "@/views/SettingsView";
 import { useUpdater } from "@/views/useUpdater";
@@ -136,6 +138,14 @@ class ErrorBoundary extends React.Component<
 function AppView() {
   const [query, setQuery] = useState("");
   const [items, setItems] = useState<SearchItem[]>([]);
+  /// 常驻工具 Dock：后端插件入口 + 前端状态注入（Everything），与结果列表
+  /// 完全分离——入口不再占列表黄金地产，Dock 空态/搜索态位置恒定
+  const [dockEntries, setDockEntries] = useState<DockEntry[]>([]);
+  const [dockExtra, setDockExtra] = useState<DockEntry[]>([]);
+  const dock = useMemo(
+    () => [...dockEntries, ...dockExtra],
+    [dockEntries, dockExtra]
+  );
   const [active, setActive] = useState(0);
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<View>({ kind: "main" });
@@ -198,6 +208,15 @@ function AppView() {
   const isVault = lowered === "pw" || lowered.startsWith("pw ");
   const vaultTerm = isVault ? trimmedQuery.slice(2).trim() : "";
 
+  // 工具 Dock 入口：挂载 / 每次呼出 / 从设置页退出（插件开关可能已改）各拉一次。
+  // 后端 tool_entries 只读原子开关，失败保留上一帧，不让常驻细条闪烁
+  const refreshDock = useCallback(() => {
+    void toolEntries().then(setDockEntries);
+  }, []);
+  useEffect(() => {
+    refreshDock();
+  }, [refreshDock]);
+
   // 外观与透明面板随设置刷新（设置页改主题即时预览）：挂载与设置页关闭后重拉。
   // 插件开关的门控已收敛到后端（probe/入口条目按 plugin_off 跳过），前端不再缓存
   const refreshAppearance = useCallback(() => {
@@ -226,9 +245,10 @@ function AppView() {
     // 与外观无关，进出工作台/中转站都拉一次 get_app_settings 是无谓 IPC
     if (prevKindRef.current === "settings" && view.kind !== "settings") {
       refreshAppearance();
+      refreshDock(); // 设置页可开关插件，Dock 入口随之增减
     }
     prevKindRef.current = view.kind;
-  }, [view.kind, refreshAppearance]);
+  }, [view.kind, refreshAppearance, refreshDock]);
   useEffect(() => {
     vaultTermRef.current = vaultTerm;
   }, [vaultTerm]);
@@ -303,22 +323,24 @@ function AppView() {
       // query 多半未变（hidden 已清空），effect 不会触发：呼出即显式回滚
       resultsRef.current?.scrollTo({ top: 0 });
       setTimeout(() => inputRef.current?.focus(), 30);
+      refreshDock();
       if (busyRef.current) return;
       invoke<SearchItem[]>("search", { query: "" })
         .then(async (res) => {
           if (queryRef.current) return;
           // 首帧先出列表（2026-11-04 评审 R2）：Everything 未装时 startupEntries
-          // 的端口探测最坏 3×250ms，不该扣住呼出的第一帧——先渲染再追加启用条目
+          // 的端口探测最坏 3×250ms，不该扣住呼出的第一帧——先渲染再补 Dock
           setItems(res);
           const extra = await startupEntries();
-          if (queryRef.current || extra.length === 0) return;
-          setItems((cur) => {
-            const have = new Set(cur.map((x) => x.id));
-            return [...cur, ...extra.filter((x) => !have.has(x.id))];
-          });
+          if (queryRef.current) return;
+          // 入口只进常驻 Dock，不再占结果行；Everything 就绪后从 Dock 摘掉
+          setDockExtra(extra);
+          if (extra.length === 0) return;
           kickEverythingEnsure(() => {
             if (!queryRef.current) {
-              setItems((cur) => cur.filter((x) => x.id !== "cmd:everything"));
+              setDockExtra((cur) =>
+                cur.filter((x) => x.item.id !== "cmd:everything")
+              );
             }
           });
         })
@@ -327,7 +349,7 @@ function AppView() {
     return () => {
       unlisten.then((f) => f());
     };
-  }, []);
+  }, [refreshDock]);
 
   // ---------- 中转站 ----------
   // 视图期间 hold 住面板：拖拽自资源管理器的第一步就把焦点交给了 Explorer，
@@ -1109,6 +1131,7 @@ function AppView() {
           onAction={(act) => runCtxAction(act, ctxMenu.item)}
         />
       )}
+      <ToolDock entries={dock} onRun={runItem} />
       <PanelFooter
         isVault={isVault}
         mergeMode={merge.mergeMode}

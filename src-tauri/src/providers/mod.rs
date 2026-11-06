@@ -67,4 +67,4 @@ pub struct SearchItem {
 
 // 搜索引擎在 engine.rs（审计 C2 拆出）；lib/commands/panel/settings 均经
 // providers::SearchEngine / providers::PluginInfo 引用，re-export 保持零改动
-pub(crate) use engine::{PluginInfo, SearchEngine};
+pub(crate) use engine::{PluginInfo, SearchEngine, ToolEntry};

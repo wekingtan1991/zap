@@ -4,7 +4,8 @@
    - base.css       基础层（body 重置、滚动条、减少动态效果）
    - animations.css 动效（animate-* 令牌 + @keyframes 全集）
    - components/    按界面区域一个文件：panel 面板壳与输入行 /
-                    results 结果列表 / forms 表单与导入骨架 /
+                    results 结果列表 / dock 常驻工具入口细条 /
+                    forms 表单与导入骨架 /
                     vault 账号详情与密码卡 / dialogs 弹窗（删除确认+备份）/
                     settings 设置页杂项 / footer 底栏 /
                     json JSON 工作台 / tool 文本工具工作台 /
@@ -19,6 +20,7 @@
 @import "./animations.css";
 @import "./components/panel.css";
 @import "./components/results.css";
+@import "./components/dock.css";
 @import "./components/forms.css";
 @import "./components/vault.css";
 @import "./components/dialogs.css";

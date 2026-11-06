@@ -12,6 +12,15 @@ export interface SearchItem {
   score: number;
 }
 
+/// 常驻工具 Dock 的一条入口：后端 providers::engine::ToolEntry 的线协议镜像。
+/// label 是细条短名（PluginMeta.title），words 是入口词（PluginMeta.entries）
+/// 供 chip 悬停提示；item 原样交给 runItem 分发，不另写激活逻辑
+export interface DockEntry {
+  item: SearchItem;
+  label: string;
+  words: string[];
+}
+
 /// 是否已置顶：优先读结构化字段；标题前缀是旧后端的 📌 约定，半新半旧
 /// 会话兜底
 export const isPinned = (it: SearchItem) => it.pinned ?? it.title.startsWith("📌");

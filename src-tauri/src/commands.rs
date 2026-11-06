@@ -36,6 +36,16 @@ pub(crate) async fn search(
     blocking!(engine.search(&query))
 }
 
+/// 常驻工具 Dock 的入口清单：与搜索结果彻底分离，前端挂载/呼出/设置页关闭后拉取。
+/// 只读插件原子开关与静态元信息，不碰 DB/HTTP；仍走阻塞池与同层命令保持一致
+#[tauri::command]
+pub(crate) async fn tool_entries(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::providers::ToolEntry>, String> {
+    let engine = state.engine.clone();
+    blocking!(engine.tool_entries())
+}
+
 // 面板开关类命令（hide_panel/set_hold_panel/set_stage_view）已拆至 panel.rs
 // （评审 P1-17 步 3），invoke_handler 引用 panel::* 路径；其余命令搬运口径
 // 不变：涉及 DB/DPAPI/剪贴板/HTTP 的一律 async + spawn_blocking——Tauri 同步

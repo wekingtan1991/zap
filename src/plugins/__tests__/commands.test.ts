@@ -22,7 +22,7 @@ beforeEach(() => {
   mockedInvoke.mockReset();
 });
 
-describe("startupEntries（呼出时 Everything 状态注入）", () => {
+describe("startupEntries（呼出时 Everything 入口注入 Dock）", () => {
   it("Everything 已运行：不注入条目", async () => {
     mockedInvoke.mockResolvedValue("running");
     await expect(startupEntries()).resolves.toEqual([]);
@@ -32,16 +32,17 @@ describe("startupEntries（呼出时 Everything 状态注入）", () => {
     mockedInvoke.mockResolvedValue("installed_not_running");
     const entries = await startupEntries();
     expect(entries).toHaveLength(1);
-    expect(entries[0].kind).toBe("cmd");
-    expect(entries[0].target).toBe("everything_setup");
-    expect(entries[0].subtitle).toContain("启动");
+    expect(entries[0].item.kind).toBe("cmd");
+    expect(entries[0].item.target).toBe("everything_setup");
+    expect(entries[0].item.subtitle).toContain("启动");
+    expect(entries[0].label).toBe("Everything");
   });
 
   it("未安装：注入下载条目（提示自动下载）", async () => {
     mockedInvoke.mockResolvedValue("not_installed");
     const entries = await startupEntries();
     expect(entries).toHaveLength(1);
-    expect(entries[0].subtitle).toContain("下载");
+    expect(entries[0].item.subtitle).toContain("下载");
   });
 
   it("状态查询失败：静默不注入", async () => {
