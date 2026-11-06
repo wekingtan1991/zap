@@ -15,24 +15,28 @@ use std::time::{Duration, Instant};
 use super::files;
 
 /// 内置兜底版本表：官网解析失败（改版/网络抖动）时仍可尝试已知地址。
-/// 主路径是下载页解析——官方发新版后旧地址会 404，纯硬编码会整体失效
-const VERSIONS: [&str; 5] = [
-    "1.4.1.1028",
-    "1.4.1.1027",
-    "1.4.1.1026",
-    "1.4.1.1025",
-    "1.4.1.1024",
-];
+/// 只列**哈希表内**的版本——表外版本下载后校验必拒（见 split_by_hash_table），
+/// 列进来只是让「官网不可达」这条路径多下几个必然被拒的包
+const VERSIONS: [&str; 2] = ["1.4.1.1032", "1.4.1.1028"];
 
 /// 已知版本的 zip SHA256 表（评审 P2-04/D4）：下载完整性校验—— Everything
 /// zip 在 UAC 揈权执行前必须对上表内哈希；表外版本（官网新发）拒绝自动
-/// 安装并提示手动装，防「下载内容被替换后提权执行」。官方渠道改版后新
-/// 版本哈希由本机手工核验后追加（真机下载 → Get-FileHash → 入表）。
-/// 1.4.1.1028 的哈希为本机从 voidtools 官网实下载 1,869,716 字节核算。
-const VERSION_SHA256: &[(&str, &str)] = &[(
-    "1.4.1.1028",
-    "4f4a9b9299b608d48b065f95fd80b9c095cdc7114cd467cd9b54944b23559dfe",
-)];
+/// 安装并提示手动装，防「下载内容被替换后提权执行」。
+///
+/// 取值来源：官网同名 `.sha256` 文件（如
+/// `https://www.voidtools.com/Everything-1.4.1.1032.sha256`）——官方渠道，
+/// 比本地下载后 Get-FileHash 更权威，也省一次 2MB 下载。**官网发新版后按
+/// 此流程补表**：取该 .sha256 里 `*Everything-<版本>.x64.zip` 那一行的哈希。
+const VERSION_SHA256: &[(&str, &str)] = &[
+    (
+        "1.4.1.1032",
+        "698df475ec44e638f66f1b6a32d28fea613cec78d3b6310e6abe53431eeb940c",
+    ),
+    (
+        "1.4.1.1028",
+        "4f4a9b9299b608d48b065f95fd80b9c095cdc7114cd467cd9b54944b23559dfe",
+    ),
+];
 
 /// 从下载页 HTML 提取稳定版版本号（数字段降序）。
 /// 只认纯数字加点（1.4.1.1028），天然排除 1.5 alpha 的 b 后缀等非稳定命名
@@ -115,6 +119,12 @@ fn download(dest_dir: &Path) -> Result<(), String> {
     let zip_path = dest_dir.join("everything.zip");
     let versions = resolve_versions(&client);
     let (candidates, skipped) = split_by_hash_table(&versions);
+    if !skipped.is_empty() {
+        super::diag::log_warn(&format!(
+            "everything\t以下版本不在哈希表内，已跳过自动安装：{}",
+            skipped.join(", ")
+        ));
+    }
     if candidates.is_empty() {
         return Err("官网版本与内置哈希表无交集，无法自动安装（请手动安装官方包）".into());
     }
@@ -124,15 +134,18 @@ fn download(dest_dir: &Path) -> Result<(), String> {
         // 总预算封顶：超了就不再试下一个版本，直接说清是超时而非校验失败
         let elapsed = budget.elapsed();
         if elapsed >= DOWNLOAD_BUDGET {
-            return Err(format!(
+            let msg = format!(
                 "下载超时（已用 {}s / 预算 {}s）：{last_err}",
                 elapsed.as_secs(),
                 DOWNLOAD_BUDGET.as_secs()
-            ));
+            );
+            super::diag::log_err(&format!("everything\t{msg}"));
+            return Err(msg);
         }
         let url = format!("https://www.voidtools.com/Everything-{v}.x64.zip");
         // 单请求也不得超出剩余预算
         let remain = DOWNLOAD_BUDGET.saturating_sub(elapsed);
+        super::diag::log(&format!("everything\t下载中: {url}"));
         match client
             .get(&url)
             .timeout(remain.min(DOWNLOAD_TIMEOUT))
@@ -154,14 +167,23 @@ fn download(dest_dir: &Path) -> Result<(), String> {
                     .collect();
                 if actual == expected {
                     std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
+                    super::diag::log(&format!(
+                        "everything\t下载完成并通过 SHA256 校验：{v}（{} 字节）",
+                        bytes.len()
+                    ));
                     return Ok(());
                 }
+                super::diag::log_err(&format!(
+                    "everything\t{url} SHA256 不匹配（期望 {expected}，实得 {actual}）"
+                ));
                 last_err = format!("{url} -> SHA256 不匹配（期望 {expected}，实得 {actual}）");
             }
             Ok(resp) => {
+                super::diag::log_err(&format!("everything\t{url} HTTP {}", resp.status()));
                 last_err = format!("{url} -> HTTP {}", resp.status());
             }
             Err(e) => {
+                super::diag::log_err(&format!("everything\t{url} 下载失败: {e}"));
                 last_err = format!("{url} -> {e}");
             }
         }
@@ -173,6 +195,7 @@ fn download(dest_dir: &Path) -> Result<(), String> {
             skipped.join(", ")
         ));
     }
+    super::diag::log_err(&format!("everything\t{msg}"));
     Err(msg)
 }
 
@@ -378,25 +401,42 @@ fn wait_running(timeout: Duration) -> bool {
 /// 该能正常失焦即隐
 pub fn setup(on_elevated: impl Fn()) -> Result<String, String> {
     if files::probe() {
+        super::diag::log("everything\t已在运行，跳过 setup");
         return Ok("running".into());
     }
     let dir = install_dir();
     if !exe_path().exists() {
-        download(&dir)?;
-        extract(&dir)?;
+        super::diag::log("everything\t未安装，开始下载官方便携版…");
+        download(&dir).map_err(|e| {
+            super::diag::log_err(&format!("everything\t下载失败: {e}"));
+            e
+        })?;
+        extract(&dir).map_err(|e| {
+            super::diag::log_err(&format!("everything\t解压失败: {e}"));
+            e
+        })?;
+        super::diag::log("everything\t下载并解压完成");
+    } else {
+        super::diag::log("everything\t安装目录已有 exe，跳过下载");
     }
     if !exe_path().exists() {
         return Err("解压后未找到 Everything.exe".into());
     }
 
     seed_ini();
+    super::diag::log("everything\t发起提权启动（UAC 请点“是”）…");
     let elevated = launch_elevated();
     on_elevated(); // UAC 阶段已结束（授权或取消），hold 可以放了
-    elevated?;
+    elevated.map_err(|e| {
+        super::diag::log_err(&format!("everything\t提权启动失败: {e}"));
+        e
+    })?;
 
     if wait_running(Duration::from_secs(20)) {
+        super::diag::log("everything\t已就绪 ✓");
         Ok("running".into())
     } else {
+        super::diag::log_warn("everything\t进程已起，但 20s 内 HTTP 端口未就绪");
         Ok("running_no_http".into())
     }
 }
@@ -446,6 +486,16 @@ pub fn ensure() -> String {
 #[cfg(test)]
 mod tests {
     use super::{elevated_script, extract_versions, merge_ini, split_by_hash_table};
+
+    #[test]
+    fn 内置兜底版本都在哈希表内() {
+        for v in super::VERSIONS {
+            assert!(
+                super::VERSION_SHA256.iter().any(|(ver, _)| *ver == v),
+                "内置兜底版本 {v} 不在哈希表内：官网解析失败时白下一个必然被拒的包"
+            );
+        }
+    }
 
     #[test]
     fn 下载只取哈希表内版本且表外单列() {
