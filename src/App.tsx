@@ -307,6 +307,17 @@ function AppView() {
     };
   }, []);
 
+  // UAC 阶段结束后由后端发事件：hold 只为守住 UAC 抢焦点那几秒，拿到授权
+  // （或取消）即释放，之后下载/轮询期间面板该能正常失焦即隐（2026-11-06 修复）
+  useEffect(() => {
+    const un = listen("zap://everything-elevated", () => {
+      void invoke("set_hold_panel", { hold: false }).catch(() => {});
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
   // 面板每次被呼出时重置视图状态并拉取最近剪贴板（zap://shown 由 Rust 侧在 show 后发出）
   useEffect(() => {
     const unlisten = listen("zap://shown", () => {

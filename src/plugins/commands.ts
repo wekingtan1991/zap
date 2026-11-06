@@ -24,11 +24,21 @@ async function runEverythingSetup({
 }: CommandCtx): Promise<void> {
   if (busyRef.current) return;
   setBusy(true);
+  // 先探当前状态再定文案：已安装只需启动（不下载），未安装才真下载——
+  // 与 startupEntries 的分状态口径一致（防文案漂移）
+  const st = await invoke<string>("everything_status").catch(() => "unknown");
+  if (isStale?.()) {
+    setBusy(false);
+    return;
+  }
   setItems([
     {
       id: "setup-busy",
       title: "正在准备 Everything…",
-      subtitle: "下载约 2MB 并自动配置；若弹出 UAC 请点“是”；按 Esc 可放弃等待",
+      subtitle:
+        st === "not_installed"
+          ? "正在下载约 2MB 并自动配置；若弹出 UAC 请点“是”；按 Esc 可放弃等待"
+          : "正在启动已就绪的 Everything；若弹出 UAC 请点“是”；按 Esc 可放弃等待",
       kind: "info",
       target: "",
       score: 0,
@@ -47,6 +57,19 @@ async function runEverythingSetup({
           id: "setup-done",
           title: "全盘搜索已启用 ✓",
           subtitle: "输入任意文件名即可搜索全盘，Esc 关闭后立即生效",
+          kind: "info",
+          target: "",
+          score: 0,
+        },
+      ]);
+    } else if (result === "running_no_http") {
+      // Everything 起来了只是 HTTP 没就绪——不是失败，说清现状让用户自己决定
+      setItems([
+        {
+          id: "setup-http-pending",
+          title: "Everything 已启动，但 HTTP 服务未就绪",
+          subtitle:
+            "全盘搜索暂时用不了；稍后重新呼出面板再试，或检查 HTTP 端口是否被占用",
           kind: "info",
           target: "",
           score: 0,

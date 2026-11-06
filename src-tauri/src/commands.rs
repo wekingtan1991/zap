@@ -715,12 +715,17 @@ pub(crate) async fn secondary_action(
 }
 
 #[tauri::command]
-pub(crate) async fn everything_setup() -> Result<String, String> {
+pub(crate) async fn everything_setup(app: AppHandle) -> Result<String, String> {
     // 整个流程（下载/解压/提权启动/等待）都在阻塞线程池
-
-    tauri::async_runtime::spawn_blocking(crate::providers::everything::setup)
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::providers::everything::setup(|| {
+            // UAC 阶段结束（授权或取消）：前端据此释放 hold——hold 只为守住
+            // UAC 抢焦点的那几秒，之后下载/轮询期间面板该能正常失焦即隐
+            let _ = app.emit("zap://everything-elevated", ());
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // take_prev_foreground / paste_bg / paste_text_async / toggle_panel /

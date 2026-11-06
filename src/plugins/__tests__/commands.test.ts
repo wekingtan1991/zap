@@ -105,10 +105,59 @@ describe("runCommand（cmd 条目执行器）", () => {
     });
     stale = true; // 模拟等待期间用户按 Esc 隐藏面板
     await pending;
-    // 只有占位行，没有成功/失败回写污染下次呼出的列表
-    expect(ctx.setItems).toHaveBeenCalledTimes(1);
-    expect(ctx.setItems.mock.calls[0][0][0].id).toBe("setup-busy");
+    // 面板已隐藏 = 整条流程作废：连占位行都不写，不污染下次呼出的列表
+    expect(ctx.setItems).not.toHaveBeenCalled();
     expect(ctx.setBusy).toHaveBeenLastCalledWith(false);
-    expect(mockedInvoke).toHaveBeenCalledWith("set_hold_panel", { hold: false });
+    // hold 尚未设起（设 hold 在状态探测之后），无需释放
+    expect(mockedInvoke).not.toHaveBeenCalledWith("set_hold_panel", {
+      hold: true,
+    });
+  });
+
+  it("已安装：占位文案说启动、不说下载", async () => {
+    const ctx = makeCtx();
+    mockedInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "everything_status")
+        return Promise.resolve("installed_not_running");
+      if (cmd === "everything_setup") return Promise.resolve("running");
+      return Promise.resolve(null);
+    });
+    await runCommand("everything_setup", ctx);
+    const first = ctx.setItems.mock.calls[0][0] as {
+      id: string;
+      subtitle: string;
+    }[];
+    expect(first[0].id).toBe("setup-busy");
+    expect(first[0].subtitle).toContain("启动");
+    expect(first[0].subtitle).not.toContain("下载");
+  });
+
+  it("未安装：占位文案说下载约 2MB", async () => {
+    const ctx = makeCtx();
+    mockedInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "everything_status") return Promise.resolve("not_installed");
+      if (cmd === "everything_setup") return Promise.resolve("running");
+      return Promise.resolve(null);
+    });
+    await runCommand("everything_setup", ctx);
+    const first = ctx.setItems.mock.calls[0][0] as {
+      id: string;
+      subtitle: string;
+    }[];
+    expect(first[0].subtitle).toContain("下载");
+  });
+
+  it("HTTP 未就绪：不当失败，单独文案", async () => {
+    const ctx = makeCtx();
+    mockedInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "everything_setup") return Promise.resolve("running_no_http");
+      return Promise.resolve(null);
+    });
+    await runCommand("everything_setup", ctx);
+    const last = ctx.setItems.mock.calls[
+      ctx.setItems.mock.calls.length - 1
+    ]?.[0] as { id: string; title: string }[];
+    expect(last[0].id).toBe("setup-http-pending");
+    expect(last[0].title).toContain("HTTP");
   });
 });

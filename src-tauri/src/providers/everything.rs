@@ -63,10 +63,20 @@ fn extract_versions(html: &str) -> Vec<String> {
     out
 }
 
+/// 官网解析页的超时：只抓一份 HTML 版本列表，拿不到就退回内置版本表，
+/// 不值得为它吃掉整轮下载预算
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+/// 单个 zip 的下载超时（2MB 包，慢网也要留够余量）
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+/// 整轮下载的总预算：官网不可达时逐版本各等满会把总时长拖到数分钟，
+/// 面板全程 hold、用户只见「正在准备…」——封顶后失败也快且说得清
+const DOWNLOAD_BUDGET: Duration = Duration::from_secs(90);
+
 /// 主路径官网解析 + 内置表兜底（去重合并）
 fn resolve_versions(client: &reqwest::blocking::Client) -> Vec<String> {
     let mut versions = client
         .get("https://www.voidtools.com/downloads/")
+        .timeout(RESOLVE_TIMEOUT)
         .send()
         .ok()
         .and_then(|resp| resp.text().ok())
@@ -80,46 +90,73 @@ fn resolve_versions(client: &reqwest::blocking::Client) -> Vec<String> {
     versions
 }
 
+/// 版本分流（纯函数）：**只下载哈希表内的版本**。表外版本校验必拒，
+/// 先下再拒只是浪费流量与时间；跳过的版本单列出来，提示用户手动安装。
+/// 返回 (可下载版本, 被跳过的表外版本)
+fn split_by_hash_table(versions: &[String]) -> (Vec<&str>, Vec<&str>) {
+    let mut ok = Vec::new();
+    let mut skipped = Vec::new();
+    for v in versions {
+        if VERSION_SHA256.iter().any(|(ver, _)| *ver == v.as_str()) {
+            ok.push(v.as_str());
+        } else {
+            skipped.push(v.as_str());
+        }
+    }
+    (ok, skipped)
+}
+
 fn download(dest_dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
+        .timeout(DOWNLOAD_TIMEOUT)
         .build()
         .map_err(|e| e.to_string())?;
     let zip_path = dest_dir.join("everything.zip");
     let versions = resolve_versions(&client);
+    let (candidates, skipped) = split_by_hash_table(&versions);
+    if candidates.is_empty() {
+        return Err("官网版本与内置哈希表无交集，无法自动安装（请手动安装官方包）".into());
+    }
+    let budget = Instant::now();
     let mut last_err = String::from("未知错误");
-    for v in &versions {
+    for v in candidates {
+        // 总预算封顶：超了就不再试下一个版本，直接说清是超时而非校验失败
+        let elapsed = budget.elapsed();
+        if elapsed >= DOWNLOAD_BUDGET {
+            return Err(format!(
+                "下载超时（已用 {}s / 预算 {}s）：{last_err}",
+                elapsed.as_secs(),
+                DOWNLOAD_BUDGET.as_secs()
+            ));
+        }
         let url = format!("https://www.voidtools.com/Everything-{v}.x64.zip");
-        match client.get(&url).send() {
+        // 单请求也不得超出剩余预算
+        let remain = DOWNLOAD_BUDGET.saturating_sub(elapsed);
+        match client
+            .get(&url)
+            .timeout(remain.min(DOWNLOAD_TIMEOUT))
+            .send()
+        {
             Ok(resp) if resp.status().is_success() => {
                 let bytes = resp.bytes().map_err(|e| e.to_string())?;
                 // 下载完整性校验（评审 P2-04/D4）：zip 在 UAC 揈权执行前必须
-                // 对上哈希表；表外版本（官网新发）拒绝自动执行——用户可手动
-                // 安装官方包，zap 仍能托管联接（port_candidates + status）
+                // 对上哈希表；表内版本哈希对不上也不执行——用户可手动安装官方包，
+                // zap 仍能托管联接（port_candidates + status）
                 let expected = VERSION_SHA256
                     .iter()
-                    .find(|(ver, _)| ver == v)
-                    .map(|(_, h)| *h);
+                    .find(|(ver, _)| *ver == v)
+                    .map(|(_, h)| *h)
+                    .unwrap_or_default();
                 let actual: String = Sha256::digest(&bytes)
                     .iter()
                     .map(|b| format!("{b:02x}"))
                     .collect();
-                match expected {
-                    Some(expected) if expected == actual => {
-                        std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
-                        return Ok(());
-                    }
-                    Some(expected) => {
-                        last_err =
-                            format!("{url} -> SHA256 不匹配（期望 {expected}，实得 {actual}）");
-                    }
-                    None => {
-                        last_err = format!(
-                            "{url} -> 版本 {v} 不在哈希表内，拒绝自动安装（请从官网手动安装后重试）"
-                        );
-                    }
+                if actual == expected {
+                    std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
+                    return Ok(());
                 }
+                last_err = format!("{url} -> SHA256 不匹配（期望 {expected}，实得 {actual}）");
             }
             Ok(resp) => {
                 last_err = format!("{url} -> HTTP {}", resp.status());
@@ -129,7 +166,14 @@ fn download(dest_dir: &Path) -> Result<(), String> {
             }
         }
     }
-    Err(format!("全部版本下载失败（最后错误: {last_err}）"))
+    let mut msg = format!("全部版本下载失败（最后错误: {last_err}）");
+    if !skipped.is_empty() {
+        msg.push_str(&format!(
+            "；以下版本不在内置哈希表内，已跳过自动安装：{}（官网新版本需人工核验哈希，请手动安装官方包后重试）",
+            skipped.join(", ")
+        ));
+    }
+    Err(msg)
 }
 
 fn install_dir() -> PathBuf {
@@ -329,7 +373,10 @@ fn wait_running(timeout: Duration) -> bool {
 }
 
 /// 完整安装/启动流程。幂等：已运行直接返回；已下载则跳过下载。
-pub fn setup() -> Result<String, String> {
+/// on_elevated 在 UAC 阶段结束后调用一次（授权或取消都会走到）——前端据此
+/// 释放 hold：hold 只为守住 UAC 抢焦点的那几秒，之后下载/轮询期间面板
+/// 该能正常失焦即隐
+pub fn setup(on_elevated: impl Fn()) -> Result<String, String> {
     if files::probe() {
         return Ok("running".into());
     }
@@ -343,7 +390,9 @@ pub fn setup() -> Result<String, String> {
     }
 
     seed_ini();
-    launch_elevated()?;
+    let elevated = launch_elevated();
+    on_elevated(); // UAC 阶段已结束（授权或取消），hold 可以放了
+    elevated?;
 
     if wait_running(Duration::from_secs(20)) {
         Ok("running".into())
@@ -378,7 +427,7 @@ pub fn ensure() -> String {
     drop(last);
 
     super::diag::log("everything\t未运行，自动启动中…（UAC 请点“是”）");
-    match setup() {
+    match setup(|| {}) {
         Ok(s) if s == "running" => {
             super::diag::log("everything\t自动启动成功 ✓ 全盘文件搜索已就绪");
             s
@@ -396,7 +445,23 @@ pub fn ensure() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{elevated_script, extract_versions, merge_ini};
+    use super::{elevated_script, extract_versions, merge_ini, split_by_hash_table};
+
+    #[test]
+    fn 下载只取哈希表内版本且表外单列() {
+        let versions = vec![
+            "1.4.1.1030".to_string(), // 官网新版本，表外
+            "1.4.1.1028".to_string(), // 表内
+            "1.4.1.1027".to_string(), // 表外
+        ];
+        let (ok, skipped) = split_by_hash_table(&versions);
+        assert_eq!(ok, vec!["1.4.1.1028"], "只下载哈希表内的版本");
+        assert_eq!(
+            skipped,
+            vec!["1.4.1.1030", "1.4.1.1027"],
+            "表外版本不下载，单列出来提示手动安装"
+        );
+    }
 
     #[test]
     fn 提权脚本不等待常驻进程() {
