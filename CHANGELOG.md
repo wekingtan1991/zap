@@ -5,6 +5,41 @@
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-11-06
+
+### 交互：主面板工具 Dock 常驻
+
+- **入口迁出结果列表**：插件入口行原先混在列表里（空面板组装与「无强命中」兜底两处 append），空态呼出时占掉 5–6 行黄金地产（最近剪贴板与常用应用被挤走）。现改为结果区与底栏之间的**常驻 Dock 细条**，列表回归纯内容，空态与搜索态位置恒定不闪变
+- **入口与内容按数据来源分离**：后端新增 `tool_entries` 命令，只收启用插件的 `fallback_entry()`，并附带 `PluginMeta.title/entries`（chip 短名与悬停提示的入口词都随插件声明走，前端不硬编码）；`engine.search` 两处 append 与 `has_strong` 兜底判定一并删除。**不按 kind 拆分**——`probe`/`detect` 产出的 json/tool/port/info 是内容动作行，原样留在列表
+- **Dock 行为**：chip 图标色复用 badge variant 语义色（含浅色主题覆盖，不新造色值）；点击走既有 `runItem` 分发（stage 的 `openStage`、cmd 的 `runCommand`、json/tool/port 工作台 activate 全在其上）；停用插件不出现，超过 8 个收进「⋯」溢出菜单；全部按钮 `tabIndex=-1` 且不绑 keydown，**零新增键盘组合键**
+- **底栏**撤掉「json/tool 搜索工具」提示（入口已由常驻 Dock 承担），问号帮助的次级操作说明保留
+
+### 新功能：拖拽出（条目按住拖给任意应用）
+
+- **前端自判拖拽意图**（mousedown + 6px 阈值），不赌 HTML5 drag；click 抑制器防快速甩动误回贴，窗口级 blur / pointercancel 清态，新按下先清旧监听
+- **Rust 主线程 DoDragDrop**（`IDropSource` + `OleInitialize` + `ReleaseCapture`）；文本走自有 `IDataObject` 的 CF_UNICODETEXT 纯文字载荷（编辑器/聊天框松手即插入文字，不产生临时文件），图片与中转站文件走 Shell CF_HDROP
+- **会话门**：`DRAG_OUT_ACTIVE` 短路 stagedrop 轮询、自有 `IDropTarget` 与前端拖入回环
+- **面板生命周期**：拖出期间隐藏面板，取消（effect=0）原位复现，成功落地保持隐藏
+- 同步 `docs/design-drag-out.md` v3.1、PoC 探针（`drag_out_probe`）与 4 条 `dragOut` 回归测试（含「blur 捕获阶段确实会到达 window」的探针，防假通过）
+
+### 修复：Everything 托管链（2026-11-06 真机实证）
+
+- **启用入口卡死（根因）**：`launch_elevated()` 用 `Start-Process -Verb RunAs -Wait`，而 `-Wait` 等的是提权启动的**进程树**——批处理里 `start` 出来的 `Everything.exe` 是常驻后台进程，于是外层 shell 永不退出、`everything_setup` 命令挂死，前端随之锁死（busy 挡住所有条目、hold 让面板失焦不隐、占位行跨呼出残留）。改为只发起提权不等待，就绪检测交既有 `wait_running(20s)` 轮询；UAC 取消改用 `ErrorActionPreference=Stop` + `try/catch exit 1` 保住非零退出码判定
+- **前端不再有死状态**：hold 与 busy 一律走 `finally` 释放；面板隐藏即视为放弃等待（在途回执不回写列表、代次作废），下次呼出能正常重新搜索
+- **hold 窗口精确化**：后端在 UAC 阶段结束（授权或取消）即发事件，前端收到立刻释放 hold——hold 从此只守 UAC 抢焦点那几秒，下载与轮询期间面板可正常失焦即隐
+- **下载预算封顶**：官网解析页 10s、单 zip 30s、整轮 90s；且只下载哈希表内的版本（表外版本校验必拒，先下再拒纯浪费流量与时间），表外版本单列出来提示手动安装
+- **状态映射不再误导**：`running_no_http`（Everything 已起、只是 HTTP 未就绪）此前被当作失败并显示天书文案，现单列一条说明现状；占位文案按状态分支——已安装说「正在启动已就绪的 Everything」，未安装才说「正在下载约 2MB」
+- **版本解锁**：哈希表补 `1.4.1.1032`（官网稳定版此前已到 1032，表里只有 1028，用户永远装不上最新版），哈希取自官网同名 `.sha256` 文件并与既有条目逐字符核对；内置兜底版本表同步精简为表内版本
+- **链路可观测**：`setup()`/`download()` 补关键节点日志（开始 / 下载中 / 校验通过 / 哈希不匹配 / HTTP 错误 / 跳过表外版本 / 提权发起与失败 / 已就绪 / HTTP 未就绪）——此前整条托管链在 zap.log 里零记录
+
+### 视觉
+
+- **结果行类型胶囊常驻行首**：图标与胶囊由二选一改为并存（kindUi 胶囊 48px 对齐列 + 图标跟排），剪贴板等无图标行视觉不变，统一分类辨识
+
+### 发布工程
+
+- 四处版本号同步 0.17.0 → 0.18.0（package.json / tauri.conf.json / Cargo.toml / Cargo.lock）
+
 ## [0.17.0] — 2026-11-05
 
 ### 无障碍与交互（2026-11-05 续批）
