@@ -29,6 +29,12 @@
     "test": "vitest run",
     "check:kb": "node scripts/check-keyboard-faces.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
+    "bench": "cargo bench --manifest-path src-tauri/Cargo.toml --bench layers",
+    "bench:baseline": "node scripts/bench/update-baseline.mjs",
+    "bench:compare": "node scripts/bench/compare.mjs",
+    "bench:e2e": "node scripts/bench/e2e.mjs",
+    "build:smoke": "node scripts/bench/build-smoke.mjs",
+    "smoke": "node scripts/smoke/run.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

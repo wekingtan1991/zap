@@ -77,3 +77,11 @@ jobs:
       - name: 前端依赖审计
         continue-on-error: true
         run: pnpm audit --prod
+
+      # RustSec 公告库审计（scripts/bench 持续方案 L4，2026-11-07）：与前端审计同口径观察
+      - name: Rust 依赖审计
+        continue-on-error: true
+        working-directory: src-tauri
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
