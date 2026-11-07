@@ -27,7 +27,7 @@
 ## 更新链路（发版机）
 
 - [x] 私钥与 tauri.conf.json 公钥同对：发版机本地用 `TAURI_SIGNING_PRIVATE_KEY` 对任意文件跑一次 `pnpm tauri signer sign`，签名成功即私钥可用（2026-11-04 评审 R16：CI 无法校验配对，错配=全绿发版但全体用户更新静默失败）——2026-11-06 三路交叉实证：① `tauri.conf.json` 的 pubkey 字符串与 `~/.tauri/zap.key.pub` 逐字符相同；② 私钥实签成功（空密码，产出 `.sig` 404B）；③ 产物签名的 key id 与配置公钥 key id 一致（`C957897ED1642715`）。注：minisign 签名块载荷 74B = alg(2)+keyid(8)+sig(64)，**不含公钥**，配对只能比 key id
-- [ ] 旧版本收到更新提示→下载→自动重启到新版（tauri updater /R 行为）——⚠️ 2026-11-06 18:03 的 0.18.0 是**手动运行 NSIS 安装包**落地的（uninstall.exe mtime 18:03:21、zap.log 无 updater 记录），**不等于本项已验**；仍待 0.17.0 客户端实际触发 tauri updater 验证
+- [x] 旧版本收到更新提示→下载→自动重启到新版（tauri updater /R 行为）——2026-11-07 用户确认**既有真机实证**：设置页「检查更新」可检出新版本并下载后自动安装，呼出面板有更新时 toast 提醒（对应 `useUpdater.ts:52-77` 静默 check + `zap://shown` toast、`UpdateSection.tsx:92/113` 检查/下载按钮）。**本版无需重验的依据**（`6791a57..HEAD` 实读）：`useUpdater.ts` / `UpdateSection.tsx` 一行未动；`tauri.conf.json` 的 updater 段 pubkey 与 endpoints 逐字一致（仅 `version` 0.17.0→0.18.0）；`release.yml` 的 `latest.json` 生成逻辑未动（仅前置发版闸）；后端 `tauri_plugin_updater` 注册未动；签名配对另有三路实证（见上条，key id `C957897ED1642715`）。⚠️ **诚实边界**：本项按「既有实证 + 本次零变更」判定，**未在 0.18.0 产物上重新真机复跑 updater**；11-06 18:03 的 0.18.0 是手动装 NSIS 包，不作为依据。本机现到 `github.com` 主站不通（系统层无代理、直连 `http=000`）属后续网络环境变化，非产品回归
 - [x] Release 四件套齐（setup.exe / setup.exe.sig / latest.json / setup.sha256）且哈希一致——2026-11-06 v0.18.0 实测：四资产均 HTTP 200（setup.exe 4,406,819B / .sig 432B / latest.json 710B / setup.sha256 65B）；`setup.sha256` 声明值 == 实际下载安装包算得的 SHA256（`383e240f…260e`）；`latest.json` 的 version=0.18.0、url 指向 v0.18.0
 - [x] 未签名提示（SmartScreen）文案与 release notes 的 SHA256 对得上——2026-11-06 实测：release notes 正文 SHA256 与 `setup.sha256` 一致，未签名 SmartScreen 提示文案在位
 
