@@ -1,5 +1,5 @@
-//! 全局拖拽落区条：任何应用开始 shell 拖拽（Explorer/桌面拖文件）时，光标
-//! 所在显示器工作区的停靠角（设置项 stagedrop_position，四角可选默认右下）
+//! 全局拖拽落区条：任何应用开始 shell 拖拽时，光标拖近所在显示器工作区的
+//! 停靠角（设置项 stagedrop_position，四角可选默认右下；邻近门槛见下）
 //! 弹出「拖到这，放入中转站」细条，拖入松手即入中转站。
 //!
 //! 检测原理：shell 拖拽会话期间 shell32 会创建类名 `SysDragImage` 的拖拽图像
@@ -12,10 +12,22 @@
 //! 会话内会随光标静止/悬停目标反复短暂消失（gap 0.1~2s），会话判定必须做
 //! 1.2s 去抖宽限，否则条子反复显隐+重定位（用户视角 = 躲猫猫）。
 //!
+//! **非文件拖拽误弹条（2026-11-07 评审 P2）→ 邻近角出条收口（方案 A，同日
+//! 拍板实施）**：检测信号语义是「源端注册了拖影的 OLE 拖拽会话」，与内容
+//! 无关——浏览器等现代应用拖选中文字也产 SysDragImage；而内容在出条前
+//! 不可知（外部进程拿不到进行中拖拽的 IDataObject——无公开 API，数据对象
+//! 只在 DragEnter 命中已注册 IDropTarget 时才到达；全屏透明接手窗口亦不
+//! 可行，透明即鼠标穿透）。故出条不问内容、只问去向：会话开始只记账，
+//! 光标距停靠角细条矩形 ≤200px（逻辑值随显示器缩放）才出条、≥260px 撤条
+//! （双阈值迟滞带防边界徘徊闪灼），OLE 悬停直接视为在角（展开卡会把距离
+//! 撑大）——不奔向角落的拖拽（文字/框选等）全程静音，文件拖拽本就要拖
+//! 到角上，出条时机即需要它的时机。代价 = 拖拽初期不再有「可放入」预告
+//! （2026-11-07 用户拍板接受）。评审与论证全录见 CHAT.md #23/#27。
+//!
 //! **drop 接收走自有 IDropTarget**（本文件 StageDropTarget）：wry 给 WebView2
 //! 设的 AllowExternalDrop=false 路径在该窗口拒绝外部拖放（真机实测光标恒为
 //! 禁止、Drop 永不达），故在 WebView2 子窗口上撤销 wry 注册、挂自有目标——
-//! 效果恒 COPY，悬停/离开发 zap://stagedrop-hot 驱动前端高亮，Drop 直取
+//! 文件拖拽恒 COPY、非文件拖拽 NONE（诚实拒绝），悬停/离开发 zap://stagedrop-hot 驱动前端高亮，Drop 直取
 //! CF_HDROP 进统一处理（lib.rs handle_stage_drop）。wry→on_window_event
 //! 路径保留为兜底（注册失败时仍可用）。
 //!
@@ -161,6 +173,9 @@ const PROCESSING_MS: u64 = 4000;
 /// CSS 垂直 padding 会被窗口高度裁掉，等于没改
 const BAR_WIDTH: f64 = 280.0;
 const BAR_HEIGHT: f64 = 44.0;
+/// 细条距工作区边缘的边距（逻辑 px）：layout_bar 定位与邻近角判定共用，
+/// 两处漂移则判定矩形 ≠ 实际条矩形
+const BAR_MARGIN_LOGICAL: f64 = 12.0;
 /// 悬停展开的大卡片尺寸（QQ 式效果）：与细条同锚停靠角原点（见
 /// corner_origin）——展开尺寸两维均大于细条，原细条区域必然落在卡片内部，
 /// 悬停光标不会因展开被甩出窗口（否则 leave/enter 抖动循环）
@@ -179,6 +194,11 @@ struct Feedback {
 struct DropState {
     /// 当前是否认定处于 shell 拖拽会话（去抖后的判定）
     session_active: bool,
+    /// 本会话是否已出条（邻近角触发一次；hide_for_handoff 也置真——
+    /// 防「drop 呼出面板后光标仍在角附近」的幽灵重出）
+    presented: bool,
+    /// 本会话是否被中转站视图压制出条（会话起点记账，中途关视图不补出）
+    suppressed: bool,
     /// 最近一次检测到 SysDragImage 的时刻（去抖计时的锚点）
     last_seen: Option<Instant>,
     /// 会话结束时刻（无反馈时的最短驻留计时）
@@ -190,6 +210,8 @@ struct DropState {
 
 static STATE: Mutex<DropState> = Mutex::new(DropState {
     session_active: false,
+    presented: false,
+    suppressed: false,
     last_seen: None,
     gone_since: None,
     feedback: None,
@@ -238,6 +260,8 @@ pub fn set_stage_view(app: &AppHandle, open: bool) {
     BAR_SHOWN.store(false, Ordering::Relaxed);
     let mut st = STATE.lock().expect("stagedrop state poisoned");
     st.session_active = false;
+    st.presented = false;
+    st.suppressed = false;
     st.gone_since = None;
     st.last_seen = None;
     st.feedback = None;
@@ -259,6 +283,9 @@ pub fn hide_for_handoff(app: &AppHandle) {
     BAR_SHOWN.store(false, Ordering::Relaxed);
     let mut st = STATE.lock().expect("stagedrop state poisoned");
     st.feedback = None;
+    // 记账「本会话已出条」：面板即反馈面，此后光标虽仍在角附近，邻近判定
+    // 不得再出条（同不清会话状态机的理由——防 SysDragImage 余晖幽灵重出）
+    st.presented = true;
 }
 
 /// drop 事件触达即进入处理态：条子保持展示并换处理文案，返回会话代际
@@ -292,11 +319,65 @@ pub fn current_text() -> Option<String> {
     st.feedback.as_ref().map(|f| f.text.clone())
 }
 
+/// 邻近档：Enter = 已进出条门槛，Exit = 已出撤条门槛，Band = 双门槛之间的
+/// 迟滞带（保持现状——单阈值下光标在边界徘徊会反复显隐）
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Near {
+    Enter,
+    Band,
+    Exit,
+}
+
+/// 出条/撤条门槛（逻辑 px，按光标所在显示器 scale 换算物理值）：距细条
+/// 矩形 ≤200 出条、≥260 撤条。数值取舍：200 约为常见笔记本屏高的 1/5，
+/// 覆盖「拖向角落的最后一段」而不至于整屏乱弹；60px 迟滞带远大于单个
+/// 轮询周期（80ms）内的光标位移，防徘徊闪灼
+const PROXIMITY_ENTER_LOGICAL: f64 = 200.0;
+const PROXIMITY_EXIT_LOGICAL: f64 = 260.0;
+
+/// 纯判定：距离 → 邻近档
+fn proximity_class(dist: i32, enter: i32, exit: i32) -> Near {
+    if dist <= enter {
+        Near::Enter
+    } else if dist >= exit {
+        Near::Exit
+    } else {
+        Near::Band
+    }
+}
+
+/// 纯几何：点到矩形（x, y, w, h）的距离——矩形内为 0，矩形外取最近边
+/// （对角走欧氏距离并向上取整；门槛判定不需要亚像素精度）
+fn rect_distance_px(pt: (i32, i32), rect: (i32, i32, i32, i32)) -> i32 {
+    let (px, py) = pt;
+    let (rx, ry, rw, rh) = rect;
+    let dx = if px < rx {
+        rx - px
+    } else if px > rx + rw {
+        px - (rx + rw)
+    } else {
+        0
+    };
+    let dy = if py < ry {
+        ry - py
+    } else if py > ry + rh {
+        py - (ry + rh)
+    } else {
+        0
+    };
+    ((dx * dx + dy * dy) as f64).sqrt().ceil() as i32
+}
+
 /// 单次轮询的决策结果：纯计算（无副作用），执行端只做状态落盘与窗口操作，
-/// 抖动/保活/反馈交织的可测性集中在这里（见 tests::轮询决策情形覆盖）
+/// 抖动/保活/反馈/邻近交织的可测性集中在这里（见 tests::轮询决策情形覆盖）
 enum Poll {
-    /// 新会话开始；suppressed = 中转站视图展开中，只记账不出条
-    Start { suppressed: bool },
+    /// 新会话开始（只记账不出条）；suppressed = 中转站视图展开中整场压制，
+    /// present_now = 起点已进邻近门槛、记账后当场出条（观感同旧版即时出条）
+    Start { suppressed: bool, present_now: bool },
+    /// 会话中拖近停靠角：出条（会话内首次或撤回后再近）
+    Present,
+    /// 已出条但拖离出撤条门槛：收条还屏于拖拽本体，再拖回来重新出（迟滞防闪）
+    Withdraw,
     /// 拖拽进行中且旧反馈文案已到期
     ResetStale,
     /// 信号消失但在去抖宽限内（抖动或左键保活），不动
@@ -309,20 +390,27 @@ enum Poll {
     Hide,
 }
 
-/// 决策与原 if-else 链逐分支等价：dragging 分两种（新会话/进行中），
-/// 无信号且会话中分两种（宽限内/耗尽），无会话分三种（反馈未到期/到期但
-/// 驻留不足/到期且可收——反馈存在本身就是「到期即收」的充分条件）。
-/// stage_view_open = 中转站视图展开中：新会话照常记账（递增代际作废旧
-/// 反馈）但不出条——视图内拖入即落点，角落条冗余；会话中途关视图也不
-/// 补出，下轮会话恢复（b523d22 纪律：可测性集中在 decide，见 tests）。
-/// drag_out_active = 拖拽出会话进行中：防御门——默认光标拖出不产 SysDragImage
-/// （PoC 2 实证），但一旦上游/主题行为变化产生拖影窗口，拖出会被误判为拖入
-/// 会话弹条并把临时文件误收进中转站（R01-P1）；无会话时一律 Hold 不开新会话
+/// 决策纯函数。会话只由图像可见性开启（左键按住的框选/普通点击不开会话）：
+/// - 拖拽中且无会话 → Start 记账；present_now = 未被视图压制且已进邻近
+///   门槛（起点即在角附近则当场出条）
+/// - 拖拽中且有会话 → 未出条且进门槛 → Present；已出条且出撤条门槛 →
+///   Withdraw（迟滞带 Band 保持现状）；旧反馈到期 → ResetStale；否则 Settle
+/// - 信号消失 → 去抖宽限内 Hold、耗尽 End（不变）；无会话按反馈/驻留收条
+///   （不变）
+///
+/// near 由调用方折算（含「OLE 悬停即视为在角」的覆盖，见 spawn），本函数
+/// 只认档位。stage_view_open = 中转站视图展开中：新会话照常记账（递增代际
+/// 作废旧反馈）但整场压制出条——视图内拖入即落点，角落条冗余；会话中途
+/// 关视图也不补出，下轮会话恢复。drag_out_active = 拖拽出会话进行中：防御
+/// 门——默认光标拖出不产 SysDragImage（PoC 2 实证），但一旦上游/主题行为
+/// 变化产生拖影窗口，拖出会被误判为拖入会话弹条并把临时文件误收进中转站
+/// （R01-P1）；无会话时一律 Hold 不开新会话
 fn decide(
     st: &DropState,
     dragging: bool,
     stage_view_open: bool,
     drag_out_active: bool,
+    near: Near,
     now: Instant,
 ) -> Poll {
     if drag_out_active && !st.session_active {
@@ -332,7 +420,12 @@ fn decide(
         if !st.session_active {
             Poll::Start {
                 suppressed: stage_view_open,
+                present_now: !stage_view_open && near == Near::Enter,
             }
+        } else if !st.presented && !st.suppressed && near == Near::Enter {
+            Poll::Present
+        } else if st.presented && near == Near::Exit {
+            Poll::Withdraw
         } else if st.feedback.as_ref().is_some_and(|f| now >= f.until) {
             Poll::ResetStale
         } else {
@@ -368,6 +461,9 @@ pub fn ensure_visible(app: &AppHandle) {
         layout_bar(app, false);
         let _ = win.show();
         BAR_SHOWN.store(true, Ordering::Relaxed);
+        // 补显即视为本会话已出条：防随后的邻近判定把补显窗口当「未出条」
+        // 再次 Present 重播入场动画
+        STATE.lock().expect("stagedrop state poisoned").presented = true;
     }
 }
 
@@ -416,48 +512,73 @@ pub fn spawn(app: AppHandle) {
                 st.last_seen = Some(now);
             }
 
+            // 邻近档只在拖拽中有意义（出条/撤条仅发生于拖拽中）。OLE 悬停
+            // 即「光标在条上」——展开卡把光标到细条矩形的距离撑大（卡高 264
+            // vs 条高 44），悬停中直接按 Enter 处理，否则悬停展开卡上部会被
+            // 误判撤条、条子在光标下消失
+            let near = if dragging {
+                if HOVERING.load(Ordering::Relaxed) {
+                    Near::Enter
+                } else {
+                    classify_proximity(&app)
+                }
+            } else {
+                Near::Exit
+            };
+
             match decide(
                 &st,
                 dragging,
                 STAGE_VIEW_OPEN.load(Ordering::Relaxed),
                 super::dragout::DRAG_OUT_ACTIVE.load(Ordering::Relaxed),
+                near,
                 now,
             ) {
-                Poll::Start { suppressed } => {
-                    // 新会话：代际递增作废旧反馈、按当前光标重新定位。只由图像
-                    // 可见性触发——左键按住（框选/普通点击）不得误开。
-                    // suppressed = 中转站视图展开中：会话记账照做，角落条不出
-                    // （视图在会话中途关闭也不补出条——下轮会话恢复）
-                    let hovering = HOVERING.load(Ordering::Relaxed);
+                Poll::Start {
+                    suppressed,
+                    present_now,
+                } => {
+                    // 新会话：代际递增作废旧反馈。只由图像可见性触发——左键
+                    // 按住（框选/普通点击）不得误开。出条与否交给邻近角：
+                    // suppressed = 中转站视图展开中，整场压制（视图内拖入即
+                    // 落点；会话中途关视图也不补出条——下轮会话恢复）
                     st.session_active = true;
                     st.generation += 1;
                     st.feedback = None;
                     st.gone_since = None;
+                    st.presented = false;
+                    st.suppressed = suppressed;
                     drop(st);
                     if suppressed {
                         super::diag::log("stagedrop: drag session start suppressed (stage view)");
                         continue;
                     }
-                    // 布局与 hot 双双依悬停镜像分流：悬停中保留 DragEnter 的
-                    // 展开布局并重申 hot=true（幂等），非悬停才走细条并清 hot
-                    // （顺带兜底任何失联的旧高亮，同 hide 的兜底语义）
-                    layout_bar(&app, hovering);
-                    show(&app);
-                    let _ = app.emit_to("stagedrop", "zap://stagedrop-hot", hovering);
-                    super::diag::log(&format!(
-                        "stagedrop: drag session start hovering={hovering}"
-                    ));
-                    // 角先于 reset 推送：前端入场动画方向依停靠角切换（顶角
-                    // 从上滑入）。每轮会话起点都发而非只在设置变更时发——绕开
-                    // 「启动早期前端监听未就绪收不到一次性通知」的时序问题
-                    let _ = app.emit_to("stagedrop", "zap://stagedrop-corner", position_setting());
-                    // payload 分流：前端只对 start 重挂重播入场动画——
-                    // stale 若也重挂，长拖拽中反馈到期会把滑入动画重播在拖拽中途
-                    let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", "start");
+                    if present_now {
+                        // 起点已在角附近：当场出条，观感同旧版即时出条
+                        super::diag::log("stagedrop: drag session start near corner");
+                        present_bar(&app);
+                    } else {
+                        // 远离角的新会话保持安静（邻近角出条）；顺手收掉上一
+                        // 轮反馈驻留的残条——它的文案与本次拖拽无关
+                        if BAR_SHOWN.load(Ordering::Relaxed) {
+                            withdraw_bar(&app);
+                        }
+                        super::diag::log("stagedrop: drag session start away from corner");
+                    }
+                }
+                Poll::Present => {
+                    // 拖近停靠角：出条（会话内首次或撤回后再近）
+                    drop(st);
+                    present_bar(&app);
+                }
+                Poll::Withdraw => {
+                    // 拖离出撤条门槛：收条，再拖回来重新走 Present 全流程
+                    drop(st);
+                    withdraw_bar(&app);
                 }
                 Poll::ResetStale => {
                     // 拖拽进行中：旧反馈文案到期复位（长拖拽不残留上一轮结果）。
-                    // 只复位文案，不动会话动画（见上）
+                    // 只复位文案，不动会话动画（present_bar 的 start/stale 分流）
                     st.feedback = None;
                     drop(st);
                     let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", "stale");
@@ -477,6 +598,8 @@ pub fn spawn(app: AppHandle) {
                     st.feedback = None;
                     st.gone_since = None;
                     st.last_seen = None;
+                    st.presented = false;
+                    st.suppressed = false;
                     drop(st);
                     hide(&app);
                 }
@@ -519,6 +642,66 @@ fn left_button_held() -> bool {
 #[cfg(not(windows))]
 fn left_button_held() -> bool {
     false
+}
+
+/// 光标对当前停靠角细条矩形的邻近档（仅拖拽中每 tick 调用，节奏同 POLL_MS）。
+/// 距离对细条矩形取——条就是要落的目标，出条时机 = 「目标出现在可达范围内」。
+/// 任何取数失败一律 Exit：fail-safe 方向 = 不出条，与 layout_bar 的容错方向
+/// 一致（取不到光标/显示器时弹条只会弹在错误位置）
+#[cfg(windows)]
+fn classify_proximity(app: &AppHandle) -> Near {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut pt = POINT::default();
+    unsafe {
+        if GetCursorPos(&mut pt).is_err() {
+            return Near::Exit;
+        }
+    }
+    let hmon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
+    if hmon.is_invalid() {
+        return Near::Exit;
+    }
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if !GetMonitorInfoW(hmon, &mut mi).as_bool() {
+            return Near::Exit;
+        }
+    }
+    let scale = app
+        .monitor_from_point(pt.x as f64, pt.y as f64)
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    let w = (BAR_WIDTH * scale) as i32;
+    let h = (BAR_HEIGHT * scale) as i32;
+    let margin = (BAR_MARGIN_LOGICAL * scale) as i32;
+    let work = WorkRect {
+        left: mi.rcWork.left,
+        top: mi.rcWork.top,
+        right: mi.rcWork.right,
+        bottom: mi.rcWork.bottom,
+    };
+    let (x, y) = corner_origin(position(), work, w, h, margin);
+    let dist = rect_distance_px((pt.x, pt.y), (x, y, w, h));
+    proximity_class(
+        dist,
+        (PROXIMITY_ENTER_LOGICAL * scale) as i32,
+        (PROXIMITY_EXIT_LOGICAL * scale) as i32,
+    )
+}
+
+#[cfg(not(windows))]
+fn classify_proximity(_app: &AppHandle) -> Near {
+    Near::Exit
 }
 
 /// 工作区物理矩形（layout_bar 从 MONITORINFO.rcWork 搬运；独立结构使几何
@@ -621,7 +804,7 @@ pub(crate) fn layout_bar(app: &AppHandle, expanded: bool) {
         .unwrap_or(1.0);
     let w = (w_l * scale) as i32;
     let h = (h_l * scale) as i32;
-    let margin = (12.0 * scale) as i32;
+    let margin = (BAR_MARGIN_LOGICAL * scale) as i32;
     let work = WorkRect {
         left: mi.rcWork.left,
         top: mi.rcWork.top,
@@ -667,6 +850,34 @@ fn hide(app: &AppHandle) {
         let _ = win.hide();
     }
     BAR_SHOWN.store(false, Ordering::Relaxed);
+}
+
+/// 出条（会话内首次或撤回后再近）：布局+显示+动画推送并记 presented。
+/// 布局与 hot 依悬停镜像分流：悬停中保留 DragEnter 的展开布局并重申
+/// hot=true（幂等），非悬停走细条并清 hot（顺带兜底任何失联的旧高亮，
+/// 同 hide 的兜底语义）。角先于 reset 推送：前端入场动画方向依停靠角切换
+/// （顶角从上滑入）；每轮出条都发而非只在设置变更时发——绕开「启动早期
+/// 前端监听未就绪收不到一次性通知」的时序问题。payload 恒 start：前端只
+/// 对 start 重挂重播入场动画（stale 不重挂，防拖拽中途闪动画）
+fn present_bar(app: &AppHandle) {
+    let hovering = HOVERING.load(Ordering::Relaxed);
+    layout_bar(app, hovering);
+    show(app);
+    let _ = app.emit_to("stagedrop", "zap://stagedrop-hot", hovering);
+    super::diag::log(&format!("stagedrop: bar presented hovering={hovering}"));
+    let _ = app.emit_to("stagedrop", "zap://stagedrop-corner", position_setting());
+    let _ = app.emit_to("stagedrop", "zap://stagedrop-reset", "start");
+    STATE.lock().expect("stagedrop state poisoned").presented = true;
+}
+
+/// 撤条（拖离出撤条门槛，或新会话远离角时收上一轮残条）：复位前端 hot +
+/// 藏窗 + 清反馈与本会话出条记账——再拖近会重新走 present_bar 全流程
+fn withdraw_bar(app: &AppHandle) {
+    hide(app);
+    super::diag::log("stagedrop: bar withdrawn (away from corner)");
+    let mut st = STATE.lock().expect("stagedrop state poisoned");
+    st.presented = false;
+    st.feedback = None;
 }
 
 /// 开关关闭：已显示则归位（拖拽中关闭也立即收）
@@ -769,8 +980,8 @@ mod tests {
         STATE.lock().unwrap().feedback = None;
     }
 
-    /// 轮询决策纯函数的情形覆盖：抖动宽限/会话结束/反馈驻留/到期收条。
-    /// 时间字段以 now 为锚的毫秒偏移给出（负 = 过去）
+    /// 轮询决策纯函数的情形覆盖：邻近出条/撤条/迟滞带/抖动宽限/会话结束/
+    /// 反馈驻留/到期收条。时间字段以 now 为锚的毫秒偏移给出（负 = 过去）
     #[test]
     fn 轮询决策情形覆盖() {
         let now = Instant::now();
@@ -782,10 +993,14 @@ mod tests {
             }
         };
         let mk = |session: bool,
+                  presented: bool,
+                  suppressed: bool,
                   last_seen: Option<i64>,
                   gone: Option<i64>,
                   fb_until: Option<i64>| DropState {
             session_active: session,
+            presented,
+            suppressed,
             last_seen: last_seen.map(at),
             gone_since: gone.map(at),
             feedback: fb_until.map(|u| Feedback {
@@ -795,49 +1010,155 @@ mod tests {
             generation: 0,
         };
 
-        // 拖拽信号出现且无会话 → 开新会话
+        // 拖拽信号出现且无会话、远离角 → 开新会话但不出条（方案 A 核心）
         assert!(matches!(
-            decide(&mk(false, None, None, None), true, false, false, now),
-            Poll::Start { suppressed: false }
+            decide(
+                &mk(false, false, false, None, None, None),
+                true,
+                false,
+                false,
+                Near::Exit,
+                now
+            ),
+            Poll::Start {
+                suppressed: false,
+                present_now: false
+            }
         ));
-        // 中转站视图展开中的新会话 → 记账但不出条（视图内拖入即落点）
+        // 拖拽信号出现且无会话、已在角附近 → 开会话并当场出条（观感同旧版）
         assert!(matches!(
-            decide(&mk(false, None, None, None), true, true, false, now),
-            Poll::Start { suppressed: true }
+            decide(
+                &mk(false, false, false, None, None, None),
+                true,
+                false,
+                false,
+                Near::Enter,
+                now
+            ),
+            Poll::Start {
+                suppressed: false,
+                present_now: true
+            }
+        ));
+        // 中转站视图展开中的新会话 → 记账但整场压制（视图内拖入即落点）
+        assert!(matches!(
+            decide(
+                &mk(false, false, false, None, None, None),
+                true,
+                true,
+                false,
+                Near::Enter,
+                now
+            ),
+            Poll::Start {
+                suppressed: true,
+                present_now: false
+            }
+        ));
+        // 会话中未出条、拖近角 → 出条
+        assert!(matches!(
+            decide(
+                &mk(true, false, false, Some(0), None, None),
+                true,
+                false,
+                false,
+                Near::Enter,
+                now
+            ),
+            Poll::Present
+        ));
+        // 会话中被视图压制 → 进门槛也不出条（会话中途关视图不补出）
+        assert!(matches!(
+            decide(
+                &mk(true, false, true, Some(0), None, None),
+                true,
+                false,
+                false,
+                Near::Enter,
+                now
+            ),
+            Poll::Settle
+        ));
+        // 会话中已出条、拖离出撤条门槛 → 撤条
+        assert!(matches!(
+            decide(
+                &mk(true, true, false, Some(0), None, None),
+                true,
+                false,
+                false,
+                Near::Exit,
+                now
+            ),
+            Poll::Withdraw
+        ));
+        // 已出条、处于迟滞带 → 保持（防边界徘徊反复显隐）
+        assert!(matches!(
+            decide(
+                &mk(true, true, false, Some(0), None, None),
+                true,
+                false,
+                false,
+                Near::Band,
+                now
+            ),
+            Poll::Settle
         ));
         // 拖拽中反馈未到期 → 保持
         assert!(matches!(
             decide(
-                &mk(true, Some(0), None, Some(1200)),
+                &mk(true, true, false, Some(0), None, Some(1200)),
                 true,
                 false,
                 false,
+                Near::Band,
                 now
             ),
             Poll::Settle
         ));
         // 拖拽中反馈已到期 → 复位文案（长拖拽不残留上一轮结果）
         assert!(matches!(
-            decide(&mk(true, Some(0), None, Some(-1)), true, false, false, now),
+            decide(
+                &mk(true, true, false, Some(0), None, Some(-1)),
+                true,
+                false,
+                false,
+                Near::Band,
+                now
+            ),
             Poll::ResetStale
         ));
         // 信号消失 0.5s（< 1.2s 去抖）→ 宽限不动（躲猫猫修复的核心）
         assert!(matches!(
-            decide(&mk(true, Some(-500), None, None), false, false, false, now),
+            decide(
+                &mk(true, true, false, Some(-500), None, None),
+                false,
+                false,
+                false,
+                Near::Exit,
+                now
+            ),
             Poll::Hold
         ));
         // 信号消失 1.3s（≥ 1.2s）→ 会话结束
         assert!(matches!(
-            decide(&mk(true, Some(-1300), None, None), false, false, false, now),
+            decide(
+                &mk(true, true, false, Some(-1300), None, None),
+                false,
+                false,
+                false,
+                Near::Exit,
+                now
+            ),
             Poll::End
         ));
         // 无会话反馈未到期 → 保持展示
         assert!(matches!(
             decide(
-                &mk(false, None, Some(-100), Some(600)),
+                &mk(false, false, false, None, Some(-100), Some(600)),
                 false,
                 false,
                 false,
+                Near::Exit,
                 now
             ),
             Poll::Settle
@@ -845,24 +1166,62 @@ mod tests {
         // 无会话反馈已过期 → 到期即收（反馈存在是「到期即收」的充分条件）
         assert!(matches!(
             decide(
-                &mk(false, None, Some(-100), Some(-1)),
+                &mk(false, false, false, None, Some(-100), Some(-1)),
                 false,
                 false,
                 false,
+                Near::Exit,
                 now
             ),
             Poll::Hide
         ));
         // 无会话无反馈，驻留不足 200ms → 保持
         assert!(matches!(
-            decide(&mk(false, None, Some(-100), None), false, false, false, now),
+            decide(
+                &mk(false, false, false, None, Some(-100), None),
+                false,
+                false,
+                false,
+                Near::Exit,
+                now
+            ),
             Poll::Settle
         ));
         // 无会话无反馈，驻留已过 → 收条
         assert!(matches!(
-            decide(&mk(false, None, Some(-300), None), false, false, false, now),
+            decide(
+                &mk(false, false, false, None, Some(-300), None),
+                false,
+                false,
+                false,
+                Near::Exit,
+                now
+            ),
             Poll::Hide
         ));
+    }
+
+    /// 邻近档双门槛：≤enter 进、≥exit 出、之间为迟滞带
+    #[test]
+    fn 邻近档按双门槛分带() {
+        assert_eq!(proximity_class(0, 200, 260), Near::Enter);
+        assert_eq!(proximity_class(200, 200, 260), Near::Enter);
+        assert_eq!(proximity_class(201, 200, 260), Near::Band);
+        assert_eq!(proximity_class(259, 200, 260), Near::Band);
+        assert_eq!(proximity_class(260, 200, 260), Near::Exit);
+        assert_eq!(proximity_class(10_000, 200, 260), Near::Exit);
+    }
+
+    /// 矩形距离：矩形内为 0，矩形外取最近边（对角走欧氏距离）
+    #[test]
+    fn 矩形距离内零外取最近边() {
+        let bar = (0, 0, 100, 50);
+        assert_eq!(rect_distance_px((50, 25), bar), 0, "矩形内为 0");
+        assert_eq!(rect_distance_px((130, 25), bar), 30, "右侧水平距离");
+        assert_eq!(rect_distance_px((-5, 25), bar), 5, "左侧水平距离");
+        assert_eq!(rect_distance_px((50, -1), bar), 1, "上方垂直距离");
+        assert_eq!(rect_distance_px((103, 54), bar), 5, "对角 3-4-5");
+        assert_eq!(rect_distance_px((0, 0), bar), 0, "角点恰在矩形上");
     }
 
     /// 拖拽出门：DRAG_OUT_ACTIVE 期间无会话一律 Hold（R01-P1 防御——拖出会
@@ -873,19 +1232,30 @@ mod tests {
         let now = Instant::now();
         let mk = || DropState {
             session_active: false,
+            presented: false,
+            suppressed: false,
             last_seen: None,
             gone_since: None,
             feedback: None,
             generation: 0,
         };
         // 门开 + 拖拽信号 → Hold（不开新会话、不记账）
-        assert!(matches!(decide(&mk(), true, false, true, now), Poll::Hold));
+        assert!(matches!(
+            decide(&mk(), true, false, true, Near::Exit, now),
+            Poll::Hold
+        ));
         // 门开 + 无信号 → 照常 Hold
-        assert!(matches!(decide(&mk(), false, false, true, now), Poll::Hold));
+        assert!(matches!(
+            decide(&mk(), false, false, true, Near::Exit, now),
+            Poll::Hold
+        ));
         // 门关 + 拖拽信号 → 正常开新会话（回归保护）
         assert!(matches!(
-            decide(&mk(), true, false, false, now),
-            Poll::Start { suppressed: false }
+            decide(&mk(), true, false, false, Near::Exit, now),
+            Poll::Start {
+                suppressed: false,
+                present_now: false
+            }
         ));
     }
 
