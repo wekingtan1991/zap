@@ -6385,7 +6385,7 @@ dependencies = [
 
 [[package]]
 name = "zap"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "aes-gcm",
  "arboard",
