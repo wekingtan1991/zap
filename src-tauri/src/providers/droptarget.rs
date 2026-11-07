@@ -1,7 +1,8 @@
 //! 自有 IDropTarget：drop 接收主路径（自 stagedrop.rs 拆出，审计 D4）。
 //! 背景：wry 给 WebView2 设的 AllowExternalDrop=false 拒绝外部拖放（真机
 //! 实测光标恒禁止、Drop 永不达），故在 WebView2 子窗口上撤销 wry 注册、
-//! 挂自有目标——效果恒 COPY，悬停/离开发 zap://stagedrop-hot 驱动前端高亮，
+//! 挂自有目标——文件拖拽效果恒 COPY（根治禁止图标）、非文件拖拽 NONE
+//! （诚实拒绝，Drop 同口径见下），悬停/离开发 zap://stagedrop-hot 驱动前端高亮，
 //! Drop 直取 CF_HDROP 经 ON_DROP 回调上抛（lib.rs handle_stage_drop）。
 //! 悬停/落点反馈与布局仍归 stagedrop.rs 状态机
 
@@ -176,7 +177,8 @@ fn extract_drop_paths(
     (paths, Some(hdrop))
 }
 
-/// 自有拖放目标：CF_HDROP 全收，效果恒 COPY（根治禁止图标）
+/// 自有拖放目标：CF_HDROP 全收——文件拖拽效果恒 COPY（根治禁止图标），
+/// 非文件拖拽 NONE（诚实拒绝：光标禁止 = 不能落，源端不误信「已复制」）
 #[cfg(windows)]
 #[windows::core::implement(IDropTarget)]
 struct StageDropTarget {
@@ -265,8 +267,16 @@ impl windows::Win32::System::Ole::IDropTarget_Impl for StageDropTarget_Impl {
             unsafe { windows::Win32::UI::Shell::DragFinish(hdrop) };
         }
         super::diag::log(&format!("stagedrop: drop paths={}", paths.len()));
+        // 收了文件才报 COPY，与 DragEnter/DragOver 的 has_files 分流同口径：
+        // 非文件拖拽（如编辑器里拖文字）松手在条上时，此前光标已是禁止态，
+        // Drop 若仍报 COPY，源端会收到「已复制成功」的假语义（move 拖拽
+        // 误判目标已接管）——NONE 才是「目标没有拿走数据」的真话
         unsafe {
-            *pdwEffect = windows::Win32::System::Ole::DROPEFFECT_COPY;
+            *pdwEffect = if paths.is_empty() {
+                windows::Win32::System::Ole::DROPEFFECT_NONE
+            } else {
+                windows::Win32::System::Ole::DROPEFFECT_COPY
+            };
         }
         if !paths.is_empty() {
             // OLE 回调在主线程：入库压后台线程，不阻塞拖拽循环。
