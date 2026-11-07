@@ -7,7 +7,8 @@
 /// 长驻索引（应用/最近文件/设置表/窗口快照）在扫描时构建一次，
 /// 搜索时只做打分——否则每次击键都要对几百个条目重转拼音。
 #[derive(Clone)]
-pub(crate) struct MatchForms {
+// pub 化仅限 benches 打分基准引用（scripts/bench 方案 2026-11-07）；字段仍私有
+pub struct MatchForms {
     lower: String,
     full: String,
     initials: String,

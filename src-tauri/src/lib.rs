@@ -1,7 +1,10 @@
 mod commands;
 mod hotkey_capture;
 mod panel;
-mod providers;
+// bench 可见性（scripts/bench 持续方案 2026-11-07）：src-tauri/benches/ 引用
+// providers 纯层（matching 打分、db/vault 临时库读写）须模块公开；
+// 仅放宽模块壳，成员可见性未动
+pub mod providers;
 mod settings;
 mod state;
 

@@ -123,6 +123,14 @@ impl RecentsPlugin {
     }
 }
 
+// providers 模块 pub 化（benches 引用，scripts/bench 方案 2026-11-07）后
+// clippy::new_without_default 开始覆盖本项——补 Default 契约
+impl Default for RecentsPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl super::plugin::Plugin for RecentsPlugin {
     fn search(&self, query: &str, _conn: Option<&rusqlite::Connection>) -> Vec<SearchItem> {
         let entries = self.entries.read().expect("recents poisoned").clone();

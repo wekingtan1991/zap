@@ -21,6 +21,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# benches（scripts/bench 持续方案 2026-11-07）：确定性纯层基准。
+# default-features=false 关掉 rayon/plotters/html——只要数字不要图表，编译面最小
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "layers"
+harness = false
+
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
@@ -76,6 +85,16 @@ debug = 1
 
 [profile.dev.package."*"]
 debug = false
+
+# 基准 profile（scripts/bench 方案 2026-11-07）：优化级别对齐 release，lto 收
+# thin + 并行 codegen 换快编译——benches 要常态复跑，数字只与本机基线比；
+# 发布级全链路性能走 CDP 实测 release 构建（lto=true），不在这里。
+# panic 策略不必写：cargo 对 test/bench profile 强制 unwind
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+debug = 0
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-autostart = "2"
