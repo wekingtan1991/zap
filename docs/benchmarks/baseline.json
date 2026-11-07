@@ -1,0 +1,22 @@
+{
+  "machine": {
+    "host": "wekingtan",
+    "cpu": "12th Gen Intel(R) Core(TM) i7-1260P",
+    "note": "基线只对同机有效；换机先 pnpm bench:baseline 重建"
+  },
+  "created": "2026-11-07T10:02",
+  "unit": "ns",
+  "numbers": {
+    "matching/forms_score/microsoft edge_edge": 95,
+    "matching/forms_score/visual studio code_vsc": 372,
+    "matching/forms_score/微信_weixin": 265,
+    "matching/forms_score/微信_wx": 244,
+    "matching/forms_score/网易云音乐_abc": 367,
+    "matching/forms_score/腾讯会议_txhy": 298,
+    "matching/forms_score/记事本_jishiben": 263,
+    "matching/forms_score/远程桌面连接_yuancheng": 372,
+    "vault/get_解密详情": 210469,
+    "vault/search_拼音词": 64784,
+    "vault/search_空词全量50条": 36358
+  }
+}

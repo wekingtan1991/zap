@@ -1,0 +1,9 @@
+{
+  "identifier": "com.ais.zap.smoke",
+  "plugins": {
+    "updater": {
+      "active": false,
+      "endpoints": ["https://127.0.0.1:9/latest.json"]
+    }
+  }
+}
