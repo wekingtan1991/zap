@@ -35,6 +35,7 @@
     "bench:e2e": "node scripts/bench/e2e.mjs",
     "build:smoke": "node scripts/bench/build-smoke.mjs",
     "smoke": "node scripts/smoke/run.mjs",
+    "release:verify": "node scripts/release/verify-assets.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
