@@ -169,6 +169,7 @@ fn build_item(
         kind: "clip".into(),
         target: rowid.to_string(),
         icon: None,
+        icon_key: None,
         pinned,
         score: 60.0 - index as f32,
     }

@@ -266,7 +266,10 @@ impl AppIndex {
                     subtitle: e.path.clone(),
                     kind: "app".into(),
                     target: e.path.clone(),
-                    icon: e.icon.clone(),
+                    // 图标按需传输（2026-11-09 P2）：条目只带键不带 base64，
+                    // 前端向 app_icons 批量拉取；缺图条目维持 None 走角标
+                    icon: None,
+                    icon_key: e.icon.is_some().then(|| e.icon_key.to_string()),
                     pinned: false,
                     score,
                 }
@@ -304,10 +307,29 @@ impl AppIndex {
                     subtitle: e.path.clone(),
                     kind: "app".into(),
                     target: e.path.clone(),
-                    icon: e.icon.clone(),
+                    // 同 search：图标按需传输，条目只带键
+                    icon: None,
+                    icon_key: e.icon.is_some().then(|| e.icon_key.to_string()),
                     pinned: false,
                     score: 55.0 - rank as f32,
                 }
+            })
+            .collect()
+    }
+
+    /// 图标按需批量拉取（app_icons 命令后端）：键 = icon_key 十进制串。
+    /// 只返回当前有图的键；缺图标键不返回——前端不缓存负值，后台
+    /// spawn_icon_backfill 补齐后下次搜索/拉取自然可见
+    pub fn icon_urls(&self, keys: &[u64]) -> std::collections::HashMap<u64, String> {
+        let want: std::collections::HashSet<u64> = keys.iter().copied().collect();
+        self.entries
+            .read()
+            .expect("app index poisoned")
+            .iter()
+            .filter_map(|e| {
+                let icon = e.icon.as_ref()?;
+                want.contains(&e.icon_key)
+                    .then(|| (e.icon_key, icon.clone()))
             })
             .collect()
     }
@@ -667,6 +689,38 @@ mod tests {
         }
         let boosted = idx.search("a", 5, &load_launch_counts(&conn));
         assert_eq!(boosted[0].title, "AB", "常用应用应靠前");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn 图标按需传输_条目只带键_索引层按键取回() {
+        let dir = std::env::temp_dir().join("zap_app_index_iconkey_test");
+        let cache = dir.join("icons");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(dir.join("AA.lnk"), "").unwrap();
+        // 预置磁盘图标缓存（首扫只查缓存不现场提取）：键 = cache_key(lnk 路径)
+        let lnk = dir.join("AA.lnk").to_string_lossy().to_string();
+        fs::write(
+            cache.join(format!("{:016x}.png", cache_key(&lnk))),
+            [0u8, 1, 2, 3],
+        )
+        .unwrap();
+
+        let idx = AppIndex::new(vec![dir.clone()], Some(cache), false);
+        let items = idx.search("a", 5, &HashMap::new());
+        assert_eq!(items.len(), 1);
+        // 条目不再随搜索携带 base64，有图条目只带键（缺图条目维持 None 走角标）
+        assert!(items[0].icon.is_none(), "条目不应随搜索传 data URL");
+        let key = items[0].icon_key.as_deref().expect("有图条目应带 icon_key");
+
+        // 键回查：十进制串 → data URL；缺失键不返回
+        let parsed: u64 = key.parse().unwrap();
+        let urls = idx.icon_urls(&[parsed]);
+        assert_eq!(urls.len(), 1);
+        assert!(urls.get(&parsed).unwrap().starts_with("data:image/png"));
+        assert!(idx.icon_urls(&[0]).is_empty(), "缺图标键不返回");
 
         fs::remove_dir_all(&dir).unwrap();
     }

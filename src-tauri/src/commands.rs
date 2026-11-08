@@ -46,6 +46,18 @@ pub(crate) async fn tool_entries(
     blocking!(engine.tool_entries())
 }
 
+/// 应用图标按需批量拉取：apps 段条目只带 iconKey 不随搜索传 base64，前端
+/// 按键缓存后击键路径零图标流量。keys 为 icon_key 十进制串，走阻塞池与
+/// 同层命令一致（索引读锁不进 tokio worker）
+#[tauri::command]
+pub(crate) async fn app_icons(
+    state: tauri::State<'_, AppState>,
+    keys: Vec<String>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let engine = state.engine.clone();
+    blocking!(engine.app_icons(&keys))
+}
+
 // 面板开关类命令（hide_panel/set_hold_panel/set_stage_view）已拆至 panel.rs
 // （评审 P1-17 步 3），invoke_handler 引用 panel::* 路径；其余命令搬运口径
 // 不变：涉及 DB/DPAPI/剪贴板/HTTP 的一律 async + spawn_blocking——Tauri 同步

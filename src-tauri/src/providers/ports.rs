@@ -524,6 +524,7 @@ impl PortsPlugin {
             // all = 不预置端口过滤
             target: "all".into(),
             icon: None,
+            icon_key: None,
             pinned: false,
             score: 0.0,
         }
@@ -556,6 +557,7 @@ impl super::plugin::Plugin for PortsPlugin {
             kind: "port".into(),
             target: port.to_string(),
             icon: None,
+            icon_key: None,
             pinned: false,
             score: 0.0,
         }]

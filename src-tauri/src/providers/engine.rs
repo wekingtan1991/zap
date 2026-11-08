@@ -465,6 +465,19 @@ impl SearchEngine {
         items
     }
 
+    /// app_icons 命令后端：icon_key 十进制串批量取图标 data URL（apps 段
+    /// 图标按需传输）。解析失败的键静默丢弃——键由后端自己产、前端只透传，
+    /// 坏串不值得报错
+    pub fn app_icons(&self, keys: &[String]) -> std::collections::HashMap<String, String> {
+        let parsed: Vec<u64> = keys.iter().filter_map(|k| k.parse().ok()).collect();
+        self.apps
+            .index
+            .icon_urls(&parsed)
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    }
+
     /// 工具 Dock 入口清单：按注册序收拢启用插件的 fallback_entry()，附带
     /// PluginMeta 的短名与入口词。停用插件跳过；无 meta 的核心源退回条目标题。
     /// 前端在挂载、呼出与设置页关闭后各拉一次，搜索热路径不再承担可发现性
@@ -702,6 +715,7 @@ mod plugin_tests {
                 kind: "info".into(),
                 target: String::new(),
                 icon: None,
+                icon_key: None,
                 pinned: false,
                 score: 0.0,
             }]
@@ -798,6 +812,7 @@ mod plugin_tests {
                 kind: "info".into(),
                 target: "q".into(),
                 icon: None,
+                icon_key: None,
                 pinned: false,
                 score: 0.0,
             }]
@@ -811,6 +826,7 @@ mod plugin_tests {
                     kind: "info".into(),
                     target: String::new(),
                     icon: None,
+                    icon_key: None,
                     pinned: false,
                     score: 0.0,
                 }]
@@ -919,6 +935,7 @@ mod plugin_tests {
                 kind: "info".into(),
                 target: String::new(),
                 icon: None,
+                icon_key: None,
                 pinned: false,
                 score: 0.0,
             }]
@@ -942,6 +959,7 @@ mod plugin_tests {
                 kind: "info".into(),
                 target: String::new(),
                 icon: None,
+                icon_key: None,
                 pinned: false,
                 score: 0.0,
             }]

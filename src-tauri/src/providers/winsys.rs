@@ -121,6 +121,7 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchItem> {
             kind: "win".into(),
             target: e.hwnd.to_string(),
             icon: None,
+            icon_key: None,
             pinned: false,
             score: score * 0.55 - i as f32,
         })

@@ -7,6 +7,10 @@ export interface SearchItem {
   kind: string;
   target: string;
   icon?: string | null;
+  /// 图标按需拉取键（apps 段）：后端条目不再随搜索传 base64，前端持键向
+  /// app_icons 批量拉取并按键缓存（lib/iconCache）；u64 以十进制字符串过线
+  /// 防 JS 53 位截断；缺图标条目无此键，渲染退回角标
+  iconKey?: string | null;
   /// 置顶标记（结构化）：旧后端以「标题加 📌 前缀」表达，缺省时兜底解析
   pinned?: boolean;
   score: number;

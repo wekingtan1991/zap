@@ -77,6 +77,7 @@ pub fn search(entries: &[RecentEntry], query: &str, limit: usize) -> Vec<SearchI
                 kind: "recent".into(),
                 target: e.path.clone(),
                 icon: None,
+                icon_key: None,
                 pinned: false,
                 score: score * 0.5 - 0f32,
             }

@@ -199,6 +199,7 @@ fn item_from_result(r: &serde_json::Value, i: usize) -> Option<SearchItem> {
         kind: if is_folder { "folder" } else { "file" }.into(),
         target: full,
         icon: None,
+        icon_key: None,
         pinned: false,
         score: 45.0 - i as f32,
     })

@@ -55,8 +55,15 @@ pub struct SearchItem {
     /// 应用/文件为路径，窗口为 hwnd 数值，其余为 URL；**剪贴板两 kind 为行号**
     /// （回查全文/全图按行号走 DB，行可能已被清理——open_item 先探存在性）
     pub target: String,
-    /// 应用图标 data URL（PNG），仅应用类有值；其余为 None
+    /// 应用图标 data URL（PNG），仅应用类有值；其余为 None。
+    /// apps 段已改按需传输：条目不带 data URL，icon 与 icon_key 二选一
     pub icon: Option<String>,
+    /// 图标按需拉取键（apps 段）：条目只带键，前端持键向 app_icons 命令
+    /// 批量拉取并按键缓存——击键路径不再每次重传 base64。u64 键以十进制
+    /// 字符串过线（JSON 数字超 JS 53 位安全整数会截断）；serde(default) 容
+    /// 前端构造的条目（open_item 回传等）不带键
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_key: Option<String>,
     /// 置顶标记（剪贴板文本/图片、账号库共用）：结构化字段取代旧「标题加
     /// 📌 前缀」的字符串协议。serde(default) 容半新半旧会话——前端构造的
     /// 条目（打开中转站等）不带此键

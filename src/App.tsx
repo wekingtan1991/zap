@@ -50,6 +50,7 @@ import { SettingsView } from "@/views/SettingsView";
 import { useUpdater } from "@/views/useUpdater";
 import { applyAppearance, applyPanelTransparency, type Appearance } from "@/lib/appearance";
 import { startDragOut } from "@/lib/dragOut";
+import { cachedIcon, ensureIcons } from "@/lib/iconCache";
 
 /// 工作台内容源：入口进入 = 空文本等待粘贴；输入识别（万能输入框）= 携带
 /// 进入时刻的搜索词全文；剪贴板识别 = 按行号回查呼出时刻的内容
@@ -146,6 +147,23 @@ function AppView() {
     () => [...dockEntries, ...dockExtra],
     [dockEntries, dockExtra]
   );
+  /// 图标按需拉取（apps 段）：条目只带 iconKey，命中缓存前渲染退回角标。
+  /// items 变化时收集缺失键批量请求（ensureIcons 内部对已缓存与在途去重），
+  /// 到货 bump iconTick 让 iconFor 引用翻新——ResultRow memo 随之重渲一次
+  const [iconTick, setIconTick] = useState(0);
+  const iconFor = useCallback(
+    (it: SearchItem) =>
+      it.icon ?? (it.iconKey ? cachedIcon(it.iconKey) : undefined),
+    // iconTick 仅作失效键：缓存到货后引用翻新，行 memo 以引用变化重渲
+    [iconTick]
+  );
+  useEffect(() => {
+    const keys: string[] = [];
+    for (const it of items) {
+      if (!it.icon && it.iconKey) keys.push(it.iconKey);
+    }
+    if (keys.length > 0) ensureIcons(keys, () => setIconTick((t) => t + 1));
+  }, [items]);
   const [active, setActive] = useState(0);
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<View>({ kind: "main" });
@@ -1142,6 +1160,7 @@ function AppView() {
         mergeSel={merge.mergeSel}
         resultsRef={resultsRef}
         activeItemRef={activeItemRef}
+        iconFor={iconFor}
         onHover={setActive}
         onRun={runItem}
         onContext={onRowContext}

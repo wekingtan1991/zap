@@ -183,6 +183,7 @@ fn build_item(
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(thumb)
         )),
+        icon_key: None,
         pinned,
         score: 0.0,
     }

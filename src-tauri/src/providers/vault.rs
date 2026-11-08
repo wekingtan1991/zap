@@ -263,6 +263,7 @@ fn row_to_item(row: &(i64, String, String, String, String, i64)) -> SearchItem {
         kind: "vault".into(),
         target: id.to_string(),
         icon: None,
+        icon_key: None,
         pinned: *pinned == 1,
         score: 70.0,
     }

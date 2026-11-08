@@ -24,6 +24,9 @@ interface RowProps {
   onContext: (e: React.MouseEvent, it: SearchItem) => void;
   /// 拖拽出意图判定入口（App 层按 kind 过滤 + mergeMode 禁用；缺省 = 该行不可拖出）
   onDragOut: ((e: React.MouseEvent, it: SearchItem) => void) | null;
+  /// 图标解析：随条目的 data URL 优先，apps 段按 iconKey 读会话缓存；
+  /// 未命中返回 undefined 渲染退回角标。父级以 iconTick 翻新引用触发行重渲
+  iconFor: (it: SearchItem) => string | undefined;
   actions: ItemActions;
 }
 
@@ -39,9 +42,11 @@ const ResultRow = React.memo(function ResultRow({
   onRun,
   onContext,
   onDragOut,
+  iconFor,
   actions,
 }: RowProps) {
   const ui = kindUi(it.kind);
+  const iconUrl = iconFor(it);
   return (
     <div
       ref={isActive ? activeItemRef : undefined}
@@ -68,8 +73,8 @@ const ResultRow = React.memo(function ResultRow({
       <Badge variant={ui?.badge ?? "secondary"} className="zap-kind">
         {ui?.label ?? it.kind}
       </Badge>
-      {it.icon && (
-        <img className="zap-ico" src={it.icon} alt="" draggable={false} />
+      {iconUrl && (
+        <img className="zap-ico" src={iconUrl} alt="" draggable={false} />
       )}
       <div className="zap-texts">
         <div className="zap-title">
@@ -107,6 +112,8 @@ interface Props {
   onContext: (e: React.MouseEvent, it: SearchItem) => void;
   /// 拖拽出意图判定入口；null = 整列表禁用（mergeMode），行不绑 mousedown
   onDragOut: ((e: React.MouseEvent, it: SearchItem) => void) | null;
+  /// 图标解析（apps 段按需传输的缓存读口，见 lib/iconCache）
+  iconFor: (it: SearchItem) => string | undefined;
   actions: ItemActions;
 }
 
@@ -118,6 +125,7 @@ export function ResultsList({
   mergeSel,
   resultsRef,
   activeItemRef,
+  iconFor,
   onHover,
   onRun,
   onContext,
@@ -166,6 +174,7 @@ export function ResultsList({
             onRun={onRun}
             onContext={onContext}
             onDragOut={onDragOut}
+            iconFor={iconFor}
             actions={actions}
           />
         ))
