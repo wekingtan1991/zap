@@ -410,4 +410,43 @@ mod tests {
         insert(&conn, &beyond, 2000);
         assert_eq!(search(&conn, "needle", 5).len(), 1);
     }
+
+    /// 子序列密度上限（混排噪音修复，修在共享打分 matching.rs）：长文本对
+    /// 短 query 的逐字散布假命中（跨度超 3×qlen）不召回；包含/前缀强匹配与
+    /// 中文拼音子序列（跨度≤2×qlen）不受影响
+    #[test]
+    fn 弱子序列被密度上限挡住强匹配不受影响() {
+        let conn = mem_db();
+        // 弱子序列：query「st」在全文拼音形态里散布（s@「数shu」 t@「提ti」，
+        // full 跨度约 33 > 2×3），initials 档跨度 16 > 6 同样挡
+        insert(
+            &conn,
+            "把数据库连接串写到配置文件里,注意别提交真实口令到仓库",
+            now_ms(),
+        );
+        let items = search(&conn, "st", 6);
+        assert!(
+            items.is_empty(),
+            "弱子序列应被密度上限挡住：{:?}",
+            items.iter().map(|i| &i.title).collect::<Vec<_>>()
+        );
+
+        // 包含命中不受影响
+        insert(&conn, "settings.json 备份说明", now_ms());
+        let items = search(&conn, "settings", 6);
+        assert!(
+            items.iter().any(|i| i.title.contains("settings")),
+            "包含命中应召回：{:?}",
+            items.iter().map(|i| &i.title).collect::<Vec<_>>()
+        );
+
+        // 中文拼音子序列不受影响：「随手记笔记」对「suiji」跨度 10 ≤ 3×5
+        insert(&conn, "随手记笔记", now_ms());
+        let items = search(&conn, "suiji", 6);
+        assert!(
+            items.iter().any(|i| i.title.contains("随手记")),
+            "拼音子序列应召回：{:?}",
+            items.iter().map(|i| &i.title).collect::<Vec<_>>()
+        );
+    }
 }

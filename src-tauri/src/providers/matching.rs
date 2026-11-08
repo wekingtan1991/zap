@@ -77,10 +77,14 @@ fn score_plain(hay_lower: &str, q_lower: &str) -> Option<f32> {
     }
     let qchars: Vec<char> = q_lower.chars().collect();
     let mut qi = 0usize;
+    let mut first_hit: Option<usize> = None;
     let mut last_hit: Option<usize> = None;
     let mut gaps = 0usize;
     for (i, c) in hay_lower.chars().enumerate() {
         if qi < qchars.len() && c == qchars[qi] {
+            if first_hit.is_none() {
+                first_hit = Some(i);
+            }
             if let Some(l) = last_hit {
                 gaps += i - l - 1;
             }
@@ -88,7 +92,17 @@ fn score_plain(hay_lower: &str, q_lower: &str) -> Option<f32> {
             qi += 1;
         }
     }
-    (qi == qchars.len()).then_some(50.0 - gaps as f32)
+    if qi != qchars.len() {
+        return None;
+    }
+    // 密度上限（混排降噪 2026-11-08）：命中跨度超过 query 长度 3 倍的子序列
+    // 视为弱命中不召回——原实现 gap 无上限，长 haystack（剪贴板粘贴全文、
+    // vault 字段拼接、窗口标题）对任意 query 几乎必有逐字散布的假命中
+    // （gap 十几仍给 30 分 Some），与强相关条目混排。跨度判据对长短 query
+    // 自适应且不受档位打折系数（0.85/0.7）影响；中文词拼音子序列跨度普遍
+    // ≤2×qlen（「随手记」对「suiji」跨度 10 ≤ 15）不受影响
+    let span = last_hit.unwrap() - first_hit.unwrap() + 1;
+    (span <= qchars.len() * 3).then_some(50.0 - gaps as f32)
 }
 
 /// 生成拼音形态：全拼（非中文字符保留小写原样，跳过空白）+ 首字母串
@@ -137,5 +151,26 @@ mod tests {
         assert_eq!(score_match("Display", "display"), Some(100.0));
         assert!(score_match("显示", "显示").unwrap() >= 100.0);
         assert_eq!(score_match("显示", "不匹配"), None);
+    }
+
+    /// 子序列密度上限（混排降噪 2026-11-08）：跨度 > 3×qlen 的逐字散布假命中
+    /// 不召回；合格密度与首字母前缀等强形态不受影响
+    #[test]
+    fn 子序列密度上限() {
+        // 合格：跨度 ≤ 3×qlen——「随手记笔记」全拼 suishoubiji 对「suiji」跨度 10 ≤ 15
+        assert!(score_match("随手记笔记", "suiji").is_some());
+        // 纯英文合格：short 对 sst（跨度 3 ≤ 9，实为包含档）
+        assert!(score_match("settings", "settings").is_some());
+        // 超密度：长英文文本对「st」逐字散布（跨度 > 6）
+        assert_eq!(score_match("数据库连接串提交", "st"), None);
+        assert_eq!(
+            score_match("some long english text without adjacency", "st"),
+            None
+        );
+        // 首字母前缀不受影响：sz 对「设置 settings」由 initials 前缀召回
+        assert!(score_match("设置 settings", "sz").is_some());
+        // 中文词对拼音 query 的合格密度召回
+        assert!(score_match("微信", "weixin").is_some());
+        assert!(score_match("微信", "wx").is_some());
     }
 }
