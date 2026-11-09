@@ -233,12 +233,21 @@ fn quiet(mut command: std::process::Command) -> std::process::Command {
     command
 }
 
+/// PowerShell 单引号字符串字面量转义：内部 `'` 加倍，并拒绝换行/NUL 等控制字符。
+/// Windows 路径本不含这些；进程环境被污染时宁可报错也不生成畸形脚本。
+fn ps_quote(s: &str) -> Result<String, String> {
+    if s.chars().any(char::is_control) {
+        return Err("路径含有非法控制字符".into());
+    }
+    Ok(s.replace('\'', "''"))
+}
+
 fn extract(dest_dir: &Path) -> Result<(), String> {
     let zip = dest_dir.join("everything.zip");
     let script = format!(
         "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
-        zip.display(),
-        dest_dir.display()
+        ps_quote(&zip.to_string_lossy())?,
+        ps_quote(&dest_dir.to_string_lossy())?
     );
     let out = quiet(std::process::Command::new("powershell"))
         .args(["-NoProfile", "-Command", &script])
@@ -348,14 +357,27 @@ fn random_port() -> u16 {
 /// 安全说明：脚本内容由 zap 固定生成（只有 taskkill 与 start 两条），且紧写紧用；
 /// 它位于用户可写目录，理论上存在本地竞态替换可能——但能达到"本地任意代码执行"
 /// 前提的攻击者本就无需借此提权，故按可接受风险处理，不做额外 ACL 加固。
-fn write_restart_bat() -> PathBuf {
+/// .cmd 里的路径字面量：`%` 会被当变量展开（须加倍），`"` 与控制字符一律拒绝。
+/// 双引号已护住 `& | ^`；延迟展开由 bat 首行显式关闭，防用户名含 `!` 被吞字符。
+fn cmd_exe_path(exe: &Path) -> Result<String, String> {
+    let s = exe.to_string_lossy();
+    if s.contains('"') || s.chars().any(char::is_control) {
+        return Err("路径含有非法字符".into());
+    }
+    Ok(s.replace('%', "%%"))
+}
+
+fn restart_bat_content(exe: &str) -> String {
+    format!(
+        "@echo off\r\nsetlocal DisableDelayedExpansion\r\ntaskkill /IM Everything.exe /F >nul 2>&1\r\ntimeout /t 1 /nobreak >nul\r\nstart \"\" \"{exe}\" -local -startup\r\n"
+    )
+}
+
+fn write_restart_bat() -> Result<PathBuf, String> {
     let bat = install_dir().join("restart-everything.cmd");
-    let content = format!(
-        "@echo off\r\ntaskkill /IM Everything.exe /F >nul 2>&1\r\ntimeout /t 1 /nobreak >nul\r\nstart \"\" \"{}\" -local -startup\r\n",
-        exe_path().display()
-    );
+    let content = restart_bat_content(&cmd_exe_path(&exe_path())?);
     let _ = std::fs::write(&bat, content);
-    bat
+    Ok(bat)
 }
 
 /// 提权脚本：只发起提权，绝不等待。**不能加 `-Wait`**——bat 里 `start` 出来的
@@ -364,16 +386,16 @@ fn write_restart_bat() -> PathBuf {
 /// Everything 12:19 已启动，powershell 从 12:18:55 一直存活）。就绪检测交给
 /// setup() 的 wait_running 轮询；UAC 取消用 ErrorAction Stop + exit 1 换成非零
 /// 退出码，保住原来「启动被取消」的失败判定
-fn elevated_script(bat: &Path) -> String {
-    format!(
+fn elevated_script(bat: &Path) -> Result<String, String> {
+    Ok(format!(
         "$ErrorActionPreference='Stop'; try {{ Start-Process -FilePath '{}' -Verb RunAs -ErrorAction Stop }} catch {{ exit 1 }}",
-        bat.display()
-    )
+        ps_quote(&bat.to_string_lossy())?
+    ))
 }
 
 fn launch_elevated() -> Result<(), String> {
-    let bat = write_restart_bat();
-    let script = elevated_script(&bat);
+    let bat = write_restart_bat()?;
+    let script = elevated_script(&bat)?;
     let out = quiet(std::process::Command::new("powershell"))
         .args(["-NoProfile", "-Command", &script])
         .output()
@@ -485,7 +507,10 @@ pub fn ensure() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{elevated_script, extract_versions, merge_ini, split_by_hash_table};
+    use super::{
+        cmd_exe_path, elevated_script, extract_versions, merge_ini, ps_quote, restart_bat_content,
+        split_by_hash_table,
+    };
 
     #[test]
     fn 内置兜底版本都在哈希表内() {
@@ -517,7 +542,8 @@ mod tests {
     fn 提权脚本不等待常驻进程() {
         let s = elevated_script(std::path::Path::new(
             r"C:\zap\everything\restart-everything.cmd",
-        ));
+        ))
+        .unwrap();
         assert!(
             !s.contains("-Wait"),
             "等待常驻的 Everything.exe 会让 everything_setup 永不返回"
@@ -527,6 +553,36 @@ mod tests {
             s.contains("ErrorAction Stop") && s.contains("exit 1"),
             "UAC 取消必须上抛非零退出码，否则失败判定失效"
         );
+    }
+
+    #[test]
+    fn 脚本路径里的单引号必须加倍() {
+        // Windows 用户名允许 O'Brien；单引号不闭合即可追加任意 PowerShell 语句
+        let p = r"C:\Users\O'Brien\zap\everything";
+        assert_eq!(ps_quote(p).unwrap(), r"C:\Users\O''Brien\zap\everything");
+        let s = elevated_script(std::path::Path::new(&format!(
+            "{p}\\restart-everything.cmd"
+        )))
+        .unwrap();
+        assert!(s.contains("O''Brien"), "单引号必须加倍，否则脚本被截断注入");
+        assert_eq!(s.matches('\'').count() % 2, 0, "单引号必须成对闭合");
+        assert!(ps_quote("C:\\tmp\\a\nbad").is_err(), "控制字符一律拒绝");
+    }
+
+    #[test]
+    fn 批处理路径转义百分号并关闭延迟展开() {
+        // example 是 check:secrets 的 OS_USER_PATH 白名单范例，不改动门禁规则
+        let exe = r"C:\Users\example\100%work\zap\Everything.exe";
+        let content = restart_bat_content(&cmd_exe_path(std::path::Path::new(exe)).unwrap());
+        assert!(
+            content.contains("100%%work"),
+            "% 必须加倍，否则被 cmd 当变量展开"
+        );
+        assert!(
+            content.contains("DisableDelayedExpansion"),
+            "用户名含 ! 时不能被吞字符"
+        );
+        assert!(cmd_exe_path(std::path::Path::new("C:\\a\"b.exe")).is_err());
     }
 
     #[test]

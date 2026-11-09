@@ -27,6 +27,8 @@ export function VaultImportView({ onDone, onClose, focusRef }: Props) {
   const [importText, setImportText] = useState("");
   const [parsed, setParsed] = useState<ParsedAccount[] | null>(null);
   const [importBusy, setImportBusy] = useState(false);
+  // 校对时密码默认掩码；需要逐字符核对再显式点亮
+  const [showPw, setShowPw] = useState(false);
   const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(
     null
   );
@@ -41,6 +43,7 @@ export function VaultImportView({ onDone, onClose, focusRef }: Props) {
     setImportText("");
     setParsed(null);
     setImportBusy(false);
+    setShowPw(false);
     setImportMsg(null);
     onClose();
   };
@@ -90,6 +93,7 @@ export function VaultImportView({ onDone, onClose, focusRef }: Props) {
                     text: importText,
                   });
                   setParsed(res);
+                  setImportText(""); // 原文含明文密码，解析完立即从 state 抹除
                 } catch (e) {
                   setImportMsg({ ok: false, text: "解析失败：" + String(e) });
                 } finally {
@@ -122,8 +126,10 @@ export function VaultImportView({ onDone, onClose, focusRef }: Props) {
                     onChange={(e) => updParsed(i, "username", e.target.value)}
                   />
                   <Input
+                    type={showPw ? "text" : "password"}
                     value={p.password}
                     placeholder="密码"
+                    autoComplete="off"
                     onChange={(e) => updParsed(i, "password", e.target.value)}
                   />
                 </div>
@@ -135,41 +141,51 @@ export function VaultImportView({ onDone, onClose, focusRef }: Props) {
               </div>
             ))}
             {parsed.length > 0 && (
-              <Button
-                disabled={importBusy}
-                onClick={async () => {
-                  if (importBusy) return;
-                  setImportBusy(true);
-                  setImportMsg(null);
-                  let n: number;
-                  try {
-                    n = await invoke<number>("vault_import", {
-                      entries: parsed.filter(
-                        (p) => p.title.trim() || p.username || p.password
-                      ),
-                    });
-                  } catch (e) {
-                    // 失败时保持面板打开并展示原因，便于修正后重试（不再静默）
-                    setImportMsg({ ok: false, text: "导入失败：" + String(e) });
-                    setImportBusy(false);
-                    return;
-                  }
-                  if (n <= 0) {
-                    setImportMsg({
-                      ok: false,
-                      text: "没有可导入的条目（每条至少需要 标题/用户名/密码 之一）",
-                    });
-                    setImportBusy(false);
-                    return;
-                  }
-                  setImportMsg({ ok: true, text: `✓ 已导入 ${n} 条` });
-                  // 明确反馈后再关闭并刷新列表（空关键词时列出全部账号）
-                  setTimeout(onDone, 700);
-                }}
-              >
-                {importBusy && <Loader2 className="size-3.5 animate-spin" />}
-                导入全部（{parsed.length} 条）
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={importBusy}
+                  onClick={() => setShowPw((v) => !v)}
+                >
+                  {showPw ? "隐藏密码" : "显示密码"}
+                </Button>
+                <Button
+                  disabled={importBusy}
+                  onClick={async () => {
+                    if (importBusy) return;
+                    setImportBusy(true);
+                    setImportMsg(null);
+                    let n: number;
+                    try {
+                      n = await invoke<number>("vault_import", {
+                        entries: parsed.filter(
+                          (p) => p.title.trim() || p.username || p.password
+                        ),
+                      });
+                    } catch (e) {
+                      // 失败时保持面板打开并展示原因，便于修正后重试（不再静默）
+                      setImportMsg({ ok: false, text: "导入失败：" + String(e) });
+                      setImportBusy(false);
+                      return;
+                    }
+                    if (n <= 0) {
+                      setImportMsg({
+                        ok: false,
+                        text: "没有可导入的条目（每条至少需要 标题/用户名/密码 之一）",
+                      });
+                      setImportBusy(false);
+                      return;
+                    }
+                    setImportMsg({ ok: true, text: `✓ 已导入 ${n} 条` });
+                    // 明确反馈后再关闭并刷新列表（空关键词时列出全部账号）
+                    setTimeout(onDone, 700);
+                  }}
+                >
+                  {importBusy && <Loader2 className="size-3.5 animate-spin" />}
+                  导入全部（{parsed.length} 条）
+                </Button>
+              </div>
             )}
           </>
         )}

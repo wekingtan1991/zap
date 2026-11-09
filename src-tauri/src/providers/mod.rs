@@ -16,6 +16,7 @@ pub mod icons;
 pub mod jsontools;
 pub mod lnk;
 pub mod matching;
+pub mod pathguard;
 pub mod plugin;
 pub mod ports;
 pub mod recent;

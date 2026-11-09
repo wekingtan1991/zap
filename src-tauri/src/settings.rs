@@ -453,8 +453,12 @@ pub(crate) async fn config_export(
                 .collect(),
             shortcuts: engine.shortcuts_list(),
         };
+        let dest = crate::providers::pathguard::export_path(
+            &path,
+            crate::providers::pathguard::EXT_CONFIG,
+        )?;
         let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
-        std::fs::write(&path, text + "\n").map_err(|e| format!("写入失败：{e}"))?;
+        std::fs::write(&dest, text + "\n").map_err(|e| format!("写入失败：{e}"))?;
         Ok(())
     })
     .await
@@ -468,7 +472,11 @@ pub(crate) async fn config_import(
     path: String,
 ) -> Result<crate::providers::appconfig::ConfigFile, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("读取失败：{e}"))?;
+        let src = crate::providers::pathguard::import_path(
+            &path,
+            crate::providers::pathguard::EXT_CONFIG,
+        )?;
+        let text = std::fs::read_to_string(&src).map_err(|e| format!("读取失败：{e}"))?;
         crate::providers::appconfig::validate_config_text(&text)
     })
     .await

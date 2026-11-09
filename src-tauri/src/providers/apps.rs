@@ -68,6 +68,16 @@ impl AppIndex {
         roots
     }
 
+    /// 该路径是否在当前应用索引中：admin 提权的来源校验用。
+    /// 只比对结果项原始的 .lnk / exe 路径，不做 lnk 解析（索引里存的就是它）。
+    pub fn contains_path(&self, path: &str) -> bool {
+        self.entries
+            .read()
+            .expect("app index poisoned")
+            .iter()
+            .any(|e| e.path.eq_ignore_ascii_case(path))
+    }
+
     /// 空表初始化（评审 P2-02/D2 索引后台化）：entries 空表起步，首扫挪后台
     /// 线程（warm 模式）——setup 不再被目录树+UWP COM+图标缓存读阻塞，
     /// 冷启动热键/托盘就绪优先。last_refresh 记 None：呼出时 refresh_if_stale

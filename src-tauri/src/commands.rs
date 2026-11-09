@@ -576,10 +576,14 @@ pub(crate) async fn clipimg_export(
 ) -> Result<(), String> {
     let engine = state.engine.clone();
     blocking!({
+        let dest = crate::providers::pathguard::export_path(
+            &path,
+            crate::providers::pathguard::EXT_CLIPIMG,
+        )?;
         let (_, _, png) = engine
             .clip_image(id)
             .ok_or_else(|| "该条剪贴板图片已被清理".to_string())?;
-        std::fs::write(&path, png).map_err(|e| format!("写入失败：{e}"))
+        std::fs::write(&dest, png).map_err(|e| format!("写入失败：{e}"))
     })?
 }
 
@@ -703,6 +707,11 @@ pub(crate) async fn secondary_action(
                     .unwrap_or_else(|| target.clone());
                 match action.as_str() {
                     "admin" => {
+                        // 前端 admin 只对 app kind 显示，后端仍复核来源：
+                        // 否则被篡改的 IPC 参数能把任意可执行文件以 runas 拉起
+                        if !engine.is_known_app(&target) {
+                            return Err("仅支持以管理员身份运行已索引的应用".to_string());
+                        }
                         engine.record_app_launch(&target);
                         // 解析目标不存在时回退 lnk 本体：ShellExecute 由 shell 自行解析快捷方式，
                         // 能兜住自解析拿不到有效路径的情形

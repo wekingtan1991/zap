@@ -233,6 +233,13 @@ impl SearchEngine {
         self.recents.refresh_if_stale(apps::REFRESH_MIN_INTERVAL)
     }
 
+    /// admin 提权的来源校验：只放行当前应用索引里的路径。
+    /// 前端 admin 本来就只对 app kind 显示（App.tsx:498），后端补上这道复核，
+    /// 避免被篡改的 IPC 参数把任意可执行文件以 runas 拉起。
+    pub fn is_known_app(&self, target: &str) -> bool {
+        self.apps.index.contains_path(target)
+    }
+
     /// open_item 记一次应用启动（frecency 排序依据，按 target 路径计数）
     pub fn record_app_launch(&self, target: &str) {
         let conn = self.conn();
@@ -388,13 +395,15 @@ impl SearchEngine {
     /// PBKDF2 与写盘全部在 conn 锁外——原先全程闭锁 ~400ms，期间 watcher
     /// 写库被挡会掉条、击键搜索全部排队。时间戳记录单独取一次连接（短持锁）
     pub fn vault_backup_export(&self, path: &str, passphrase: &str) -> Result<usize, String> {
+        // 先校边界再跑 60 万轮 PBKDF2：路径非法不该白等半秒
+        let dest = super::pathguard::export_path(path, super::pathguard::EXT_VAULT_BACKUP)?;
         let encrypted = {
             let conn = self.conn();
             vault::backup_fetch_encrypted(&conn)?
         };
         let entries = vault::backup_decrypt_rows(encrypted)?;
         let content = backup::encrypt_backup(&entries, passphrase)?;
-        std::fs::write(path, content).map_err(|e| e.to_string())?;
+        std::fs::write(&dest, content).map_err(|e| e.to_string())?;
         // 落盘成功才记时间：设置页「上次备份 N 天前 / 30 天提醒」的事实源
         // （备份文件走用户自选路径，zap 无注册表，库里这个时间戳就是唯一凭证）
         let conn = self.conn();
@@ -409,7 +418,8 @@ impl SearchEngine {
         path: &str,
         passphrase: &str,
     ) -> Result<backup::BackupPreview, String> {
-        let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let src = super::pathguard::import_path(path, super::pathguard::EXT_VAULT_BACKUP)?;
+        let content = std::fs::read_to_string(&src).map_err(|e| e.to_string())?;
         let entries = backup::decrypt_backup(&content, passphrase)?;
         let duplicates = {
             let conn = self.conn();

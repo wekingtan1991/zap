@@ -70,9 +70,12 @@ export function VaultRevealOverlay({ reveal, onClose, focusRef }: Props) {
             value={reveal.password}
             onFocus={(e) => e.currentTarget.select()}
             onContextMenu={(e) => e.preventDefault()}
+            onCopy={(e) => e.preventDefault()}
+            onCut={(e) => e.preventDefault()}
+            onDragStart={(e) => e.preventDefault()}
             onKeyDown={(e) => {
-              // 拦截一切本机复制入口（Ctrl+C/X/Insert、Shift+F10 与右键菜单）：
-              // 强制走 Rust 受保护通道（排除剪贴板历史 + 焚除），
+              // 复制入口全拦截（键盘 / 右键菜单 / 浏览器原生 copy / 拖拽选中）：
+              // 强制走 Rust 受保护通道（排除剪贴板历史 + 延时清空），
               // 浏览器原生复制会绕过全部防护写入 Win+V 历史
               if (e.shiftKey && e.key === "F10") {
                 e.preventDefault();

@@ -99,6 +99,12 @@ pub fn reveal_in_explorer(path: &str) -> Result<(), String> {
     if !Path::new(path).exists() {
         return Err("文件已不存在或被移动".into());
     }
+    // raw_arg 把整串原样下发 CreateProcess：路径里出现 " 会提前闭合引号，
+    // 后续字符被 explorer 当作新参数解析。Windows 文件名本就禁止 "，
+    // 显式拒绝即可堵住被篡改的 IPC 参数，同时保持 /select 同参的真机行为不变。
+    if path.contains('"') || path.chars().any(|c| c.is_control()) {
+        return Err("路径含有非法字符".into());
+    }
     let mut cmd = std::process::Command::new("explorer");
     #[cfg(windows)]
     {
