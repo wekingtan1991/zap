@@ -39,10 +39,15 @@
   /* ---------- zap 面板语义变量（components/ 消费；浅色在下方覆盖） ---------- */
   --zap-panel-grad: linear-gradient(180deg, #1d2027 0%, #15171b 100%);
   --zap-dialog-grad: linear-gradient(180deg, #23262e 0%, #1a1d22 100%);
-  /* 浮在内容之上的表面（右键菜单 / 粘性表头 / 确认弹窗）：亚克力档不能
+  /* 浮在内容之上的表面（右键菜单 / 确认弹窗）：亚克力档不能
      沿用面板/对话的半透明，否则底下条目文字会从浮层里透出来；透明档在
      下方单独覆盖 */
   --zap-overlay-grad: var(--zap-dialog-grad);
+  /* 粘性表头表面：表头是「内容的一部分」，不是浮在内容上的控件，不该沿用
+     对话框亮一档的底色（那会让它不滚也像贴了块弹窗）。取面板顶部附近的
+     实色，浮起感只在真正吸附时由 ports.css 的投影表达；用纯色而非渐变，
+     border-collapse 表格跨列无接缝。透明档仍保持近实底，滚动行不透出 */
+  --zap-thead-bg: #1c1f25;
   --zap-backdrop: rgba(13, 15, 18, 0.62);
   --zap-shadow: rgba(0, 0, 0, 0.45);
   --zap-body-bg: #181a1f;
@@ -119,6 +124,7 @@
 
   --zap-panel-grad: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
   --zap-dialog-grad: linear-gradient(180deg, #ffffff 0%, #f8f9fb 100%);
+  --zap-thead-bg: #fcfdfe;
   --zap-backdrop: rgba(15, 23, 42, 0.4);
   --zap-shadow: rgba(0, 0, 0, 0.18);
   --zap-body-bg: #e7e9ee;
@@ -183,6 +189,7 @@
     rgba(35, 38, 46, 0.97) 0%,
     rgba(26, 29, 34, 0.98) 100%
   );
+  --zap-thead-bg: rgba(28, 31, 37, 0.98);
 }
 :root.zap-trans body {
   background: transparent;
@@ -203,6 +210,7 @@
     rgba(255, 255, 255, 0.97) 0%,
     rgba(248, 249, 251, 0.98) 100%
   );
+  --zap-thead-bg: rgba(252, 253, 254, 0.98);
 }
 
 /* shadcn/Tailwind 工具类的令牌桥：--color-* 映射上面的语义变量。

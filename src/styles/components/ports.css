@@ -3,6 +3,15 @@
    弹窗骨架复用 dialogs.css 的 zap-dialog-*，颜色全走 tokens 变量跟随主题。
    ============================================================ */
 
+/* 页面标题层级：端口页是唯一带表格的工作台，右侧挤了计数/过滤/开关/刷新/
+   返回五件控件，12px 裸标签压不住，整行重心全跑到右边。作用域钉死在
+   .zap-ports-panel，不动公共 .zap-vault-tag（其它子页沿用裸文本标签） */
+.zap-ports-panel .zap-vault-tag {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 /* 头部过滤框：必须带 .zap-input-row 前缀——共享的 `.zap-input-row input`
    （flex:1 / 无边框 / 16px）特异性更高，不加前缀这里整段都不生效，
    输入框会渲染成第二个搜索框 */
@@ -57,7 +66,9 @@
   min-height: 0;
   overflow-y: auto;
   /* 顶部间距必须留在表格上：滚动容器一旦带 padding-top，粘性表头只吸附到
-     内容盒顶，滚动行会从内边距带里露出（表头上方漏行） */
+     内容盒顶，滚动行会从内边距带里露出（表头上方漏行）。呼吸感改由 th
+     自身的 padding-top 给——若挂在 table 的 margin-top 上，表头静态离顶
+     8px、一滚动就吸到 0，会有一次肉眼可见的上跳 */
   padding: 0 14px 12px;
 }
 
@@ -65,7 +76,6 @@
   width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
-  margin-top: 8px;
   font-size: 12px;
   color: var(--zap-fg);
 }
@@ -74,15 +84,29 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 6px 6px;
+  padding: 10px 6px 8px;
   text-align: left;
-  font-weight: 500;
-  font-size: 11px;
-  color: var(--zap-fg-mute);
-  /* 浮层表面：亚克力档下滚动行不能从吸附表头背后透出 */
-  background: var(--zap-overlay-grad);
-  /* 吸附分界用阴影代替边框：border-collapse 下吸附时边框可能不绘制 */
-  box-shadow: 0 1px 0 var(--zap-w-08);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--zap-fg-mid);
+  /* 表头属内容层：用面板同系实色，不再套对话框亮底（那会恒像浮层） */
+  background: var(--zap-thead-bg);
+  /* 静态只留一道内阴影分界；用阴影而非边框：border-collapse 下吸附时
+     边框可能不绘制 */
+  box-shadow: inset 0 -1px 0 var(--zap-w-08);
+  transition:
+    box-shadow 0.18s ease,
+    color 0.18s ease;
+}
+
+/* 真正吸附时才「浮」：投影 + 稍重的分界线 + 文字提亮（深色主题下投影弱，
+   文字与分界线才是可读的状态反馈）。类名由滚动容器的 passive scroll
+   监听切换（不进 React state，滚动不触发表格重渲） */
+.zap-ports-body.is-scrolled .zap-ports-table th {
+  color: var(--zap-fg-strong);
+  box-shadow:
+    inset 0 -1px 0 var(--zap-w-12),
+    0 8px 14px -8px var(--zap-shadow);
 }
 
 .zap-ports-table td {

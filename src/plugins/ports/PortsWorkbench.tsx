@@ -27,6 +27,7 @@ export function PortsWorkbench({ initialPort, onBack, focusRef }: Props) {
   const [err, setErr] = useState("");
   const [confirm, setConfirm] = useState<PortEntry | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const reqSeq = useRef(0);
 
   useDialogA11y(dialogRef, confirm !== null);
@@ -82,6 +83,18 @@ export function PortsWorkbench({ initialPort, onBack, focusRef }: Props) {
     );
   }, [rows, debounced, filterPort]);
 
+  // 吸附态由真实滚动位置驱动，类名直接挂 DOM：滚动是高频事件，每次
+  // setState 都会拖着整张表重渲。行数变化时重新同步一次，避免空态切回
+  // 表格后残留旧的 is-scrolled。
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const sync = () => el.classList.toggle("is-scrolled", el.scrollTop > 0);
+    sync();
+    el.addEventListener("scroll", sync, { passive: true });
+    return () => el.removeEventListener("scroll", sync);
+  }, [shown.length]);
+
   const doKill = useCallback(
     async (row: PortEntry) => {
       setConfirm(null);
@@ -103,7 +116,7 @@ export function PortsWorkbench({ initialPort, onBack, focusRef }: Props) {
   const permissionDenied = /拒绝访问|access denied|Win32 5\b/i.test(err);
 
   return (
-    <div className="zap-panel outline-none" tabIndex={-1} ref={focusRef}>
+    <div className="zap-panel zap-ports-panel outline-none" tabIndex={-1} ref={focusRef}>
       <PanelHeader icon={<Network className="size-4" />} tag="端口查询">
         {!err && (
           <span className="zap-ports-count">
@@ -144,7 +157,7 @@ export function PortsWorkbench({ initialPort, onBack, focusRef }: Props) {
         </Button>
       </PanelHeader>
 
-      <div className="zap-ports-body">
+      <div className="zap-ports-body" ref={bodyRef}>
         {err ? (
           <div className="zap-ports-empty">
             <TriangleAlert className="size-4" />
