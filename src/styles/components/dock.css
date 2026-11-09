@@ -41,12 +41,15 @@
   cursor: pointer;
   transition:
     background-color 0.14s ease,
-    color 0.14s ease;
+    color 0.14s ease,
+    transform 0.14s ease;
 }
 
+/* 方向 A：chip 悬停上浮 1px（按钮「踩上去」反馈），按压走既有 scale */
 .zap-dock-chip:hover {
   background: var(--zap-w-06);
   color: var(--zap-fg-strong);
+  transform: translateY(-1px);
 }
 
 .zap-dock-chip:active {

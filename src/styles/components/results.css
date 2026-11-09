@@ -79,7 +79,9 @@
   background: rgba(var(--zap-accent-rgb), 1);
   box-shadow: 0 0 8px rgba(var(--zap-accent-rgb), 0.7);
   transform: translateY(-50%);
-  transition: height 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  /* 方向 A：微过冲弹性曲线——指示条落定时带一点回弹，选中感更「物理」；
+     reduced-motion 由 base.css 统一压掉 */
+  transition: height 0.2s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 
 /* 选中渐变层：background-image 无法参与 CSS 过渡，写在 background 上

@@ -6,7 +6,7 @@
    由 base.css 统一兜底。
    ============================================================ */
 @theme inline {
-  --animate-panel-in: panel-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-panel-in: panel-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
   --animate-item-in: item-in 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
   --animate-fade-in: fade-in 0.16s ease-out both;
   --animate-scale-in: scale-in 0.14s cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -23,9 +23,11 @@
 }
 
 @keyframes panel-in {
+  /* 方向 A（2026-11-09 设计轮拍板）：入场统一「升入」语言——与 zap-view-in /
+     slide-up 同向，面板像从下方落定而非从上砸下 */
   from {
     opacity: 0;
-    transform: translateY(-8px) scale(0.985);
+    transform: translateY(10px) scale(0.985);
   }
   to {
     opacity: 1;

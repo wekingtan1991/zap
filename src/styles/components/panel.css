@@ -97,11 +97,13 @@
   border-radius: 8px;
   transition:
     background-color 0.15s ease,
-    color 0.15s ease;
+    color 0.15s ease,
+    transform 0.15s ease;
 }
 
 .zap-gear:hover {
   background: var(--zap-w-08);
+  transform: translateY(-1px);
 }
 
 /* 错误态「重新加载」文本按钮（ErrorBoundary 输入行内，此前无样式裸奔） */
