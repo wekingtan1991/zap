@@ -85,12 +85,3 @@ coverage/
 # 注意：.gitignore 对已跟踪文件无效，已入库的 reviews/2026-10-29/ 仍继续跟踪；
 # 本规则用于防止 reviews/2026-11-04/ 及以后新建的评审目录被 git add -A 误提交。
 reviews/
-
-# 跨 Agent 协同机制（初始实验阶段，整套本地留存，不进 public 仓库）
-# 本机运行：node scripts/check-chat.mjs [--strict | --verify-guard]
-# 待实验收敛、确认可公开后再统一评估入库范围。
-AGENTS.md
-CHAT.md
-CHAT.index.md
-ROADMAP.md
-scripts/check-chat.mjs
