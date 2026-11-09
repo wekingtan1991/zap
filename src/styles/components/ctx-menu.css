@@ -18,7 +18,7 @@
   overflow-y: auto;
   padding: 4px;
   border-radius: 10px;
-  background: var(--zap-menu-grad);
+  background: var(--zap-overlay-grad);
   border: 1px solid var(--zap-w-10);
   box-shadow: 0 10px 28px var(--zap-shadow);
   animation: fade-in 0.12s ease-out both;

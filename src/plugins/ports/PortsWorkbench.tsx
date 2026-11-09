@@ -105,6 +105,11 @@ export function PortsWorkbench({ initialPort, onBack, focusRef }: Props) {
   return (
     <div className="zap-panel outline-none" tabIndex={-1} ref={focusRef}>
       <PanelHeader icon={<Network className="size-4" />} tag="端口查询">
+        {!err && (
+          <span className="zap-ports-count">
+            {loading ? "查询中…" : `共 ${shown.length} 条`}
+          </span>
+        )}
         <input
           className="zap-ports-filter"
           value={text}
@@ -130,11 +135,12 @@ export function PortsWorkbench({ initialPort, onBack, focusRef }: Props) {
         </Button>
         <Button
           variant="ghost"
-          size="icon-sm"
-          aria-label="返回"
+          size="sm"
+          className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
           onClick={onBack}
         >
-          <ArrowLeft className="size-3.5" />
+          <ArrowLeft className="size-3" />
+          返回（Esc）
         </Button>
       </PanelHeader>
 
@@ -203,8 +209,9 @@ export function PortsWorkbench({ initialPort, onBack, focusRef }: Props) {
                   </td>
                   <td>
                     <Button
-                      variant="destructive"
+                      variant="ghost"
                       size="sm"
+                      className="zap-ports-kill"
                       disabled={r.protected}
                       title={
                         r.protected
@@ -230,7 +237,7 @@ export function PortsWorkbench({ initialPort, onBack, focusRef }: Props) {
         >
           <div
             ref={dialogRef}
-            className="zap-dialog"
+            className="zap-dialog zap-ports-dialog"
             role="alertdialog"
             aria-modal="true"
             aria-label="结束进程确认"
@@ -238,7 +245,7 @@ export function PortsWorkbench({ initialPort, onBack, focusRef }: Props) {
           >
             <div className="zap-confirm-text">
               <TriangleAlert className="size-3.5" />
-              强制结束可能丢失未保存数据，确认结束端口 {confirm.port} 的进程？
+              强制结束可能丢失未保存数据，确认结束端口&nbsp;{confirm.port} 的进程？
             </div>
             <div className="zap-ports-dialog-info">
               <div>
@@ -265,7 +272,9 @@ export function PortsWorkbench({ initialPort, onBack, focusRef }: Props) {
               </div>
             </div>
             <div className="zap-confirm-actions">
-              <Button autoFocus onClick={() => setConfirm(null)}>
+              {/* 安全动作降为 outline：危险动作才是唯一着色按钮（设置页退出
+                  确认同款层级），焦点仍默认停在取消上 */}
+              <Button autoFocus variant="outline" onClick={() => setConfirm(null)}>
                 取消
               </Button>
               <Button

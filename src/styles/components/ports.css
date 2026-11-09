@@ -3,10 +3,12 @@
    弹窗骨架复用 dialogs.css 的 zap-dialog-*，颜色全走 tokens 变量跟随主题。
    ============================================================ */
 
-.zap-ports-filter {
+/* 头部过滤框：必须带 .zap-input-row 前缀——共享的 `.zap-input-row input`
+   （flex:1 / 无边框 / 16px）特异性更高，不加前缀这里整段都不生效，
+   输入框会渲染成第二个搜索框 */
+.zap-input-row .zap-ports-filter {
+  flex: 0 1 172px;
   margin-left: auto;
-  width: 172px;
-  flex-shrink: 0;
   height: 26px;
   padding: 0 8px;
   border: 1px solid var(--zap-w-08);
@@ -17,12 +19,21 @@
   outline: none;
 }
 
-.zap-ports-filter:focus {
-  border-color: rgba(59, 130, 246, 0.7);
+.zap-input-row .zap-ports-filter:focus {
+  border-color: rgba(var(--zap-accent-rgb), 0.7);
+  box-shadow: 0 0 0 2px rgba(var(--zap-accent-rgb), 0.12);
 }
 
-.zap-ports-filter::placeholder {
+.zap-input-row .zap-ports-filter::placeholder {
   color: var(--zap-fg-mute2);
+}
+
+/* 头部计数：弱化补充信息（与中转站头部计数同款式） */
+.zap-ports-count {
+  color: var(--zap-fg-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .zap-ports-toggle {
@@ -37,7 +48,7 @@
 }
 
 .zap-ports-toggle input {
-  accent-color: #3b82f6;
+  accent-color: var(--ring);
   cursor: pointer;
 }
 
@@ -45,13 +56,16 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px 14px 12px;
+  /* 顶部间距必须留在表格上：滚动容器一旦带 padding-top，粘性表头只吸附到
+     内容盒顶，滚动行会从内边距带里露出（表头上方漏行） */
+  padding: 0 14px 12px;
 }
 
 .zap-ports-table {
   width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
+  margin-top: 8px;
   font-size: 12px;
   color: var(--zap-fg);
 }
@@ -65,8 +79,10 @@
   font-weight: 500;
   font-size: 11px;
   color: var(--zap-fg-mute);
-  background: var(--zap-panel-grad);
-  border-bottom: 1px solid var(--zap-w-08);
+  /* 浮层表面：亚克力档下滚动行不能从吸附表头背后透出 */
+  background: var(--zap-overlay-grad);
+  /* 吸附分界用阴影代替边框：border-collapse 下吸附时边框可能不绘制 */
+  box-shadow: 0 1px 0 var(--zap-w-08);
 }
 
 .zap-ports-table td {
@@ -84,8 +100,32 @@
 .zap-ports-table th:nth-child(5) { width: 62px; }
 .zap-ports-table th:nth-child(7) { width: 70px; }
 
+/* 行悬停：宽表横向扫读需要行级锚点（选中态与结果列表同用琥珀语言） */
+.zap-ports-table tbody tr:hover {
+  background: var(--zap-w-03);
+}
+
 .zap-ports-table tr.zap-ports-hit {
-  background: rgba(59, 130, 246, 0.12);
+  background: rgba(var(--zap-accent-rgb), 0.1);
+}
+
+.zap-ports-table tr.zap-ports-hit:hover {
+  background: rgba(var(--zap-accent-rgb), 0.14);
+}
+
+/* 命中行左侧琥珀指示条（与结果行 .zap-item::before 同语言） */
+.zap-ports-table tr.zap-ports-hit td:first-child {
+  box-shadow: inset 3px 0 0 rgba(var(--zap-accent-rgb), 0.75);
+}
+
+/* 行内「结束」：危险动作降噪——常态弱化，悬停才上危险色 */
+.zap-ports-kill {
+  color: var(--zap-fg-mute);
+}
+
+.zap-ports-kill:hover:not(:disabled) {
+  color: var(--zap-err);
+  background: var(--zap-err-bg);
 }
 
 .zap-ports-port {
@@ -124,6 +164,11 @@
   line-height: 1.6;
   color: var(--zap-fg-mute2);
   word-break: break-all;
+}
+
+/* 端口确认弹窗：四行信息含长路径，比通用删除确认宽一点 */
+.zap-ports-dialog {
+  max-width: 360px;
 }
 
 .zap-ports-dialog-info {

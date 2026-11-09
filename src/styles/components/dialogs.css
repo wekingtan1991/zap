@@ -26,7 +26,8 @@
   gap: 12px;
   padding: 14px;
   border-radius: 12px;
-  background: var(--zap-dialog-grad);
+  /* 浮层表面：亚克力档也近乎实底，不然表格行会透过弹窗 */
+  background: var(--zap-overlay-grad);
   border: 1px solid var(--zap-err-soft);
   box-shadow: 0 12px 32px var(--zap-shadow);
   animation: fade-in 0.16s ease-out both;
@@ -34,7 +35,7 @@
 
 .zap-confirm-text {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 7px;
   color: var(--zap-err-fg);
   font-size: 12px;
@@ -43,6 +44,7 @@
 
 .zap-confirm-text svg {
   flex-shrink: 0;
+  margin-top: 2px;
   color: var(--zap-err);
 }
 
