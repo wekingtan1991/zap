@@ -1,6 +1,6 @@
 //! 账号库：密码经 DPAPI 加密落盘（绑定当前 Windows 账户 + zap 熵），保护域交互。
 //! 铁律：密码永不出现在搜索结果、日志或剪贴板历史中。
-//! 加解密在 dpapi.rs，智能导入的文本解析在 acctparse.rs
+//! 加解密在 dpapi.rs，智能导入的文本解析在 acctparse.rs，动作分发在 vault/actions.rs
 
 use std::time::Duration;
 
@@ -17,6 +17,11 @@ use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 
 // 智能导入的类型与入口经 vault 再导出（lib.rs 命令沿用 vault:: 路径）
 pub use super::acctparse::{ParsedAccount, parse_blob};
+
+// 动作分发拆到 vault/actions.rs（P3.2）；对外仍由 vault::action 导出，
+// crud_tests 里的 super::action 路径保持零改动
+mod actions;
+pub use actions::action;
 
 /// vault 密码明文集缓存（评审 P1-09）：watcher 入库前比对的内存镜像。
 /// 惰性构建（首次比对时全量解密一次，之后 O(1) 命中查询），任何 vault
@@ -326,171 +331,6 @@ pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
         .collect()
 }
 
-/// 动作分发。复制动作统一抑制剪贴板历史；密码只在显式查看时返回明文。
-pub fn action(
-    conn: &Connection,
-    id: i64,
-    action: &str,
-    pwd_clear_secs: i64,
-) -> Result<String, String> {
-    // 复制类操作同时刷新「最近使用」排序（未置顶条目自然前移）
-    let bump = |conn: &Connection| {
-        let _ = conn.execute(
-            "UPDATE accounts SET updated_at=?1 WHERE id=?2",
-            params![now_ms(), id],
-        );
-    };
-    match action {
-        "username" => {
-            let username: String = conn
-                .query_row(
-                    "SELECT username FROM accounts WHERE id=?1",
-                    params![id],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            super::clipboard::begin_self_copy();
-            // 用户名与密码成对泄露才是完整凭证：与密码同走受保护通道（评审 P1-13）
-            copy_text_private(&username)?;
-            bump(conn);
-            Ok("用户名已复制".into())
-        }
-        "password" => {
-            let enc: String = conn
-                .query_row(
-                    "SELECT password_enc FROM accounts WHERE id=?1",
-                    params![id],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            let plain = dpapi::decrypt(&enc)?;
-            super::clipboard::begin_self_copy();
-            copy_text_private(&plain)?;
-            bump(conn);
-            // 复制完成后立刻取序列号：焚除时序列号未变才清（不覆盖用户的新复制）
-            schedule_clear(plain, clipboard_seq(), pwd_clear_secs);
-            Ok(if pwd_clear_secs > 0 {
-                format!("密码已复制，{pwd_clear_secs} 秒后自动清除")
-            } else {
-                "密码已复制".into()
-            })
-        }
-        "url" => {
-            let url: String = conn
-                .query_row("SELECT url FROM accounts WHERE id=?1", params![id], |r| {
-                    r.get(0)
-                })
-                .map_err(|e| e.to_string())?;
-            // 返回网址本身：前端「打开网址」流拿它作 open_item 的 target
-            //（与 "url_copy" 是两个消费方，2026-11-04 P1 拆分）
-            bump(conn);
-            Ok(url)
-        }
-        "url_copy" => {
-            let url: String = conn
-                .query_row("SELECT url FROM accounts WHERE id=?1", params![id], |r| {
-                    r.get(0)
-                })
-                .map_err(|e| e.to_string())?;
-            // 详情页网址行一键复制（2026-11-04 P1）：原实现无复制动作，前端
-            // 把网址当成功消息 toast 且亮 ✓，粘贴到的是旧剪贴板内容——
-            // README 明确承诺此功能
-            super::clipboard::begin_self_copy();
-            copy_text_private(&url)?;
-            bump(conn);
-            Ok("网址已复制".into())
-        }
-        "notes" => {
-            // 详情页备注行的一键复制：同样抑制剪贴板历史（备注可能含敏感信息）
-            let notes: String = conn
-                .query_row("SELECT notes FROM accounts WHERE id=?1", params![id], |r| {
-                    r.get(0)
-                })
-                .map_err(|e| e.to_string())?;
-            super::clipboard::begin_self_copy();
-            copy_text_private(&notes)?;
-            bump(conn);
-            Ok("备注已复制".into())
-        }
-        "reveal" => {
-            // 显式查看：返回解密后的密码明文（前端只做一次性展示）
-            let enc: String = conn
-                .query_row(
-                    "SELECT password_enc FROM accounts WHERE id=?1",
-                    params![id],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            let plain = dpapi::decrypt(&enc)?;
-            Ok(plain)
-        }
-        "totp" => {
-            // 当前验证码（仅展示，不复制）
-            let enc: String = conn
-                .query_row(
-                    "SELECT totp_enc FROM accounts WHERE id=?1",
-                    params![id],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            let secret = totp_plain(&enc)?;
-            if secret.is_empty() {
-                return Err("该账号未配置 TOTP".into());
-            }
-            super::totp::current_code(&secret)
-        }
-        "totp_copy" => {
-            // 复制当前验证码：排除剪贴板历史与云同步；验证码 ≤30s 自过期，不做焚除
-            let enc: String = conn
-                .query_row(
-                    "SELECT totp_enc FROM accounts WHERE id=?1",
-                    params![id],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            let secret = totp_plain(&enc)?;
-            if secret.is_empty() {
-                return Err("该账号未配置 TOTP".into());
-            }
-            let code = super::totp::current_code(&secret)?;
-            super::clipboard::begin_self_copy();
-            copy_text_private(&code)?;
-            bump(conn);
-            Ok("验证码已复制".into())
-        }
-        "pin" => {
-            let pinned: i64 = conn
-                .query_row(
-                    "SELECT pinned FROM accounts WHERE id=?1",
-                    params![id],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            let next = if pinned == 1 { 0 } else { 1 };
-            conn.execute(
-                "UPDATE accounts SET pinned=?1 WHERE id=?2",
-                params![next, id],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(if next == 1 {
-                "已置顶".into()
-            } else {
-                "已取消置顶".into()
-            })
-        }
-        "delete" => {
-            conn.execute("DELETE FROM accounts WHERE id=?1", params![id])
-                .map_err(|e| e.to_string())?;
-            // 密码集必须同步失效（2026-11-04 P1）：只失效形态缓存会让已删
-            // 密码继续抑制剪贴板入库——从历史翻不出、入库又静默失败，双向都错
-            invalidate_forms_cache();
-            invalidate_password_cache();
-            Ok("已删除".into())
-        }
-        _ => Err("未知操作".into()),
-    }
-}
-
 /// 账号完整记录（vault_get 的返回）：编辑预填与详情展示用。
 /// 命名字段替代位置七元组（2026-11-04 P2，2026-11-03 共识 #5）：序列化为
 /// JSON 对象，Rust 侧调换字段只会改变键序不会静默错位（原位置元组一旦
@@ -785,6 +625,30 @@ mod crud_tests {
             }
         }
         None
+    }
+
+    /// P3.2 回归锁：reveal 只返回 DPAPI 解密后的明文，不碰剪贴板
+    #[test]
+    fn 显式查看返回解密明文() {
+        let conn = mem_db();
+        add(&conn, "站点", "user", "secret-pw", "https://a.com", "", "").unwrap();
+        assert_eq!(action(&conn, 1, "reveal", 0).unwrap(), "secret-pw");
+    }
+
+    /// P3.2 回归锁：password 复制走受保护通道；pwd_clear_secs=0 时文案不带秒数
+    #[test]
+    fn 密码复制走受保护通道() {
+        let conn = mem_db();
+        add(&conn, "站点", "user", "secret-pw", "https://a.com", "", "").unwrap();
+        let Some(msg) = copy_action(&conn, 1, "password") else {
+            eprintln!("跳过：系统剪贴板被长期占用，写剪贴板断言无法执行");
+            return;
+        };
+        assert_eq!(msg, "密码已复制");
+        assert!(
+            crate::providers::clipboard::in_suppress_window(),
+            "密码复制应抑制剪贴板历史"
+        );
     }
 
     /// 打分形态缓存（审计 G2）：字段写路径必须失效——改字后旧字不可召回、
