@@ -41,7 +41,11 @@ pub trait Plugin: Send + Sync {
     /// 插件不得自行获取或长持共享连接（锁竞争军规见 SearchEngine::search）
     fn search(&self, query: &str, conn: Option<&Connection>) -> Vec<SearchItem>;
     /// 是否需要 app 数据库连接：true 的插件在 clip 锁短暂持有内执行，
-    /// 与 files 的 HTTP、winsys 的窗口枚举隔离（入锁会拖住共用连接的 vault 与设置操作）
+    /// 与 files 的 HTTP、winsys 的窗口枚举隔离（入锁会拖住共用连接的 vault 与设置操作）。
+    /// 2026-11-09 P3.4 收口实读：全仓仅 apps / clipboard 两个实现置 true；
+    /// 引擎逐个加锁释放（非跨插件长锁），watcher 用独立连接不参与这把锁，
+    /// clipboard 打分池 SQL 硬上限 300 行。锁外打分已判定收益不足而关闭，
+    /// 重开条件见 docs/design-search-hotpath.md。
     fn needs_conn(&self) -> bool {
         false
     }

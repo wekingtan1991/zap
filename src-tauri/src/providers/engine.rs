@@ -298,6 +298,9 @@ fn entry_conflicts<'a>(
 /// 不能跨线程；其余各占一个 scoped 线程。注意（2026-11-04 复核更正）：Cargo.toml
 /// panic=abort 是有意取舍（防数据损坏优于局部容错）——abort 下线程 panic 即整个
 /// 进程退出，下面的 join 兜底只在非 abort 构建里成立，勿把这里当 panic 隔离边界。
+/// 2026-11-09 P3.4 收口：needs_conn 仅 2 个插件、锁在循环内逐个加放、watcher
+/// 独立连接不抢锁、打分池上限 300 行——锁外打分收益不足已关闭，
+/// 决策记录见 docs/design-search-hotpath.md，勿再据此立项。
 fn run_parallel(
     plugins: &[std::sync::Arc<dyn plugin::Plugin>],
     q: &str,
