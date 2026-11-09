@@ -309,7 +309,7 @@ pub fn search(conn: &Connection, query: &str) -> Vec<SearchItem> {
     // 同分档内置顶优先，其次新在前
     scored.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
-            .unwrap()
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.2.cmp(&a.2))
             .then(b.1.cmp(&a.1))
     });

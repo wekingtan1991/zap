@@ -260,12 +260,13 @@ export function ClipImagePreview({ rowid, onBack, focusRef, onPinned }: Props) {
 
   const saveAs = async () => {
     if (!meta) return;
-    const path = await save({
-      defaultPath: `zap_clip_${meta.width}x${meta.height}.png`,
-      filters: [{ name: "PNG 图片", extensions: ["png"] }],
-    });
-    if (!path) return;
     try {
+      // 对话框也可能抛（取消/权限），与导出一起收进 try，避免 unhandled rejection
+      const path = await save({
+        defaultPath: `zap_clip_${meta.width}x${meta.height}.png`,
+        filters: [{ name: "PNG 图片", extensions: ["png"] }],
+      });
+      if (!path) return;
       await invoke("clipimg_export", { id: rowid, path });
       toast.success("已保存：" + path);
     } catch (e) {

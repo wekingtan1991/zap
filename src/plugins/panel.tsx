@@ -9,7 +9,7 @@
 ///    工作台面板不再各自复制这份生命周期
 /// 新增面板 = App 的 View 加一个 kind + 渲染分支 + ItemActions 注册动作，
 /// 不新增模式特判；消费者：图片预览（clipimg）、JSON 工作台、文本工具工作台
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 export interface PanelProps {
@@ -67,10 +67,21 @@ export function usePanelPaste(onPasted: (text: string) => void) {
 /// setCopied 覆盖续期
 export function useCopyFlash(ms = 1600) {
   const [copied, setCopied] = useState<string | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    []
+  );
   const flash = useCallback(
     (key: string) => {
       setCopied(key);
-      setTimeout(() => setCopied((c) => (c === key ? null : c)), ms);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(
+        () => setCopied((c) => (c === key ? null : c)),
+        ms
+      );
     },
     [ms]
   );

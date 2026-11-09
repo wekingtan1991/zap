@@ -4,7 +4,7 @@
 /// 本 hook 收拢 refreshVault 与全部读写动作，App 根降为装配层（actions
 /// 对象、Alt 键盘面、右键分发、子页面 props 全部引用返回值）。
 /// 键盘栈不动（等第二个域出现再抽象，见可行性报告 P1-19）。
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import type { View } from "@/App";
@@ -56,6 +56,13 @@ interface VaultActionsDeps {
 export function useVaultActions(deps: VaultActionsDeps) {
   const { view, setView, setItems, setActive, setQuery, vaultTermRef, inputRef } = deps;
 
+  /// 视图引用镜像：vault_get / vault_action 在途期间用户可能切走视图，
+  /// 过期响应不能把含解密明文的详情 / 快瞄 / 表单硬拽回界面。
+  /// 渲染期同步 ref（只镜像 props，不参与渲染输出），保证 await 期间的变化
+  /// 立刻可见；useEffect 同步会晚一帧，慢盘或 IPC 排队时仍可能漏判。
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
   /// 按 vault 搜索词重拉列表（vaultAction/pin/delete/form/import 的共用收尾）：
   /// 重拉期间词已变则丢弃，交还给账号库搜索 effect 的正常刷新链路
   const refreshVault = useCallback(
@@ -99,7 +106,9 @@ export function useVaultActions(deps: VaultActionsDeps) {
           return;
         }
         if (action === "reveal") {
+          const atCall = viewRef.current;
           const pw = await invoke<string>("vault_action", { id, action });
+          if (viewRef.current !== atCall) return; // 用户已切走，丢弃明文
           setView({
             kind: "reveal",
             data: {
@@ -146,8 +155,10 @@ export function useVaultActions(deps: VaultActionsDeps) {
     async (item: SearchItem) => {
       const id = Number(item.target);
       if (Number.isNaN(id)) return;
+      const atCall = viewRef.current;
       try {
         const rec = await invoke<VaultRecordDto>("vault_get", { id });
+        if (viewRef.current !== atCall) return;
         setView({
           kind: "form",
           data: {
@@ -161,8 +172,8 @@ export function useVaultActions(deps: VaultActionsDeps) {
             totp: rec.totp,
           },
         });
-      } catch {
-        // 忽略
+      } catch (e) {
+        toast.error("打开失败：" + String(e));
       }
     },
     [setView]
@@ -177,8 +188,10 @@ export function useVaultActions(deps: VaultActionsDeps) {
     async (item: SearchItem) => {
       const id = Number(item.target);
       if (Number.isNaN(id)) return;
+      const atCall = viewRef.current;
       try {
         const rec = await invoke<VaultRecordDto>("vault_get", { id });
+        if (viewRef.current !== atCall) return;
         setView({
           kind: "detail",
           data: {
@@ -205,8 +218,10 @@ export function useVaultActions(deps: VaultActionsDeps) {
     async (item: SearchItem) => {
       const id = Number(item.target);
       if (Number.isNaN(id)) return;
+      const atCall = viewRef.current;
       try {
         const rec = await invoke<VaultRecordDto>("vault_get", { id });
+        if (viewRef.current !== atCall) return;
         setView({
           kind: "detail",
           data: {
@@ -254,18 +269,24 @@ export function useVaultActions(deps: VaultActionsDeps) {
     []
   );
 
+  /// 置顶翻转。invoke 必须在 setState updater 之外——React 要求 updater 为纯
+  /// 函数，StrictMode 开发模式会双调用，原先写在 updater 里的 pin 会被执行两次、
+  /// 后端置顶翻转回原值（并发渲染重放同样危险）。
   const pinCurrent = useCallback(async () => {
-    setView((v) => {
-      if (v.kind !== "detail") return v;
-      void invoke("vault_action", { id: v.data.id, action: "pin" }).catch((e) =>
-        toast.error("操作失败：" + String(e))
+    const current = viewRef.current;
+    if (current.kind !== "detail") return;
+    const id = current.data.id;
+    try {
+      await invoke<string>("vault_action", { id, action: "pin" });
+      setView((v) =>
+        v.kind === "detail" && v.data.id === id
+          ? { ...v, data: { ...v.data, pinned: v.data.pinned === 1 ? 0 : 1 } }
+          : v
       );
-      return {
-        ...v,
-        data: { ...v.data, pinned: v.data.pinned === 1 ? 0 : 1 },
-      };
-    });
-    await refreshVault(vaultTermRef.current);
+      await refreshVault(vaultTermRef.current);
+    } catch (e) {
+      toast.error("操作失败：" + String(e));
+    }
   }, [setView, refreshVault, vaultTermRef]);
 
   /// 删除当前账号（详情页确认弹窗触发）：成功关详情 + 刷新列表，失败由详情页收回弹窗
@@ -326,19 +347,24 @@ export function useVaultActions(deps: VaultActionsDeps) {
     void (async () => {
       try {
         const rec = await invoke<VaultRecordDto>("vault_get", { id });
-        setView({
-          kind: "detail",
-          data: {
-            id,
-            title: rec.title,
-            username: rec.username,
-            password: rec.password,
-            url: rec.url,
-            notes: rec.notes,
-            pinned: rec.pinned,
-            totp: rec.totp,
-          },
-        });
+        // 本函数开头已 setView(main)；期间用户若切到别的视图则丢弃过期响应
+        setView((v) =>
+          v.kind === "main"
+            ? {
+                kind: "detail",
+                data: {
+                  id,
+                  title: rec.title,
+                  username: rec.username,
+                  password: rec.password,
+                  url: rec.url,
+                  notes: rec.notes,
+                  pinned: rec.pinned,
+                  totp: rec.totp,
+                },
+              }
+            : v
+        );
       } catch {
         // 详情打不开（账号已被删等）退回旧行为：列表 + 焦点回输入框
         setTimeout(() => inputRef.current?.focus(), 30);

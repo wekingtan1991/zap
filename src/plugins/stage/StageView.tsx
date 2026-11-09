@@ -188,8 +188,13 @@ export function StageView({ focusRef, onClose }: Props) {
     };
   }, [addPaths]);
 
-  // 方向键把选中行移出可视区时滚动补位（同主列表 nearest 口径）
+  // 方向键把选中行移出可视区时滚动补位（同主列表 nearest 口径）。
+  // 只在键盘导航时补位：onMouseEnter 也会改 active，若跟随滚动，
+  // 鼠标扫过列表会让内容在光标下漂移（主面板已用 kbNavRef 修过同一坑）
+  const kbNavRef = useRef(false);
   useEffect(() => {
+    if (!kbNavRef.current) return;
+    kbNavRef.current = false;
     activeItemRef.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
@@ -261,9 +266,9 @@ export function StageView({ focusRef, onClose }: Props) {
   /// 失效条目重绑路径（保留固定态）
   const relocate = useCallback(
     async (row: StageRow) => {
-      const picked = await pickPath({ multiple: false });
-      if (!picked) return;
       try {
+        const picked = await pickPath({ multiple: false });
+        if (!picked) return;
         await invoke("stage_relocate", { id: row.id, path: picked });
         await load();
         toast.success("已重新定位");
@@ -348,13 +353,21 @@ export function StageView({ focusRef, onClose }: Props) {
   }, [rows, load, restoreRows]);
 
   const addFilesDialog = useCallback(async () => {
-    const picked = await pickPath({ multiple: true });
-    if (picked) void addPaths(picked);
+    try {
+      const picked = await pickPath({ multiple: true });
+      if (picked) void addPaths(picked);
+    } catch (e) {
+      toast.error(String(e));
+    }
   }, [addPaths]);
 
   const addDirsDialog = useCallback(async () => {
-    const picked = await pickPath({ directory: true, multiple: true });
-    if (picked) void addPaths(picked);
+    try {
+      const picked = await pickPath({ directory: true, multiple: true });
+      if (picked) void addPaths(picked);
+    } catch (e) {
+      toast.error(String(e));
+    }
   }, [addPaths]);
 
   const pinnedCount = rows.filter((r) => r.pinned).length;
@@ -426,9 +439,11 @@ export function StageView({ focusRef, onClose }: Props) {
       if (e.isComposing || menu !== null) return;
       if (e.key === "ArrowDown") {
         e.preventDefault();
+        kbNavRef.current = true;
         setActive((a) => Math.min(a + 1, Math.max(shown.length - 1, 0)));
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
+        kbNavRef.current = true;
         setActive((a) => Math.max(a - 1, 0));
       } else if (e.key === "Enter") {
         e.preventDefault();

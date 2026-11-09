@@ -40,6 +40,9 @@ interface Props {
 
 export function SettingsView({ updater, focusRef, onClose }: Props) {
   const [st, setSt] = useState<AppSettings | null>(null);
+  /// 加载失败态与重试计数：原先两个 IPC 任一失败被静默吞掉，界面永久空壳
+  const [loadErr, setLoadErr] = useState(false);
+  const [reload, setReload] = useState(0);
   /// 开机自启勾选是否被用户动过（R20 P2 防回滚，见 saveSettings）
   const [autostartTouched, setAutostartTouched] = useState(false);
   const [appVersion, setAppVersion] = useState("");
@@ -82,8 +85,9 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
         setSt(normalized);
         setScList(sc);
         setBaseline(settingsSnapshot(normalized, sc));
+        setLoadErr(false);
       })
-      .catch(() => {});
+      .catch(() => setLoadErr(true));
     // 版本号异步读取（tauri.conf.json 的 version），失败时留空
     getVersion()
       .then(setAppVersion)
@@ -92,7 +96,7 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
     return () => {
       invoke("stop_hotkey_capture").catch(() => {});
     };
-  }, []);
+  }, [reload]);
 
   // ---------- 热键录制（hook 化，审计 E2）：状态/监听/键帽内聚 settings/useHotkeyRecording ----------
   const patchHotkey = useCallback(
@@ -214,7 +218,27 @@ export function SettingsView({ updater, focusRef, onClose }: Props) {
   };
 
   if (!st) {
-    // 设置加载中的一帧空壳（get_app_settings 实际不会失败，罕见网络态兜底）
+    if (loadErr) {
+      return (
+        <div className="zap-panel outline-none" tabIndex={-1} ref={focusRef}>
+          <div className="zap-form animate-fade-in">
+            <div className="zap-vault-tag">设置加载失败</div>
+            <span className="zap-form-hint">
+              读取应用设置或搜索捷径失败，请重试；若持续失败可重启 zap。
+            </span>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => setReload((n) => n + 1)}>
+                重试
+              </Button>
+              <Button size="sm" variant="outline" onClick={onClose}>
+                返回
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    // 设置加载中的一帧空壳
     return (
       <div className="zap-panel outline-none" tabIndex={-1} ref={focusRef} />
     );

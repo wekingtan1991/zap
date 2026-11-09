@@ -135,12 +135,24 @@ export function VaultDetailView({
   // 弹窗存活时本页让位（enabled 互斥），否则 Esc 关详情页
   useEscCapture(onClose, !confirmDelete);
 
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    },
+    []
+  );
+
   const doCopy = (field: CopyableField) => {
     void (async () => {
       const ok = await onCopyField(detail.id, field);
       if (ok) {
         setCopiedField(field);
-        setTimeout(() => setCopiedField((c) => (c === field ? null : c)), 1600);
+        if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = setTimeout(
+          () => setCopiedField((c) => (c === field ? null : c)),
+          1600
+        );
       }
     })();
   };

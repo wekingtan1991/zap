@@ -116,7 +116,7 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<SearchItem> {
     // 同分档内固定优先，其次新的在前（与账号库口径一致）
     scored.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
-            .unwrap()
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.1.cmp(&a.1))
             .then(b.2.cmp(&a.2))
     });

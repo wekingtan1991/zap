@@ -1,7 +1,7 @@
 /// 智能导入视图（从 App.tsx 迁出的自包含视图）：
 /// 粘贴文本 → vault_parse 解析 → 逐条校对 → vault_import 入库。
 /// 解析/导入状态全部内部持有，导入成功经 onDone 交还父级（关视图 + 刷新列表）
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, Inbox, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,16 @@ export function VaultImportView({ onDone, onClose, focusRef }: Props) {
   const [showPw, setShowPw] = useState(false);
   const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(
     null
+  );
+
+  /// 成功反馈的 700ms 收尾定时器：组件卸载（用户切走视图 / Esc）时清掉，
+  /// 否则 onDone 会把用户已切换的视图硬拽回账号库列表。
+  const doneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
+    },
+    []
   );
 
   const updParsed = (i: number, key: keyof ParsedAccount, value: string) => {
@@ -178,8 +188,9 @@ export function VaultImportView({ onDone, onClose, focusRef }: Props) {
                       return;
                     }
                     setImportMsg({ ok: true, text: `✓ 已导入 ${n} 条` });
-                    // 明确反馈后再关闭并刷新列表（空关键词时列出全部账号）
-                    setTimeout(onDone, 700);
+                    // 明确反馈后再关闭并刷新列表（卸载时由 cleanup 清掉）
+                    if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
+                    doneTimerRef.current = setTimeout(onDone, 700);
                   }}
                 >
                   {importBusy && <Loader2 className="size-3.5 animate-spin" />}

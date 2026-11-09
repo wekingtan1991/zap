@@ -33,30 +33,46 @@ export function useUpdater(): Updater {
     { kind: "ok" | "err"; text: string } | null
   >(null);
 
-  // 拿到检查结果后的公共收尾：有新版本则记录并置为可下载，否则回到空闲
-  const applyUpdate = useCallback((u: Update | null) => {
-    updateRef.current = u;
-    if (u) {
-      setUpdateVersion(u.version);
-      setUpdateStatus("available");
-    } else {
-      setUpdateStatus("idle");
-    }
+  /// 状态镜像：静默检查的响应回来时必须读到「此刻」的状态。
+  /// 只看渲染时闭包里的 updateStatus 会拿到过期快照，下载中途被覆盖成 available。
+  const statusRef = useRef<UpdateStatus>("idle");
+  const setStatus = useCallback((s: UpdateStatus) => {
+    statusRef.current = s;
+    setUpdateStatus(s);
   }, []);
+
+  // 拿到检查结果后的公共收尾：有新版本则记录并置为可下载，否则回到空闲
+  const applyUpdate = useCallback(
+    (u: Update | null) => {
+      updateRef.current = u;
+      if (u) {
+        setUpdateVersion(u.version);
+        setStatus("available");
+      } else {
+        setStatus("idle");
+      }
+    },
+    [setStatus]
+  );
 
   // 启动静默检查一次：离线/网络失败不打扰；面板隐藏时 toast 不可见，
   // 命中新版本只记标记，等下次面板呼出再提示。
-  // 常驻托盘应用可能数月不重启（评审 P1-20）：24h 间隔重查——check 已幂等
-  // （checking/downloading 态由 checkForUpdate 门控，此处静默路径直接调 check
-  // 也不会打断下载），失败静默不打扰
+  // 常驻托盘应用可能数月不重启（评审 P1-20）：24h 间隔重查。
+  // 下载/安装期间必须丢弃静默检查结果——24h 定时或启动检查与 downloadUpdate
+  // 并发返回时，无条件 applyUpdate 会把「下载中」冲回「可下载」，UI 显示可重试
+  // 而安装其实已在跑。
   useEffect(() => {
     const silentCheck = () =>
       check()
         .then((u) => {
-          if (u) {
-            applyUpdate(u);
-            updateNotifiedRef.current = true;
-          }
+          if (!u) return;
+          if (
+            statusRef.current === "downloading" ||
+            statusRef.current === "ready"
+          )
+            return;
+          applyUpdate(u);
+          updateNotifiedRef.current = true;
         })
         .catch(() => {});
     silentCheck();
@@ -77,24 +93,28 @@ export function useUpdater(): Updater {
   }, []);
 
   const checkForUpdate = useCallback(async () => {
-    if (updateStatus === "checking" || updateStatus === "downloading") return;
-    setUpdateStatus("checking");
+    if (
+      statusRef.current === "checking" ||
+      statusRef.current === "downloading"
+    )
+      return;
+    setStatus("checking");
     setUpdateMsg(null);
     try {
       const u = await check();
       applyUpdate(u);
       if (!u) setUpdateMsg({ kind: "ok", text: "已是最新版本 ✓" });
     } catch (e) {
-      setUpdateStatus("idle");
+      setStatus("idle");
       setUpdateMsg({ kind: "err", text: "检查失败：" + String(e) });
     }
-  }, [updateStatus, applyUpdate]);
+  }, [applyUpdate, setStatus]);
 
   // 下载并静默安装 NSIS 安装包；期间保持面板可见（UAC/安装器抢焦点不触发失焦即隐）
   const downloadUpdate = useCallback(async () => {
     const u = updateRef.current;
-    if (!u || updateStatus === "downloading") return;
-    setUpdateStatus("downloading");
+    if (!u || statusRef.current === "downloading") return;
+    setStatus("downloading");
     setUpdateProgress(0);
     await invoke("set_hold_panel", { hold: true }).catch(() => {});
     let received = 0;
@@ -112,23 +132,23 @@ export function useUpdater(): Updater {
         }
       });
       setUpdateProgress(100);
-      setUpdateStatus("ready");
+      setStatus("ready");
     } catch (e) {
-      setUpdateStatus("available");
+      setStatus("available");
       // catch 覆盖「下载失败」与「安装器启动失败」两种故障：updater 插件把
       // 安装器启动失败也抛在这里，文案区分开避免误导用户重试下载（评审 P2-09；
       // Windows 默认装完自动重启——tauri-plugin-updater restart_after_install）
       const msg = String(e);
       if (msg.includes("exit") || msg.includes("installer")) {
         toast.error("安装程序启动失败：" + msg);
-        setUpdateStatus("ready"); // 安装包已就绪，可手动重启触发
+        setStatus("ready"); // 安装包已就绪，可手动重启触发
       } else {
         toast.error("下载更新失败：" + msg);
       }
     } finally {
       await invoke("set_hold_panel", { hold: false }).catch(() => {});
     }
-  }, [updateStatus]);
+  }, [setStatus]);
 
   return {
     status: updateStatus,

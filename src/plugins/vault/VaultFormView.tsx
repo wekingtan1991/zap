@@ -51,6 +51,10 @@ export function VaultFormView({
   focusRef,
 }: Props) {
   const [formError, setFormError] = useState("");
+  /// 保存门控：连点「保存」或连按 Ctrl+Enter 会并发 vault_add 建出重复账号。
+  /// state 而非 ref——按钮 disabled 需要驱动重渲染；键盘监听每次渲染重挂，
+  /// 闭包天然拿到最新 saving。
+  const [saving, setSaving] = useState(false);
 
   // Esc 取消：窗口捕获（点击表单空白处/Label 后焦点掉到 body，面板收不到 keydown）。
   // Ctrl+Enter 保存仍是独立监听（useEscCapture 只管 Esc）
@@ -78,11 +82,13 @@ export function VaultFormView({
   };
 
   const saveForm = async () => {
+    if (saving) return;
     if (!form.title.trim()) {
       setFormError("请填写标题——用于记录这是什么账号，如“行云账号”");
       return;
     }
     setFormError("");
+    setSaving(true);
     try {
       if (form.id != null) {
         await invoke("vault_update", {
@@ -109,6 +115,8 @@ export function VaultFormView({
     } catch (e) {
       // 表单视图不渲染结果列表，错误必须显示在表单内
       setFormError("保存失败：" + String(e));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -225,7 +233,9 @@ export function VaultFormView({
           <Button variant="outline" onClick={onCancel}>
             取消（Esc）
           </Button>
-          <Button onClick={() => void saveForm()}>保存（Ctrl+Enter）</Button>
+          <Button disabled={saving} onClick={() => void saveForm()}>
+            {saving ? "保存中…" : "保存（Ctrl+Enter）"}
+          </Button>
         </div>
         {formError && (
           <div className="zap-hk-err animate-shake">{formError}</div>
