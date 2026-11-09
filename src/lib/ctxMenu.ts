@@ -1,18 +1,50 @@
-/// 右键菜单定位：面板逻辑尺寸内夹紧，贴底/贴右时不溢出。
-/// 主列表与中转站共用（此前两处各自夹法、常量漂移）。
-/// 面板 720×480 与 lib.rs 的 PANEL_WIDTH/HEIGHT 及 tauri.conf.json 三处同步；
-/// 菜单尺寸对应 ctx-menu.css：条目 ≈30px（7px×2 padding + 12.5px 行高）、
-/// 容器 padding 4px×2 + 边框 2px，宽取 min-width 152px
-const PANEL_W = 720;
-const PANEL_H = 480;
-const MENU_W = 152;
-const ITEM_H = 30;
-const MENU_CHROME = 10;
-const EDGE_GAP = 8;
+/// 右键菜单定位：以光标为锚，下方放不下整体翻到光标上方、右侧放不下翻到
+/// 光标左侧，翻转后仍越界再夹进视口。尺寸取菜单实测宽高与视口尺寸——不再
+/// 按条目高度/面板常量估算（此前估算与实际渲染漂移，贴底时菜单末条被窗口
+/// 下缘裁掉）。主列表与中转站共用。
+import { useLayoutEffect, useState } from "react";
 
-export function clampMenuPos(x: number, y: number, itemCount: number) {
-  return {
-    left: Math.min(x, PANEL_W - MENU_W - EDGE_GAP),
-    top: Math.min(y, PANEL_H - (itemCount * ITEM_H + MENU_CHROME) - EDGE_GAP),
-  };
+export const EDGE_GAP = 8;
+
+export function placeMenuPos(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  viewW: number,
+  viewH: number,
+) {
+  let left = x + width > viewW - EDGE_GAP ? x - width : x;
+  left = Math.max(EDGE_GAP, Math.min(left, viewW - width - EDGE_GAP));
+  let top = y + height > viewH - EDGE_GAP ? y - height : y;
+  top = Math.max(EDGE_GAP, Math.min(top, viewH - height - EDGE_GAP));
+  return { left, top };
+}
+
+/// 挂到菜单容器上的定位 hook：首帧绘制前完成实测+定位（useLayoutEffect），
+/// 不会先闪一下错误位置。用回调 ref 而不是 useRef——菜单按条件挂载，同一
+/// 坐标重开（条目数不同、尺寸变了）也要重新实测；x/y 为空表示菜单未开，
+/// 返回 null 由调用方兜底。
+export function useCtxMenuPos(x: number | null, y: number | null) {
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (x === null || y === null || !el) {
+      setPos(null);
+      return;
+    }
+    setPos(
+      placeMenuPos(
+        x,
+        y,
+        el.offsetWidth,
+        el.offsetHeight,
+        window.innerWidth,
+        window.innerHeight,
+      ),
+    );
+  }, [x, y, el]);
+
+  return { ref: setEl, el, pos };
 }

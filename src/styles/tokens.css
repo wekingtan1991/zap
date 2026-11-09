@@ -39,6 +39,9 @@
   /* ---------- zap 面板语义变量（components/ 消费；浅色在下方覆盖） ---------- */
   --zap-panel-grad: linear-gradient(180deg, #1d2027 0%, #15171b 100%);
   --zap-dialog-grad: linear-gradient(180deg, #23262e 0%, #1a1d22 100%);
+  /* 右键菜单浮在内容之上（不是桌面之上）：亚克力档不能沿用面板/对话的
+     半透明，否则底下条目文字会从菜单里透出来；透明档在下方单独覆盖 */
+  --zap-menu-grad: var(--zap-dialog-grad);
   --zap-backdrop: rgba(13, 15, 18, 0.62);
   --zap-shadow: rgba(0, 0, 0, 0.45);
   --zap-body-bg: #181a1f;
@@ -173,6 +176,12 @@
     rgba(35, 38, 46, 0.88) 0%,
     rgba(26, 29, 34, 0.9) 100%
   );
+  /* 菜单只留一丝亚克力感（0.97+），保底不再透出底下内容 */
+  --zap-menu-grad: linear-gradient(
+    180deg,
+    rgba(35, 38, 46, 0.97) 0%,
+    rgba(26, 29, 34, 0.98) 100%
+  );
 }
 :root.zap-trans body {
   background: transparent;
@@ -187,6 +196,11 @@
     180deg,
     rgba(255, 255, 255, 0.82) 0%,
     rgba(248, 249, 251, 0.86) 100%
+  );
+  --zap-menu-grad: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.97) 0%,
+    rgba(248, 249, 251, 0.98) 100%
   );
 }
 

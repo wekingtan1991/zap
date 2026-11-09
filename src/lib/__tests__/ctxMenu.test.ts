@@ -1,37 +1,49 @@
 import { describe, expect, it } from "vitest";
-import { clampMenuPos } from "../ctxMenu";
+import { placeMenuPos } from "../ctxMenu";
 
-/// clampMenuPos 的常量（PANEL_W/H、MENU_W、ITEM_H、MENU_CHROME、EDGE_GAP）
-/// 与三处手工同步点（ctx-menu.css 的条目高度与容器 chrome、lib.rs 的
-/// PANEL_WIDTH/HEIGHT、tauri.conf.json）构成漂移陷阱——测试按「菜单必须
-/// 完整落在面板内」的行为契约锁定，常量改了这里会红
-describe("clampMenuPos", () => {
-  it("面板内坐标原样返回", () => {
-    const { left, top } = clampMenuPos(100, 100, 3);
-    expect(left).toBe(100);
-    expect(top).toBe(100);
+/// 定位契约：以光标为左上锚点，下方放不下整体翻到光标上方、右侧放不下翻到
+/// 光标左侧，翻转后仍越界再夹进视口（边距 8）。尺寸全部由调用方实测传入，
+/// 不再依赖条目高度/面板常量估算——旧契约的常量漂移陷阱随实测方案消失
+const VW = 720;
+const VH = 480;
+const W = 152;
+const H = 130;
+
+describe("placeMenuPos", () => {
+  it("空间充足时以光标为左上角原位展开", () => {
+    expect(placeMenuPos(100, 100, W, H, VW, VH)).toEqual({
+      left: 100,
+      top: 100,
+    });
   });
 
-  it("贴右溢出时左移到面板右缘内（含边距）", () => {
-    const { left } = clampMenuPos(700, 100, 3);
-    expect(left).toBeLessThanOrEqual(720 - 152 - 8);
+  it("右侧放不下时翻到光标左侧", () => {
+    const { left } = placeMenuPos(700, 100, W, H, VW, VH);
+    expect(left).toBe(700 - W);
   });
 
-  it("贴底的多条目菜单整体上移不裁切（最高条数场景）", () => {
-    const { top } = clampMenuPos(100, 470, 5);
-    // 菜单总高 5*30+10=160，底缘不得越过 480-8
-    expect(top).toBeLessThanOrEqual(480 - (5 * 30 + 10) - 8);
+  it("底部放不下时翻到光标上方（菜单底边不越视口）", () => {
+    const { top } = placeMenuPos(100, 470, W, H, VW, VH);
+    expect(top).toBe(470 - H);
+    expect(top + H).toBeLessThanOrEqual(VH);
   });
 
-  it("右下角同时溢出时双向都夹紧", () => {
-    const { left, top } = clampMenuPos(719, 479, 4);
-    expect(left).toBeLessThanOrEqual(720 - 152 - 8);
-    expect(top).toBeLessThanOrEqual(480 - (4 * 30 + 10) - 8);
+  it("右下角同时放不下时双向翻转，翻转后仍越界再夹紧", () => {
+    const { left, top } = placeMenuPos(710, 475, W, H, VW, VH);
+    expect(left).toBe(710 - W);
+    // 翻转后的底边仍越过边距 → 上提到视口下缘内
+    expect(top).toBe(VH - H - 8);
+    expect(top + H).toBeLessThanOrEqual(VH - 8);
   });
 
-  it("超大条目数仍不出面板（长菜单贴底场景）", () => {
-    const { left, top } = clampMenuPos(400, 400, 12);
-    expect(left).toBe(400);
-    expect(top).toBeLessThanOrEqual(480 - (12 * 30 + 10) - 8);
+  it("菜单比可用视口还高时顶边优先夹紧，不出现负坐标", () => {
+    const { top } = placeMenuPos(100, 470, W, 600, VW, VH);
+    expect(top).toBe(8);
+  });
+
+  it("光标贴身左/上时也得留出边距", () => {
+    const { left, top } = placeMenuPos(2, 2, W, H, VW, VH);
+    expect(left).toBe(8);
+    expect(top).toBe(8);
   });
 });

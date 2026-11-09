@@ -15,7 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useEscCapture } from "@/hooks/useEscCapture";
-import { clampMenuPos } from "@/lib/ctxMenu";
+import { useCtxMenuPos } from "@/lib/ctxMenu";
 import { isDragOutActive, startDragOut } from "@/lib/dragOut";
 import { VaultRowPin } from "@/plugins/vault/VaultRowPin";
 
@@ -61,6 +61,10 @@ export function StageView({ focusRef, onClose }: Props) {
   const [active, setActive] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [menu, setMenu] = useState<CtxMenu | null>(null);
+  const { ref: menuRef, pos: menuPos } = useCtxMenuPos(
+    menu?.x ?? null,
+    menu?.y ?? null,
+  );
   /// 本地过滤词（容量上限 200 条，滚动翻找不可用）：匹配名称或路径，不走后端
   const [filter, setFilter] = useState("");
   /// 正在放入的条数（stage_add 在途）：拖入大批网络路径时 metadata 可达秒级，
@@ -413,8 +417,6 @@ export function StageView({ focusRef, onClose }: Props) {
   ];
 
   const menuItems = menu ? (menu.row ? rowMenuItems(menu.row) : emptyMenuItems()) : [];
-  // 菜单定位随条数夹紧（与主面板右键菜单共用同一帮手）
-  const menuPos = menu ? clampMenuPos(menu.x, menu.y, menuItems.length) : null;
 
   // 右键菜单存活时 Esc 优先收菜单（enabled 互斥，同 VaultDetailView 约定）；
   // 过滤词非空时 Esc 先清过滤再谈退出——渐进退出与主面板「有词清词」同口径
@@ -638,7 +640,11 @@ export function StageView({ focusRef, onClose }: Props) {
               setMenu(null);
             }}
           />
-          <div className="zap-ctx-menu" style={menuPos ?? undefined}>
+          <div
+            className="zap-ctx-menu"
+            ref={menuRef}
+            style={menuPos ?? { left: menu.x, top: menu.y }}
+          >
             {menuItems.map((mi) => (
               <button
                 key={mi.label}

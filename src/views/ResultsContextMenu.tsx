@@ -6,8 +6,8 @@
 /// 菜单内方向键循环——此前菜单对键盘与 SR 完全不可达（真实 button 永不被
 /// 聚焦，Enter 通路形同虚设）。方向键是键盘面既定许可键，不新增组合键；
 /// Esc 关闭与 Enter 放行仍由 AppView 的窗口捕获先行处理（注册顺序在前）
-import { useEffect, useRef } from "react";
-import { clampMenuPos } from "@/lib/ctxMenu";
+import { useEffect } from "react";
+import { useCtxMenuPos } from "@/lib/ctxMenu";
 import { kindUi } from "@/plugins/registry";
 import type { SearchItem } from "@/plugins/types";
 
@@ -19,10 +19,9 @@ interface Props {
 }
 
 export function ResultsContextMenu({ menu, onClose, onAction }: Props) {
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const { ref: menuRef, el, pos } = useCtxMenuPos(menu.x, menu.y);
 
   useEffect(() => {
-    const el = menuRef.current;
     if (!el) return;
     // 打开即聚焦首项：键盘用户落在菜单内（Tab 原生在按钮间循环，Enter
     // 原生 click 由 AppView 的 inMenu 放行直接可用）
@@ -48,7 +47,7 @@ export function ResultsContextMenu({ menu, onClose, onAction }: Props) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, []);
+  }, [el]);
 
   return (
     <>
@@ -66,11 +65,7 @@ export function ResultsContextMenu({ menu, onClose, onAction }: Props) {
         data-ctx-menu=""
         role="menu"
         aria-label={`「${menu.item.title.replace(/^📌 /, "")}」的操作`}
-        style={clampMenuPos(
-          menu.x,
-          menu.y,
-          kindUi(menu.item.kind)?.ctxActions?.length ?? 0,
-        )}
+        style={pos ?? { left: menu.x, top: menu.y }}
       >
         {(kindUi(menu.item.kind)?.ctxActions ?? []).map(([act, label]) => (
           <button
