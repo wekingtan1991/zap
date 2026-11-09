@@ -19,8 +19,14 @@
   gap: 2px;
   padding: 8px 10px;
   border: 1px solid var(--zap-w-08);
-  border-radius: 10px;
+  border-radius: var(--radius);
   background: var(--zap-w-03);
+}
+
+/* 本视图统一 --radius 令牌族：json.css 的状态条是 10px 孤值，
+   只在文本工具面板内拉齐，不动公共规则（JSON 工作台保持原样） */
+.zap-tool-body .zap-json-status {
+  border-radius: var(--radius);
 }
 
 .zap-tool-card-title {

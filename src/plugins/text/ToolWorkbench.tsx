@@ -200,6 +200,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
   );
   const dlgRef = useRef<HTMLDivElement | null>(null);
   const { copied, flash } = useCopyFlash();
+  const uuidOverflow = useTextOverflow<HTMLSpanElement>(uuid);
   usePanelPaste(setSrcText);
 
   useDialogA11y(dlgRef, expanded !== null);
@@ -392,9 +393,22 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           UUID v4
         </div>
         <div className="zap-tool-row">
-          <span className="zap-tool-value" title={uuid}>
+          <span className="zap-tool-label">当前值</span>
+          <span ref={uuidOverflow.ref} className="zap-tool-value" title={uuid}>
             {uuid}
           </span>
+          {uuidOverflow.over && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="zap-tool-expand"
+              aria-label="展开 UUID"
+              title="展开查看全文"
+              onClick={() => openExpand("UUID", uuid)}
+            >
+              <Maximize2 className="size-3.5" />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon-sm"
