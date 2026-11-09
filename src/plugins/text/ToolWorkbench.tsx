@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
   Check,
+  ClipboardPaste,
   Copy,
   Hash,
   Link2,
@@ -10,6 +11,7 @@ import {
   Eraser,
   RefreshCw,
   Fingerprint,
+  Maximize2,
   Wrench,
   TriangleAlert,
   Clock,
@@ -17,6 +19,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { useDialogA11y } from "@/hooks/useDialogA11y";
 import { useEscCapture } from "@/hooks/useEscCapture";
 import {
   PanelHeader,
@@ -51,28 +54,74 @@ interface Props extends PanelProps {
   clipRow?: number;
 }
 
-/// 结果行：标签 + 值（悬停全文）+ 复制；值为 null 显示"不适用"
+/// 折叠行溢出检测：值单行省略号折叠，scrollWidth 超出可视宽即判溢出；
+/// 编辑区（field-sizing 到顶后）走纵向 scrollHeight。ResizeObserver 跟随
+/// 面板宽度实时重判（窄窗口下 SHA256 这类定长值也会出按钮）
+function useTextOverflow<T extends HTMLElement>(value: string) {
+  const ref = useRef<T>(null);
+  const [over, setOver] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const check = () =>
+      setOver(
+        el.scrollWidth > el.clientWidth + 1 ||
+          el.scrollHeight > el.clientHeight + 1
+      );
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [value]);
+  return { ref, over };
+}
+
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/// 全文浮窗的计数口径：字符数按码点（emoji/生僻字算 1），字节数按 UTF-8
+function textCounts(text: string): { chars: number; bytes: number } {
+  return { chars: [...text].length, bytes: utf8Bytes(text) };
+}
+
+/// 结果行：标签 + 值（单行折叠，溢出才出现展开钮）+ 复制；值为 null 显示"不适用"
 function ToolRow({
   rowKey,
   label,
   value,
   copied,
   onCopy,
+  onExpand,
 }: {
   rowKey: string;
   label: string;
   value: string | null | undefined;
   copied: string | null;
   onCopy: (key: string, value: string) => void;
+  onExpand: (label: string, value: string) => void;
 }) {
+  const { ref, over } = useTextOverflow<HTMLSpanElement>(value ?? "");
   return (
     <div className="zap-tool-row">
       <span className="zap-tool-label">{label}</span>
       {value ? (
         <>
-          <span className="zap-tool-value" title={value}>
+          <span ref={ref} className="zap-tool-value">
             {value}
           </span>
+          {over && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="zap-tool-expand"
+              aria-label={"展开" + label}
+              title="展开查看全文"
+              onClick={() => onExpand(label, value)}
+            >
+              <Maximize2 className="size-3.5" />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -94,22 +143,72 @@ function ToolRow({
   );
 }
 
+/// 粘贴内容行：可输入编辑区（先开面板再键入的路径；框内粘贴走原生光标位，
+/// 点面板空白处 Ctrl+V 仍是整体替换），field-sizing 自增到顶后内滚并出展开钮；
+/// 无复制钮——全文浮窗里已有「复制全文」
+function SourceRow({
+  value,
+  onExpand,
+  onChange,
+}: {
+  value: string;
+  onExpand: (label: string, value: string) => void;
+  onChange: (text: string) => void;
+}) {
+  const { ref, over } = useTextOverflow<HTMLTextAreaElement>(value);
+  return (
+    <div className="zap-tool-row zap-tool-src-row">
+      <textarea
+        ref={ref}
+        className="zap-tool-src-input"
+        value={value}
+        placeholder="输入或 Ctrl+V 粘贴"
+        aria-label="粘贴内容"
+        spellCheck={false}
+        autoFocus
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {over && (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="zap-tool-expand"
+          aria-label="展开粘贴内容"
+          title="展开查看全文"
+          onClick={() => onExpand("粘贴内容", value)}
+        >
+          <Maximize2 className="size-3.5" />
+        </Button>
+      )}
+    </div>
+  );
+}
+
 /// 文本工具工作台（独立面板）：时间戳/Base64/URL/UUID/哈希。
 /// 分析与转换在后端（tool_convert_all 防抖一次返回），前端只做展示与复制。
 /// 行号源/粘贴替换/复制闪烁/头部条为 panel 契约公共实现（与 JSON 工作台同构）
 export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
-  const { setSrcText, loadErr, active } = usePanelSource({
+  const { srcText, setSrcText, loadErr, active } = usePanelSource({
     text,
     clipRow,
   });
   const [bundle, setBundle] = useState<ToolBundle | null>(null);
   const [cmdErr, setCmdErr] = useState("");
   const [uuid, setUuid] = useState("");
+  const [expanded, setExpanded] = useState<{ label: string; text: string } | null>(
+    null,
+  );
+  const dlgRef = useRef<HTMLDivElement | null>(null);
   const { copied, flash } = useCopyFlash();
   usePanelPaste(setSrcText);
 
-  // 独立面板：窗口捕获兜 Esc（焦点掉 body 后面板 onKeyDown 收不到）
-  useEscCapture(onBack, true);
+  useDialogA11y(dlgRef, expanded !== null);
+  // Esc 互斥：全文浮窗存活时只关浮窗，否则退回主面板（PortsWorkbench.tsx:34-36 同款）
+  useEscCapture(() => setExpanded(null), expanded !== null);
+  useEscCapture(onBack, expanded === null);
+
+  // 粘贴内容的 UTF-8 字节数（粘贴内容卡标题右侧展示）
+  const srcBytes = useMemo(() => utf8Bytes(active), [active]);
 
   // 转换防抖：前缀域每击键触发；行号源加载后只触发一次。
   // cancelled 守卫：在途响应无法取消，快速编辑时旧内容的转换不得覆盖新内容
@@ -165,6 +264,10 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
     [flash]
   );
 
+  const openExpand = useCallback((label: string, text: string) => {
+    setExpanded({ label, text });
+  }, []);
+
   const header = (
     <PanelHeader
       icon={<Wrench className="size-4 text-primary" />}
@@ -194,13 +297,15 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           <TriangleAlert className="size-3.5" />
           <span>{cmdErr}</span>
         </div>
-      ) : bundle ? (
-        <div className="zap-json-status">
-          <Wrench className="size-3.5" />
-          <span>已换算</span>
-          <span className="zap-json-meta">{bundle.textLen} B</span>
-        </div>
       ) : null}
+      <div className="zap-tool-card zap-tool-card-editable">
+        <div className="zap-tool-card-title">
+          <ClipboardPaste className="size-3" />
+          粘贴内容
+          <span className="zap-tool-src-meta">{srcBytes} B</span>
+        </div>
+        <SourceRow value={active} onExpand={openExpand} onChange={setSrcText} />
+      </div>
       <div className="zap-tool-card">
         <div className="zap-tool-card-title">
           <Clock className="size-3" />
@@ -212,6 +317,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.tsToDate}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
         <ToolRow
           rowKey="dateToTs"
@@ -219,6 +325,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.dateToTs}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
       </div>
       <div className="zap-tool-card">
@@ -232,6 +339,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.base64Dec}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
         <ToolRow
           rowKey="base64Enc"
@@ -239,6 +347,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.base64Enc}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
       </div>
       <div className="zap-tool-card">
@@ -252,6 +361,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.urlDec}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
         <ToolRow
           rowKey="urlEnc"
@@ -259,6 +369,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.urlEnc}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
       </div>
       <div className="zap-tool-card">
@@ -272,6 +383,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.urlClean}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
       </div>
       <div className="zap-tool-card">
@@ -320,6 +432,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.md5}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
         <ToolRow
           rowKey="sha1"
@@ -327,6 +440,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.sha1}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
         <ToolRow
           rowKey="sha256"
@@ -334,6 +448,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.sha256}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
       </div>
       <div className="zap-tool-card">
@@ -347,6 +462,7 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.zeroWidthStripped}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
         <ToolRow
           rowKey="quotesNormalized"
@@ -354,20 +470,63 @@ export function ToolWorkbench({ text, clipRow, onBack, focusRef }: Props) {
           value={bundle?.quotesNormalized}
           copied={copied}
           onCopy={copy}
+          onExpand={openExpand}
         />
       </div>
-      {!active.trim() && !loadErr && (
-        <div className="zap-tool-empty-all">
-          {text !== undefined ? "按 Ctrl+V 粘贴" : "正在读取剪贴板…"}
-        </div>
+      {srcText === null && !loadErr && text === undefined && (
+        <div className="zap-tool-empty-all">正在读取剪贴板…</div>
       )}
     </div>
   );
+
+  const counts = expanded ? textCounts(expanded.text) : null;
 
   return (
     <div className="zap-panel outline-none" tabIndex={-1} ref={focusRef}>
       {header}
       <div className="zap-form">{body}</div>
+      {expanded && counts && (
+        <div className="zap-dialog-backdrop" onClick={() => setExpanded(null)}>
+          <div
+            ref={dlgRef}
+            className="zap-dialog zap-tool-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={"查看全文：" + expanded.label}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="zap-tool-dlg-head">
+              <span className="zap-tool-dlg-title">{expanded.label}</span>
+              <span className="zap-tool-dlg-meta">
+                {counts.chars} 字符 · {counts.bytes} B
+              </span>
+            </div>
+            <div className="zap-tool-dlg-body">
+              <pre className="zap-tool-dlg-text">{expanded.text}</pre>
+            </div>
+            <div className="zap-tool-dlg-actions">
+              {/* 焦点默认停在「关闭」：误触 Enter/Esc 的落点都是无害动作 */}
+              <Button
+                variant="outline"
+                autoFocus
+                onClick={() => setExpanded(null)}
+              >
+                关闭
+              </Button>
+              <Button
+                onClick={() => void copy("dlg:" + expanded.label, expanded.text)}
+              >
+                {copied === "dlg:" + expanded.label ? (
+                  <Check className="size-3.5 text-success" />
+                ) : (
+                  <Copy className="size-3.5" />
+                )}
+                {copied === "dlg:" + expanded.label ? "已复制" : "复制全文"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

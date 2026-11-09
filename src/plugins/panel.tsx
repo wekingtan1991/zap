@@ -43,20 +43,29 @@ export function usePanelSource(props: { text?: string; clipRow?: number }) {
   return { srcText, setSrcText, loadErr, active: srcText ?? "" };
 }
 
-/// 粘贴常驻监听（评审 P1-02）：面板挂载期 window 捕获 paste，任何时刻
-/// Ctrl+V（焦点在非可编辑元素时事件仍到达，本 hook 存在的前提）即整体替换
-/// 内容——空态文案「按 Ctrl+V 粘贴」从此恒真。旧实现监听只在点过「粘贴替换」
-/// 按钮后挂载，新用户按空态提示操作第一次必然哑火，且 5 秒无粘贴还得重按
-/// 按钮。消费者均为只读展示面板（无 textarea/input），capture 拦截不会吃掉
-/// 编辑区粘贴；新面板引入可编辑元素时必须重新审视这条假设。onPasted 传
-/// setState（稳定引用）：监听只挂载一次
+/// 粘贴常驻监听（评审 P1-02）：面板挂载期 window 捕获 paste，焦点在非可编辑
+/// 元素时 Ctrl+V 即整体替换内容——空态文案「按 Ctrl+V 粘贴」从此恒真。旧实现
+/// 监听只在点过「粘贴替换」按钮后挂载，新用户按空态提示操作第一次必然哑火，
+/// 且 5 秒无粘贴还得重按按钮。可编辑目标（textarea/input/contentEditable）
+/// 放行走原生：光标位插入由 onChange 回流，不整体替换（2026-11-09 文本工具
+/// 粘贴内容卡改可输入时兑现本契约预留的「引入可编辑元素须重新审视」；仍带
+/// 可编辑元素却想整体替换语义的面板照旧应像 PortsWorkbench 一样不挂本 hook）。
+/// onPasted 传 setState（稳定引用）：监听只挂载一次
 export function usePanelPaste(onPasted: (text: string) => void) {
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
-      const t = e.clipboardData?.getData("text");
-      if (!t) return;
+      const t = e.target;
+      if (
+        t instanceof HTMLElement &&
+        (t.isContentEditable ||
+          t.tagName === "TEXTAREA" ||
+          t.tagName === "INPUT")
+      )
+        return;
+      const text = e.clipboardData?.getData("text");
+      if (!text) return;
       e.preventDefault();
-      onPasted(t);
+      onPasted(text);
     };
     window.addEventListener("paste", onPaste, true);
     return () => window.removeEventListener("paste", onPaste, true);

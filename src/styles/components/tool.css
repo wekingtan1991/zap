@@ -1,6 +1,7 @@
 /* ============================================================
    文本工具工作台：识别结果卡片（标签 + mono 值 + 行尾复制）。
-   状态条复用 json.css 的 zap-json-status / zap-json-meta。
+   错误横幅复用 json.css 的 zap-json-status；全文浮窗复用
+   dialogs.css 的 zap-dialog-backdrop / zap-dialog 骨架，这里只管差异。
    ============================================================ */
 
 .zap-tool-body {
@@ -80,4 +81,113 @@
   text-align: center;
   font-size: 12px;
   color: var(--zap-fg-dim);
+}
+
+/* 粘贴内容卡的字节数：标题行右侧（原「已换算」状态条的 B 数迁到这里） */
+.zap-tool-src-meta {
+  margin-left: auto;
+  font-weight: 400;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--zap-fg-faint);
+}
+
+/* 粘贴内容卡可输入：聚焦时卡片描边亮起（编辑态唯一的可视反馈，textarea
+   本体无边框）；只挂在 editable 卡上，结果行的按钮聚焦不点亮卡片 */
+.zap-tool-card-editable:focus-within {
+  border-color: rgba(var(--zap-accent-rgb), 0.45);
+}
+
+.zap-tool-src-row {
+  align-items: flex-start;
+}
+
+/* 编辑区：field-sizing 随内容自增，约 4 行封顶后内滚（溢出检测随之走纵向） */
+.zap-tool-src-input {
+  flex: 1;
+  min-width: 0;
+  field-sizing: content;
+  min-height: 26px;
+  max-height: 96px;
+  overflow-y: auto;
+  padding: 3px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  resize: none;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--zap-fg);
+  outline: none;
+  user-select: text;
+  cursor: text;
+}
+
+.zap-tool-src-input::placeholder {
+  color: var(--zap-fg-faint);
+}
+
+/* 展开按钮：值溢出折叠时才出现（组件条件渲染），警示色暗示「还有更多」 */
+.zap-tool-expand {
+  flex-shrink: 0;
+  color: var(--zap-warn);
+}
+
+.zap-tool-expand:hover {
+  color: var(--zap-warn);
+}
+
+/* ---------- 全文查看浮窗（复用 zap-dialog 骨架，中性边框、可滚动正文） ---------- */
+.zap-tool-dialog {
+  max-width: 480px;
+  gap: 0;
+  padding: 0;
+  border-color: var(--zap-w-12);
+}
+
+.zap-tool-dlg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--zap-w-08);
+}
+
+.zap-tool-dlg-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--zap-fg-mute);
+}
+
+.zap-tool-dlg-meta {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--zap-fg-faint);
+}
+
+.zap-tool-dlg-body {
+  padding: 10px 14px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.zap-tool-dlg-text {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--zap-fg);
+  user-select: all;
+}
+
+.zap-tool-dlg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--zap-w-08);
 }
