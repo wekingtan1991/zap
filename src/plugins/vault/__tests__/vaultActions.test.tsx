@@ -4,7 +4,7 @@
 import { StrictMode, useState, type ReactNode } from "react";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { View } from "@/App";
+import type { View } from "@/views/appTypes";
 import type { SearchItem } from "@/plugins/types";
 
 const { invoke, toastError, toastSuccess } = vi.hoisted(() => ({

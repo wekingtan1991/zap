@@ -4,12 +4,11 @@ import React, {
   useEffect,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
-import { Lock, TriangleAlert, Zap } from "lucide-react";
+import { Lock, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -23,118 +22,26 @@ import {
   toolEntries,
   type CommandCtx,
 } from "@/plugins/commands";
-import { VaultDetailView, type VaultDetail } from "@/plugins/vault/VaultDetailView";
-import { StageView } from "@/plugins/stage/StageView";
-import { ClipImagePreview } from "@/plugins/clipimg/ClipImagePreview";
-import {
-  EMPTY_FORM,
-  VaultFormView,
-  type AccountForm,
-} from "@/plugins/vault/VaultFormView";
-import {
-  VaultRevealOverlay,
-  type RevealInfo,
-} from "@/plugins/vault/VaultRevealOverlay";
-import { VaultImportView } from "@/plugins/vault/VaultImportView";
+import { EMPTY_FORM, type AccountForm } from "@/plugins/vault/VaultFormView";
 import { useVaultActions } from "@/plugins/vault/useVaultActions";
-import { JsonWorkbench } from "@/plugins/json/JsonWorkbench";
-import { ToolWorkbench } from "@/plugins/text/ToolWorkbench";
-import { PortsWorkbench } from "@/plugins/ports/PortsWorkbench";
 import { initialPortOf } from "@/plugins/ports/types";
 import { PanelFooter } from "@/views/PanelFooter";
 import { ResultsContextMenu } from "@/views/ResultsContextMenu";
 import { ResultsList } from "@/views/ResultsList";
 import { ToolDock } from "@/views/ToolDock";
 import { useMergeMode } from "@/views/useMergeMode";
-import { SettingsView } from "@/views/SettingsView";
 import { useUpdater } from "@/views/useUpdater";
 import { applyAppearance, applyPanelTransparency, type Appearance } from "@/lib/appearance";
 import { startDragOut } from "@/lib/dragOut";
 import { cachedIcon, ensureIcons } from "@/lib/iconCache";
-
-/// 工作台内容源：入口进入 = 空文本等待粘贴；输入识别（万能输入框）= 携带
-/// 进入时刻的搜索词全文；剪贴板识别 = 按行号回查呼出时刻的内容
-type WorkbenchSource =
-  | { kind: "text"; text: string }
-  | { kind: "clip"; rowid: number }
-  | { kind: "empty" };
-
-/// 面板视图状态机：同一时刻恰有一个子页面，取代原先 8 个并列的布尔/对象状态。
-/// 新增子页面 = 加一个 kind + 渲染分支，zap://shown 复位与互斥天然成立。
-/// vault 域动作 hook（plugins/vault/useVaultActions）按此类型操作子视图
-export type View =
-  | { kind: "main" }
-  | { kind: "settings" }
-  | { kind: "stage" }
-  | { kind: "detail"; data: VaultDetail; askDelete?: boolean }
-  | { kind: "form"; data: AccountForm }
-  | { kind: "reveal"; data: RevealInfo }
-  | { kind: "import" }
-  | { kind: "json"; source: WorkbenchSource; backQuery: string }
-  | { kind: "tool"; source: WorkbenchSource; backQuery: string }
-  | { kind: "port"; port: number | null; backQuery: string }
-  | { kind: "clipimg"; rowid: number; backQuery: string };
-
-const VAULT_ADD_ENTRY: SearchItem = {
-  id: "vault:add",
-  title: "＋ 新增账号",
-  subtitle: "标题 / 用户名 / 密码 / 网址 / 备注",
-  kind: "info",
-  target: "",
-  score: -1,
-};
-
-const VAULT_IMPORT_ENTRY: SearchItem = {
-  id: "vault:import",
-  title: "智能导入（粘贴文本批量识别）",
-  subtitle: "从记事本 / 聊天记录粘贴账号文本，自动解析字段后校对入库",
-  kind: "info",
-  target: "",
-  score: -2,
-};
-
-
-/// 渲染兜底：任何视图抛错都不再整页白屏，而是提示可读信息 + 一键复位
-class ErrorBoundary extends React.Component<
-  { children: ReactNode },
-  { error: Error | null }
-> {
-  state = { error: null as Error | null };
-
-  static getDerivedStateFromError(error: Error) {
-    return { error };
-  }
-
-  render() {
-    if (this.state.error) {
-      return (
-        <div className="zap-panel vault">
-          <div className="zap-input-row">
-            <span className="zap-logo">
-              <TriangleAlert className="size-4 text-primary-foreground" />
-            </span>
-            <span className="zap-vault-tag">界面出错了</span>
-            <button
-              className="zap-link-btn"
-              onClick={() => this.setState({ error: null })}
-            >
-              重新加载
-            </button>
-          </div>
-          <div className="zap-form">
-            <div className="zap-hk-err">
-              {String(this.state.error?.message ?? this.state.error)}
-            </div>
-            <div className="zap-form-hint">
-              面板内容渲染失败，按「重新加载」可恢复；完整信息见终端日志。
-            </div>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
+import { ErrorBoundary } from "@/views/ErrorBoundary";
+import {
+  VAULT_ADD_ENTRY,
+  VAULT_IMPORT_ENTRY,
+  type View,
+  type WorkbenchSource,
+} from "@/views/appTypes";
+import { renderSubViews } from "@/views/SubViews";
 
 function AppView() {
   const [query, setQuery] = useState("");
@@ -967,138 +874,21 @@ function AppView() {
   };
 
   // ---------- 子页面渲染（view 状态机分发） ----------
-
-  if (view.kind === "form") {
-    return (
-      <VaultFormView
-        form={view.data}
-        setForm={updateFormData}
-        onSaved={vault.formSaved}
-        onCancel={vault.cancelForm}
-        focusRef={focusPanelRef}
-      />
-    );
-  }
-
-  if (view.kind === "reveal") {
-    return (
-      <VaultRevealOverlay
-        reveal={view.data}
-        // 复用 closeDetail（稳定引用，2026-11-04 评审 R9）：内联箭头每次渲染
-        // 新建会让浮层 30s 自动关闭计时器随父级渲染无限重置——安全语义靠
-        // 巧合成立；closeDetail 同样回主列表并归还输入焦点
-        onClose={vault.closeDetail}
-        focusRef={focusPanelRef}
-      />
-    );
-  }
-
-  if (view.kind === "import") {
-    return (
-      <VaultImportView
-        onDone={vault.importDone}
-        onClose={closeImport}
-        focusRef={focusPanelRef}
-      />
-    );
-  }
-
-  if (view.kind === "detail") {
-    return (
-      <VaultDetailView
-        detail={view.data}
-        initialConfirmDelete={view.askDelete === true}
-        focusRef={focusPanelRef}
-        onClose={vault.closeDetail}
-        onDelete={vault.deleteCurrent}
-        onCopyField={vault.copyField}
-        onEdit={vault.editCurrent}
-        onPin={() => void vault.pinCurrent()}
-        onOpenUrl={() =>
-          void vault.vaultAction(
-            {
-              id: `vault:${view.data.id}`,
-              title: view.data.title,
-              subtitle: "",
-              kind: "vault",
-              target: String(view.data.id),
-              score: 0,
-            },
-            "url"
-          )
-        }
-      />
-    );
-  }
-
-  if (view.kind === "stage") {
-    return <StageView focusRef={focusPanelRef} onClose={closeStage} />;
-  }
-
-  if (view.kind === "json") {
-    return (
-      <JsonWorkbench
-        text={
-          view.source.kind === "text"
-            ? view.source.text
-            : view.source.kind === "empty"
-              ? ""
-              : undefined
-        }
-        clipRow={view.source.kind === "clip" ? view.source.rowid : undefined}
-        onBack={() => closeWorkbench(view.backQuery)}
-        focusRef={focusPanelRef}
-      />
-    );
-  }
-
-  if (view.kind === "tool") {
-    return (
-      <ToolWorkbench
-        text={
-          view.source.kind === "text"
-            ? view.source.text
-            : view.source.kind === "empty"
-              ? ""
-              : undefined
-        }
-        clipRow={view.source.kind === "clip" ? view.source.rowid : undefined}
-        onBack={() => closeWorkbench(view.backQuery)}
-        focusRef={focusPanelRef}
-      />
-    );
-  }
-
-  if (view.kind === "port") {
-    return (
-      <PortsWorkbench
-        initialPort={view.port}
-        onBack={() => closeWorkbench(view.backQuery)}
-        focusRef={focusPanelRef}
-      />
-    );
-  }
-
-  if (view.kind === "clipimg") {
-    return (
-      <ClipImagePreview
-        rowid={view.rowid}
-        onBack={() => closeWorkbench(view.backQuery)}
-        onPinned={repullClips}
-        focusRef={focusPanelRef}
-      />
-    );
-  }
-
-  if (view.kind === "settings") {
-    return (
-      <SettingsView
-        updater={updater}
-        focusRef={focusPanelRef}
-        onClose={closeSettings}
-      />
-    );
-  }
+  // 分支体搬到 views/SubViews.tsx（P3.5 第一步）：纯渲染外移，普通函数返回
+  // element，不新增 fiber 层级；focusPanelRef / Esc 栈 / 键盘面仍由 AppView 持有
+  const subView = renderSubViews({
+    view,
+    vault,
+    updater,
+    focusRef: focusPanelRef,
+    setForm: updateFormData,
+    closeImport,
+    closeSettings,
+    closeStage,
+    closeWorkbench,
+    repullClips,
+  });
+  if (subView) return subView;
 
   // ---------- 主面板 ----------
   return (

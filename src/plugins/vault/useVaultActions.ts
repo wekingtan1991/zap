@@ -7,7 +7,7 @@
 import { useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
-import type { View } from "@/App";
+import type { View } from "@/views/appTypes";
 import type { SearchItem } from "@/plugins/types";
 
 /// vault_get 返回（Rust 侧 VaultRecord 命名字段结构体，2026-11-04 P2）：
