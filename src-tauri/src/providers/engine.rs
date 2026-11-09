@@ -594,16 +594,27 @@ mod plugin_tests {
         assert_eq!(c.get("a"), Some(&vec!["beta"]));
     }
 
-    /// 带延迟的探针源：并行执行与保序断言用
+    /// 会合探针源：并行执行与保序断言用。两实例共用一个会合门，两路都到齐才放行——
+    /// 会合成功即证明真并行；被串行执行则第一路等不到第二路，超时判负。不拿挂钟当
+    /// 判据：CI 负载会把 80ms×2 的并行拖到 199ms，紧上界断言在那里假红（2026-11-09）。
+    /// 门用 Mutex+Condvar 手搭——std Barrier 的 wait_timeout 尚未稳定
     struct TagPlugin {
         tag: &'static str,
-        delay_ms: u64,
+        gate: std::sync::Arc<(Mutex<u8>, std::sync::Condvar)>,
+        met: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
     impl plugin::Plugin for TagPlugin {
         fn search(&self, _q: &str, _c: Option<&Connection>) -> Vec<SearchItem> {
-            if self.delay_ms > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
-            }
+            let (arrived, cv) = &*self.gate;
+            let mut n = arrived.lock().expect("gate poisoned");
+            *n += 1;
+            cv.notify_all();
+            let (guard, r) = cv
+                .wait_timeout_while(n, std::time::Duration::from_secs(5), |n| *n < 2)
+                .expect("gate poisoned");
+            self.met
+                .store(!r.timed_out(), std::sync::atomic::Ordering::Relaxed);
+            drop(guard);
             vec![SearchItem {
                 id: format!("tag:{}", self.tag),
                 title: self.tag.to_string(),
@@ -645,21 +656,24 @@ mod plugin_tests {
     #[test]
     fn 并行插件执行保持注册顺序且真并行() {
         let conn = Mutex::new(mem_conn());
-        // 普通/需连接/普通交错注册；两个 80ms 延迟源并行 ≈ 80ms，串行则 ≥160ms
+        // 普通/需连接/普通交错注册；两个会合探针只有真并行才能一起过门
+        let gate = std::sync::Arc::new((Mutex::new(0u8), std::sync::Condvar::new()));
+        let met_a = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let met_b = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let plugins: Vec<std::sync::Arc<dyn plugin::Plugin>> = vec![
             std::sync::Arc::new(TagPlugin {
                 tag: "a",
-                delay_ms: 80,
+                gate: std::sync::Arc::clone(&gate),
+                met: std::sync::Arc::clone(&met_a),
             }),
             std::sync::Arc::new(ConnTagPlugin { tag: "conn" }),
             std::sync::Arc::new(TagPlugin {
                 tag: "b",
-                delay_ms: 80,
+                gate: std::sync::Arc::clone(&gate),
+                met: std::sync::Arc::clone(&met_b),
             }),
         ];
-        let t0 = std::time::Instant::now();
         let items = super::run_parallel(&plugins, "x", &conn);
-        let elapsed = t0.elapsed();
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -667,8 +681,9 @@ mod plugin_tests {
             "并行执行输出应保持注册顺序"
         );
         assert!(
-            elapsed < std::time::Duration::from_millis(135),
-            "两个 80ms 源应并行执行（实际 {elapsed:?}，串行会 ≥160ms）"
+            met_a.load(std::sync::atomic::Ordering::Relaxed)
+                && met_b.load(std::sync::atomic::Ordering::Relaxed),
+            "两个探针应在会合门上相遇（超时 = 被串行执行）"
         );
     }
 }
