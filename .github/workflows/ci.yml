@@ -58,6 +58,11 @@ jobs:
       - name: 版本一致性校验
         run: node scripts/verify-version.mjs
 
+      # 敏感信息扫描：pre-push 之外补服务端兜底——网页端提交、--no-verify、
+      # 直推 tag 都绕不过这一道（原先只挂在本机 hook 上）
+      - name: 敏感信息扫描
+        run: pnpm check:secrets
+
       - name: 前端类型检查与构建
         run: pnpm build
 

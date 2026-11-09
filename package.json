@@ -24,6 +24,7 @@
   "packageManager": "pnpm@12.8.1",
   "type": "module",
   "scripts": {
+    "prepare": "node scripts/setup-hooks.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "vitest run",

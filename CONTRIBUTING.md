@@ -13,10 +13,16 @@ pnpm tauri dev        # 开发运行
 
 ```bash
 pnpm build                                        # tsc + vite build
+pnpm test                                         # 前端单元测试
+pnpm check:kb                                     # 键盘面纪律自检
+pnpm check:secrets                                # 敏感信息扫描
+node scripts/verify-version.mjs                   # 四处版本一致性
 cd src-tauri && cargo test --lib                  # 单元测试
 cd src-tauri && cargo fmt --check                 # 格式
 cd src-tauri && cargo clippy --all-targets -- -D warnings   # lint
 ```
+
+`pnpm install` 会经 `prepare` 脚本自动把 `core.hooksPath` 指向 `.githooks`，`git push` 时这套门禁再跑一遍（可用 `git config --get core.hooksPath` 确认）。`--no-verify` 会跳过本地门禁，但 CI 有服务端兜底，请勿依赖。
 
 CI 对 push 与 PR 跑同一套检查，不过无法合并。
 
@@ -31,7 +37,7 @@ CI 对 push 与 PR 跑同一套检查，不过无法合并。
 
 - Rust：每个搜索来源一个模块，统一产出 `SearchItem`；不引入新的全局可变状态（除既有的 `AtomicBool` / `Mutex` 静态量）
 - 前端：组件一律走 `src/components/ui/`（shadcn/ui），不要在 `App.css` 里写会被工具类覆盖的外观属性
-- 隐私红线：账号密码不得进入日志、剪贴板历史或任何上报路径；新增复制类操作必须复用 `vault_action` 的抑制与阅后即焚机制
+- 隐私红线：账号密码不得进入日志、剪贴板历史或任何上报路径；新增复制类操作必须复用 `vault_action` 的抑制与延时清空机制
 - 动效：只做交互反馈类动画；面板呼出不做入场动画（避免闪烁），并尊重 `prefers-reduced-motion`
 
 ## 提交 PR
@@ -44,7 +50,7 @@ CI 对 push 与 PR 跑同一套检查，不过无法合并。
 
 发布即打 tag：推送 `v*` tag（如 `v0.2.0`）后 CI 自动构建并创建公开 Release，安装包、minisign 签名（`.sig`）与 updater 清单（`latest.json`）一并上传。
 
-版本号需要同步三处：`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（与 tag 必须一致，CI 会校验）。
+版本号需要同步四处：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`（与 tag 必须一致；`node scripts/verify-version.mjs` 校验四处，pre-push 与 CI 都跑）。
 
 **自动更新依赖签名密钥**（minisign），已启用 `createUpdaterArtifacts`，因此：
 

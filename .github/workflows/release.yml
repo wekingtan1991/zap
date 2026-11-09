@@ -103,6 +103,9 @@ jobs:
       - name: 版本一致性校验
         run: node scripts/verify-version.mjs
 
+      - name: 敏感信息扫描
+        run: pnpm check:secrets
+
       - name: 前端类型检查与构建
         run: pnpm build
 
