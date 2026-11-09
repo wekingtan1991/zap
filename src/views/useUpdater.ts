@@ -18,7 +18,6 @@ export interface Updater {
   status: UpdateStatus;
   version: string;
   progress: number;
-  msg: { kind: "ok" | "err"; text: string } | null;
   checkForUpdate: () => Promise<void>;
   downloadUpdate: () => Promise<void>;
 }
@@ -29,9 +28,6 @@ export function useUpdater(): Updater {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateVersion, setUpdateVersion] = useState("");
   const [updateProgress, setUpdateProgress] = useState(0);
-  const [updateMsg, setUpdateMsg] = useState<
-    { kind: "ok" | "err"; text: string } | null
-  >(null);
 
   /// 状态镜像：静默检查的响应回来时必须读到「此刻」的状态。
   /// 只看渲染时闭包里的 updateStatus 会拿到过期快照，下载中途被覆盖成 available。
@@ -99,14 +95,21 @@ export function useUpdater(): Updater {
     )
       return;
     setStatus("checking");
-    setUpdateMsg(null);
     try {
       const u = await check();
       applyUpdate(u);
-      if (!u) setUpdateMsg({ kind: "ok", text: "已是最新版本 ✓" });
+      // 检查结果统一走 toast（与下载失败/静默提示同一通道），行内只留持久状态；
+      // 错误原文可能很长，行内 truncate 会截断，toast 展示完整
+      if (u) {
+        // 用户已当面收到提示，清掉静默检查挂起的「下次呼出再提示」标记
+        updateNotifiedRef.current = false;
+        toast.info(`发现新版本 v${u.version}`);
+      } else {
+        toast.success("已是最新版本");
+      }
     } catch (e) {
       setStatus("idle");
-      setUpdateMsg({ kind: "err", text: "检查失败：" + String(e) });
+      toast.error("检查失败：" + String(e));
     }
   }, [applyUpdate, setStatus]);
 
@@ -154,7 +157,6 @@ export function useUpdater(): Updater {
     status: updateStatus,
     version: updateVersion,
     progress: updateProgress,
-    msg: updateMsg,
     checkForUpdate,
     downloadUpdate,
   };

@@ -16,7 +16,6 @@ export function UpdateSection({ updater, appVersion }: Props) {
     status: updateStatus,
     version: updateVersion,
     progress: updateProgress,
-    msg: updateMsg,
   } = updater;
 
   return (
@@ -31,18 +30,6 @@ export function UpdateSection({ updater, appVersion }: Props) {
             className="flex min-w-0 items-center gap-2"
             aria-live="polite"
           >
-            {updateStatus === "idle" && updateMsg && (
-              <span
-                className={
-                  "truncate text-xs " +
-                  (updateMsg.kind === "ok"
-                    ? "text-success"
-                    : "text-destructive")
-                }
-              >
-                {updateMsg.text}
-              </span>
-            )}
             {updateStatus === "checking" && (
               <span className="truncate text-xs text-muted-foreground">
                 正在检查更新…
