@@ -24,7 +24,7 @@ tauri-build = { version = "2", features = [] }
 # benches（scripts/bench 持续方案 2026-11-07）：确定性纯层基准。
 # default-features=false 关掉 rayon/plotters/html——只要数字不要图表，编译面最小
 [dev-dependencies]
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
 name = "layers"
