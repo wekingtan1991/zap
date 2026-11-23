@@ -516,8 +516,11 @@ fn scan_uwp(cache: Option<&Path>, mem: &MemIcons, out: &mut Vec<AppEntry>) {
                     continue;
                 };
                 let aumid = pw_take(aumid);
-                // 只收 UWP/商店包；桌面程序已由 .lnk 覆盖，按名去重
-                if !aumid.contains('!') || is_uninstaller(&title) {
+                // AppsFolder 是所有已注册应用的权威枚举：UWP/商店包（AUMID
+                // 带 !）与仅在 AppsFolder 注册、无开始菜单 .lnk 的经典程序
+                // （如 Docker Desktop，AUMID 为 Docker.DockerForWindows.Settings）
+                // 一并收录；同名 .lnk 条目由 seen 去重，卸载器跳过。
+                if is_uninstaller(&title) {
                     continue;
                 }
                 if !seen.insert(title.to_lowercase()) {
@@ -561,6 +564,21 @@ impl super::plugin::Plugin for AppsPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 本机冒烟：AppsFolder 中 AUMID 不带 ! 的经典程序（如 Docker Desktop）
+    /// 应被收录——回归 2026-11-23 的漏收录修复。依赖本机安装，故 ignore。
+    #[test]
+    #[ignore = "机器相关冒烟：cargo test --lib -- --ignored --nocapture"]
+    fn 收录AppsFolder中无感叹号AUMID的经典程序() {
+        let idx = AppIndex::scan(None);
+        let hits = idx.search("docker", 8, &HashMap::new());
+        assert!(
+            hits.iter()
+                .any(|i| i.title.eq_ignore_ascii_case("Docker Desktop")),
+            "AppsFolder 中的 Docker Desktop 未被收录：{:?}",
+            hits.iter().map(|i| &i.title).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn 卸载器名称识别() {
