@@ -569,7 +569,7 @@ mod tests {
     /// 应被收录——回归 2026-11-23 的漏收录修复。依赖本机安装，故 ignore。
     #[test]
     #[ignore = "机器相关冒烟：cargo test --lib -- --ignored --nocapture"]
-    fn 收录AppsFolder中无感叹号AUMID的经典程序() {
+    fn 收录无感叹号标识的经典程序() {
         let idx = AppIndex::scan(None);
         let hits = idx.search("docker", 8, &HashMap::new());
         assert!(
