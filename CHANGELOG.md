@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+## [0.20.2] — 2026-11-24
+
+### 修复
+
+- **Docker Desktop 等经典程序可被搜到**：应用索引的 UWP/AppsFolder 扫描原先只收录 AUMID 带 `!` 的商店包，理由是「桌面程序已由开始菜单 .lnk 覆盖」。但 Docker Desktop 这类程序只注册在 AppsFolder、开始菜单没有 .lnk（本机 `Start Menu\Programs\docker-desktop` 为空目录），两个来源同时落空 → 搜 `docker` 无结果。现放开该过滤，AppsFolder 中的经典注册项一并收录（同名 .lnk 条目按名去重、卸载器照旧跳过）；后台图标补齐随之补上这批条目的图标。附本机冒烟测试锁住该行为。
+
 ## [0.20.1] — 2026-11-10
 
 ### 界面
