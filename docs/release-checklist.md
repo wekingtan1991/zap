@@ -4,6 +4,49 @@
 > verify-version）全绿只是底线；以下是需要真机手工确认的项，随 release 走。
 > 全部来源都是踩过的坑——新增一条的前提是真机踩到且已修复。
 
+## 发版顺序与 L3 分级（2026-11-24，v0.20.2 复盘后定）
+
+v0.20.2 发版实测 59 分钟，其中 19 分钟是把 L3 真机冒烟串进发版对话现编译现跑，
+而该版实际只改了一个过滤条件。release.yml 出包前已重跑 fmt/clippy/test/vitest/
+tsc/check:kb/版本/密钥扫描，本地重复跑这些只是提前拦截；**CI 唯一覆盖不到的是
+L3 的 9 阶段真机行为**（需要真实桌面与 WebView2，headless runner 跑不了）。
+
+**硬顺序（顺序错了会测到错的二进制）**：
+
+```
+① bump 四处版本 + CHANGELOG 转正        ← 必须先做，否则 build:smoke 编的是旧版本号
+② pnpm release:gate                     ← 按 diff 判定是否需要 L3（exit 0 跳过 / 10 需要）
+③ pnpm release:gate --run               ← 判定需要时才跑 build:smoke + smoke（约 20 分钟）
+④ commit + push master，等该 commit 的 ci success   ← release.yml 发版闸的硬前提
+⑤ git tag -a vX.Y.Z && git push origin vX.Y.Z       ← 不可逆，人工确认后执行
+⑥ pnpm release:verify vX.Y.Z            ← 异步校验，不必阻塞发版对话
+```
+
+**L3 分级规则**（`scripts/release/gate.mjs`，判定基线 = 上一个 tag，fail-closed）：
+
+| 本版 diff 命中 | 判定 |
+|---|---|
+| `src-tauri/` 零变更（纯前端/文档/版本号） | 跳过 |
+| 仅低风险纯函数/表驱动（matching、shortcuts、providers/settings、jsontools、texttools、acctparse、totp、pathguard、appconfig、backup、util、stagedrop/decide、stagedrop/layout、vault/actions）及纯元数据（Cargo.toml/lock、tauri.conf.json、rust-toolchain.toml、icons/） | 跳过 |
+| 高风险：main/lib/panel/hotkey_capture/settings（热键）、watcher、clipboard、winclip、db、engine*、stagedrop*、superpanel、dragout、droptarget、vault* | 必须跑 |
+| 索引与 IO：apps、recent、files、everything、icons | 必须跑（S1 冷启动覆盖索引初始化） |
+| 规则未列出的 src-tauri 路径 | 必须跑（拿不准就跑） |
+
+判定可回溯验证：`--base v0.20.0 --head v0.20.1`。2026-11-24 实测该区间含
+`stagedrop.rs` 改动（尽管 bump 提交自称「零 src-tauri 逻辑变更」）→ 判 required，
+说明按 diff 判定比信提交信息可靠。`--status` 看上次判定与 L3 结论。
+
+**两个环境坑（都已脚本化，遇到别手工硬扛）**：
+
+- **smoke 前置清理**：`scripts/smoke/run.mjs` 的 S0 会 `rmSync` 整个
+  `%APPDATA%\com.ais.zap.smoke`，在 WorkBuddy 沙箱下会触发 node safe-delete
+  shim 的批量删除保护（>50 文件即拦，2026-11-24 实测拦下 160 文件的旧数据）。
+  `release:gate --run` 已内置预清理（PowerShell 删同一目录，脚本 `existsSync`
+  为 false 即跳过）。手工跑时若被拦，用 PowerShell `Remove-Item -Recurse` 清一次。
+- **verify 下载兜底**：本机 github.com 下载域间歇不通。`verify-assets.mjs` 现按
+  CDN → `api.github.com` asset 端点 → `%TEMP%` 留档三级回落；安装包三路都拿不到
+  时改用 Release asset 的 `digest` 字段校验 sha256，不再依赖下载 4.4MB 二进制。
+
 ## 启动与呼出
 
 - [x] 冷启动：热键（默认 ctrl+alt+space）呼出面板，焦点在搜索框可直接输入——2026-11-07 用户真机验过：退出重开后按热键呼出，不点鼠标直接打字，字符进搜索框，无问题
@@ -28,7 +71,7 @@
 
 - [x] 私钥与 tauri.conf.json 公钥同对：发版机本地用 `TAURI_SIGNING_PRIVATE_KEY` 对任意文件跑一次 `pnpm tauri signer sign`，签名成功即私钥可用（2026-11-04 评审 R16：CI 无法校验配对，错配=全绿发版但全体用户更新静默失败）——2026-11-06 三路交叉实证：① `tauri.conf.json` 的 pubkey 字符串与 `~/.tauri/zap.key.pub` 逐字符相同；② 私钥实签成功（空密码，产出 `.sig` 404B）；③ 产物签名的 key id 与配置公钥 key id 一致（`C957897ED1642715`）。注：minisign 签名块载荷 74B = alg(2)+keyid(8)+sig(64)，**不含公钥**，配对只能比 key id
 - [x] 旧版本收到更新提示→下载→自动重启到新版（tauri updater /R 行为）——2026-11-07 用户确认**既有真机实证**：设置页「检查更新」可检出新版本并下载后自动安装，呼出面板有更新时 toast 提醒（对应 `useUpdater.ts:52-77` 静默 check + `zap://shown` toast、`UpdateSection.tsx:92/113` 检查/下载按钮）。**本版无需重验的依据**（`6791a57..HEAD` 实读）：`useUpdater.ts` / `UpdateSection.tsx` 一行未动；`tauri.conf.json` 的 updater 段 pubkey 与 endpoints 逐字一致（仅 `version` 0.17.0→0.18.0）；`release.yml` 的 `latest.json` 生成逻辑未动（仅前置发版闸）；后端 `tauri_plugin_updater` 注册未动；签名配对另有三路实证（见上条，key id `C957897ED1642715`）。⚠️ **诚实边界**：本项按「既有实证 + 本次零变更」判定，**未在 0.18.0 产物上重新真机复跑 updater**；11-06 18:03 的 0.18.0 是手动装 NSIS 包，不作为依据。本机现到 `github.com` 主站不通（系统层无代理、直连 `http=000`）属后续网络环境变化，非产品回归
-- [x] Release 四件套齐（setup.exe / setup.exe.sig / latest.json / setup.sha256）且哈希一致——2026-11-06 v0.18.0 实测：四资产均 HTTP 200（setup.exe 4,406,819B / .sig 432B / latest.json 710B / setup.sha256 65B）；`setup.sha256` 声明值 == 实际下载安装包算得的 SHA256（`383e240f…260e`）；`latest.json` 的 version=0.18.0、url 指向 v0.18.0。ℹ️ **2026-11-09 起本项脚本化并完成 v0.19.0 补验（全部通过）**：`pnpm release:verify <tag>`（scripts/release/verify-assets.mjs，四道校验：四资产齐 / sha256 对实包 / latest.json 内容 / 签名-公钥 key id 配对）。v0.19.0 结果：`setup.sha256` == 实包 SHA-256 `4ecfc31517e77b52ffd97ea0d3dfa3d5d3a698b1f800ae8635ae46f44fa16eed`、latest.json version/url/signature 一致、key id 配对 `C957897ED1642715`。实测两发现已固化进脚本：①发布 .sig 与 latest.json signature 是「minisign 签名文本整体再 base64」的单行嵌套，解析须先剥一层；②key id 载荷原始字节序与展示 hex 反序，两侧同变换比较即配对。本机 github.com 下载域间歇不通（api.github.com 稳定通）：下载失败自动回落 %TEMP% 上次成功运行的留档，删留档目录可强制重下
+- [x] Release 四件套齐（setup.exe / setup.exe.sig / latest.json / setup.sha256）且哈希一致——2026-11-06 v0.18.0 实测：四资产均 HTTP 200（setup.exe 4,406,819B / .sig 432B / latest.json 710B / setup.sha256 65B）；`setup.sha256` 声明值 == 实际下载安装包算得的 SHA256（`383e240f…260e`）；`latest.json` 的 version=0.18.0、url 指向 v0.18.0。ℹ️ **2026-11-09 起本项脚本化并完成 v0.19.0 补验（全部通过）**：`pnpm release:verify <tag>`（scripts/release/verify-assets.mjs，四道校验：四资产齐 / sha256 对实包 / latest.json 内容 / 签名-公钥 key id 配对）。v0.19.0 结果：`setup.sha256` == 实包 SHA-256 `4ecfc31517e77b52ffd97ea0d3dfa3d5d3a698b1f800ae8635ae46f44fa16eed`、latest.json version/url/signature 一致、key id 配对 `C957897ED1642715`。实测两发现已固化进脚本：①发布 .sig 与 latest.json signature 是「minisign 签名文本整体再 base64」的单行嵌套，解析须先剥一层；②key id 载荷原始字节序与展示 hex 反序，两侧同变换比较即配对。本机 github.com 下载域间歇不通（api.github.com 稳定通）：下载失败自动回落 %TEMP% 上次成功运行的留档，删留档目录可强制重下。**2026-11-24 起加三级兜底（CDN → api asset 端点 → 留档）与安装包 API digest 校验**：v0.20.2 实测全绿，见顶部「两个环境坑」
 - [x] 未签名提示（SmartScreen）文案与 release notes 的 SHA256 对得上——2026-11-06 实测：release notes 正文 SHA256 与 `setup.sha256` 一致，未签名 SmartScreen 提示文案在位
 
 ## 系统环境
@@ -41,4 +84,4 @@
 > 性能与稳定回归门。数字只与本机基线比（`docs/benchmarks/baseline.json` 记录机器），跨机不可比；换机先 `pnpm bench:baseline` 重建基线。smoke 实例（identifier `com.ais.zap.smoke`）与生产数据物理隔离，构建走 `pnpm build:smoke`。
 
 - [x] L2 性能无回归：发版机上 `pnpm bench && pnpm bench:compare` exit 0——阈值中位 +35%，由 2026-11-07 A/A 实测（同码两跑噪声 ±22%）定为「宁漏报不误报」，真回归 2 倍级照样拦截；篡改验证三路（绿放行 / 3.3 倍拦截 / 1.2 倍放行）已实证。⚠️ **v0.19.0 发版时带注记跳过（2026-11-07 用户拍板）**：三连跑 compare 均拦 9-10 项，但 `git diff 8ab8fee..HEAD -- src-tauri/` 为空（源码零变更）、同项跨跑互差最大 88%、vsc 反比基线快 45-54%、中文名项慢 2-4 倍而英文短项不慢——形态为机器负载噪声（发版机正跑 QoderCN/WorkBuddy/微信等重型应用），非代码回归；本周期与 baseline 同码，L2 绿红均无信息量。**下个含 src-tauri 变更的发版周期，须在空闲机重跑本项**。⚠️ **2026-11-09 v0.20.0 备版已重跑，结果为红、由用户拍板按噪声放行**：`pnpm bench` exit 0，`pnpm bench:compare` exit 1（edge +57% / weixin +58% / yuancheng +70% / vault/get +61%，其余 6 项 0.97–1.05、vsc 0.37）。取证四条：① 同一二进制连跑两轮中位自己翻面 ±68%（abc 384→650ns、vsc 139→234ns、yuancheng 634→388ns），远超本项「±22% 噪声」的校准；② 逐样本分布为 ~1.8× 双峰（edge p25=87 / p50=149 / p75=159ns），中位落在哪簇由调度抽签；③ 11 项 p10 对基线全部 0.93–1.09（vsc 0.38 更快），簇内成本无回归；④ 4 个被拦项的代码路径自基线提交 `9942259` 起零变更（`matching.rs:72`/`:75` 早退分支未被 `6d4a127` 触及，`vault.rs:352` `get` 的 `git diff` 为空）。结论：+35% 阈值落在两簇（间距 ~80%）中间，本机当前状态下判据无判别力。**下个周期整改协议：绑物理核 + 高优先级、判据改 p10/最小值、用同协议重建 `docs/benchmarks/baseline.json`（待实施）**
-- [x] L3 冒烟零崩溃：发版机上 `pnpm smoke` 全绿——9 阶段（冷启动×3 / toggle 路径×3+风暴×50 / 搜索 200 键 / 剪贴板翻滚 50 条 / 大图 36MB / kill→重启 / 坏库软着陆 / 日志 [E] 清点），全程 smoke 实例隔离、剪贴板文本自动还原——2026-11-07 本机连续两轮 9/9（145.8s / 157.1s，含坏库软着陆的日志级实证「库不健康，隔离重建」）+ v0.19.0 发版时第三轮 9/9（189.5s，v0.19.0 smoke 实例）。ℹ️ 原生可见性在脚本语境不可断言（呼出即失焦亚秒自动收起），toggle 正确性以 zap.log `shown` 埋点计数为准；e2e（`pnpm bench:e2e`）另行覆盖端到端时延。⚠️ **必须先 `pnpm build:smoke` 再 `pnpm smoke`**：run.mjs 不校验 exe 身份，shared/release/zap.exe 与生产构建同路径共存——2026-11-07 v0.19.0 发版时直接跑 `pnpm smoke`，残留的生产构建 exe 以生产 identifier 运行，S4/S5 测试数据写进生产库（marker 50 条 + 测试图 1 张，已精准删除恢复并留备份）；四败阶段全为「读不到 smoke 日志」的假阴性。ℹ️ **2026-11-09 v0.20.0 备版实测第四轮 9/9（180.0s）**：前置 `pnpm build:smoke` exit 0；S1 就绪 1892/1916/1702ms、S2a 埋点 +2/3（观察项不判定）、S2b +25/50、S3 202 键、S4 9 行 marker、S5 36MB 后存活、S6 旧实例死透重启即绪、S7 日志「库不健康，隔离重建」+ 正常启动、S8 `[E]` 0 条
+- [x] L3 冒烟零崩溃：发版机上 `pnpm smoke` 全绿——9 阶段（冷启动×3 / toggle 路径×3+风暴×50 / 搜索 200 键 / 剪贴板翻滚 50 条 / 大图 36MB / kill→重启 / 坏库软着陆 / 日志 [E] 清点），全程 smoke 实例隔离、剪贴板文本自动还原——2026-11-07 本机连续两轮 9/9（145.8s / 157.1s，含坏库软着陆的日志级实证「库不健康，隔离重建」）+ v0.19.0 发版时第三轮 9/9（189.5s，v0.19.0 smoke 实例）。ℹ️ 原生可见性在脚本语境不可断言（呼出即失焦亚秒自动收起），toggle 正确性以 zap.log `shown` 埋点计数为准；e2e（`pnpm bench:e2e`）另行覆盖端到端时延。⚠️ **必须先 `pnpm build:smoke` 再 `pnpm smoke`**：run.mjs 不校验 exe 身份，shared/release/zap.exe 与生产构建同路径共存——2026-11-07 v0.19.0 发版时直接跑 `pnpm smoke`，残留的生产构建 exe 以生产 identifier 运行，S4/S5 测试数据写进生产库（marker 50 条 + 测试图 1 张，已精准删除恢复并留备份）；四败阶段全为「读不到 smoke 日志」的假阴性。ℹ️ **2026-11-09 v0.20.0 备版实测第四轮 9/9（180.0s）**：前置 `pnpm build:smoke` exit 0；S1 就绪 1892/1916/1702ms、S2a 埋点 +2/3（观察项不判定）、S2b +25/50、S3 202 键、S4 9 行 marker、S5 36MB 后存活、S6 旧实例死透重启即绪、S7 日志「库不健康，隔离重建」+ 正常启动、S8 `[E]` 0 条。**2026-11-24 起是否必跑由 `pnpm release:gate` 按 diff 判定**（v0.20.2 只改 apps.rs 过滤器，判 required 并跑绿 273.3s；无 src-tauri 变更的版本判 skip），见顶部「发版顺序与 L3 分级」

@@ -37,6 +37,7 @@
     "build:smoke": "node scripts/bench/build-smoke.mjs",
     "smoke": "node scripts/smoke/run.mjs",
     "release:verify": "node scripts/release/verify-assets.mjs",
+    "release:gate": "node scripts/release/gate.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

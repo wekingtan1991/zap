@@ -69,50 +69,94 @@ for (const [label, asset] of [
 if (!exe || !sig || !latest || !sha) finish();
 
 // ---- 2. 下载四件并落盘留档 ----
+// 本机 github.com 下载域长期间歇不通而 api.github.com 稳定（checklist :31），
+// 2026-11-24 v0.20.2 发版时 verify 就卡死在下载步、逼出人工 API 核对。现在
+// 三级兜底：① browser_download_url（CDN）② api.github.com 的 asset 端点
+// （Accept: application/octet-stream）③ 上次成功运行留在 TMP 的产物。
+// 安装包三路都拿不到时，改用 Release asset 的 digest 字段校验 sha256——
+// 不再依赖下载 4.4MB 二进制，本机网络抖不会再把验证变成手工活。
 await mkdir(TMP, { recursive: true });
-const dl = async (asset, name) => {
-  const r = await fetch(asset.browser_download_url);
-  if (!r.ok) throw new Error(`${asset.browser_download_url} → HTTP ${r.status}`);
+const dlVia = async (url, name, headers) => {
+  const r = await fetch(url, headers ? { headers } : undefined);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length === 0) throw new Error("空响应");
   await writeFile(path.join(TMP, name), buf);
   return buf;
 };
-let exeBuf, sigBuf, latestBuf, shaBuf;
-try {
-  [exeBuf, sigBuf, latestBuf, shaBuf] = await Promise.all([
-    dl(exe, exe.name),
-    dl(sig, sig.name),
-    dl(latest, latest.name),
-    dl(sha, sha.name),
-  ]);
-  ok("四资产下载", TMP);
-} catch (e) {
-  // 本机 github.com 下载域间歇不通（api 通、CDN 抖，2026-11-09 两跑两样）：
-  // 回落上次成功运行留在 TMP 的产物。tag 资产按 tag 名寻址、发版不重发即不
-  // 变；若怀疑留档过期，删 TMP 目录后重跑即可强制重下
-  const local = (name) =>
-    readFile(path.join(TMP, name)).catch(() => null);
-  exeBuf = await local(exe.name);
-  sigBuf = await local(sig.name);
-  latestBuf = await local(latest.name);
-  shaBuf = await local(sha.name);
-  if (exeBuf && sigBuf && latestBuf && shaBuf) {
-    ok("资产下载失败，回落本地留档", `${TMP}（删该目录重跑可强制重下）`);
-  } else {
-    bad(
-      "资产下载",
-      `${e.message}（且 ${TMP} 无完整留档；有代理时设 HTTPS_PROXY 并以 NODE_USE_ENV_PROXY=1 运行）`
-    );
-    finish();
+const dl = async (asset, name) => {
+  const attempts = [
+    ["CDN", () => dlVia(asset.browser_download_url, name)],
+    [
+      "API",
+      () =>
+        dlVia(`https://api.github.com/repos/${REPO}/releases/assets/${asset.id}`, name, {
+          Accept: "application/octet-stream",
+        }),
+    ],
+  ];
+  const errs = [];
+  for (const [label, fn] of attempts) {
+    try {
+      const buf = await fn();
+      if (label !== "CDN") ok(`${name} 走 API 兜底下载`, `${buf.length}B`);
+      return buf;
+    } catch (e) {
+      errs.push(`${label}: ${e.message}`);
+    }
   }
-}
+  throw new Error(errs.join(" / "));
+};
 
-// ---- 3. setup.sha256 对实包哈希 ----
+const settled = await Promise.allSettled([
+  dl(exe, exe.name),
+  dl(sig, sig.name),
+  dl(latest, latest.name),
+  dl(sha, sha.name),
+]);
+const [exeDl, sigDl, latestDl, shaDl] = settled.map((r) =>
+  r.status === "fulfilled" ? r.value : null
+);
+
+// 失败项回落本地留档（tag 资产按 tag 名寻址、发版不重发即不变；
+// 删 TMP 目录后重跑可强制重下）
+const local = (name) => readFile(path.join(TMP, name)).catch(() => null);
+const sigBuf = sigDl ?? (await local(sig.name));
+const latestBuf = latestDl ?? (await local(latest.name));
+const shaBuf = shaDl ?? (await local(sha.name));
+const exeBuf = exeDl ?? (await local(exe.name));
+
+// 三个小文件是后续校验的必需品；安装包缺失可退到 API digest
+const missingCritical = [
+  [".sig", sigBuf],
+  ["latest.json", latestBuf],
+  ["setup.sha256", shaBuf],
+]
+  .filter(([, buf]) => !buf)
+  .map(([name]) => name);
+if (missingCritical.length) {
+  bad(
+    "资产获取",
+    `${missingCritical.join(" / ")} 三路均失败（CDN / API / 本地留档）${exeBuf ? "" : "；安装包也未取到"}`
+  );
+  finish();
+}
+exeBuf
+  ? ok("四资产下载", TMP)
+  : ok("小文件已取，安装包改走 API digest", TMP);
+
+// ---- 3. setup.sha256 对安装包哈希 ----
 const declared = shaBuf.toString("utf8").trim().split(/\s+/)[0].toLowerCase();
-const actual = createHash("sha256").update(exeBuf).digest("hex");
-declared === actual
-  ? ok("setup.sha256 == 实包 SHA-256", actual.slice(0, 16) + "…")
-  : bad("setup.sha256 == 实包 SHA-256", `声明 ${declared.slice(0, 16)}… 实算 ${actual.slice(0, 16)}…`);
+const digest = (exe.digest ?? "").replace(/^sha256:/i, "").toLowerCase();
+const actual = exeBuf ? createHash("sha256").update(exeBuf).digest("hex") : digest;
+if (!actual) {
+  bad("setup.sha256 == 安装包 SHA-256", "安装包未下载且 Release 无 digest 字段");
+} else {
+  const src = exeBuf ? "实算" : "API digest";
+  declared === actual
+    ? ok(`setup.sha256 == 安装包 SHA-256（${src}）`, actual.slice(0, 16) + "…")
+    : bad(`setup.sha256 == 安装包 SHA-256（${src}）`, `声明 ${declared.slice(0, 16)}… 实际 ${actual.slice(0, 16)}…`);
+}
 
 // ---- 4. latest.json 内容 ----
 let meta;
